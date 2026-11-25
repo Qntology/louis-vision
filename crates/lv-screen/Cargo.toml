@@ -1,0 +1,31 @@
+[package]
+name = "lv-screen"
+description = "Layer 2 zero-network screen vision & virtual event camera: WGSL/CPU log-luminance sensor, ROI polar flow tracker, NaFlex patchifier with toast redaction, perforated minesweeper passes, AnchorBank, and privacy-epoch cancellable screen reader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+cuda = ["lv-core/cuda"]
+rocm = ["lv-core/rocm"]
+vulkan = ["lv-core/vulkan"]
+metal = ["lv-core/metal"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+tokenizers.workspace = true
+candle-core.workspace = true
+candle-nn.workspace = true
+lv-kernels.workspace = true
+lv-sds.workspace = true
+lv-core.workspace = true
+premium-discount-quant.workspace = true
+premium-discount-eval.workspace = true
+
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }

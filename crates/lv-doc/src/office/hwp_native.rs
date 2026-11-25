@@ -1,0 +1,299 @@
+//! Native HWP 5.0 OLE2 (`cfb`) and OWPML `.hwpx` (`zip` + `quick-xml`) AST parsers.
+
+use std::io::{Cursor, Read};
+
+use anyhow::{bail, Context, Result};
+use cfb::CompoundFile;
+use flate2::read::DeflateDecoder;
+use quick_xml::events::Event;
+use quick_xml::Reader;
+use zip::ZipArchive;
+
+use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, VisionFallbackNeed};
+
+const HWPTAG_PARA_TEXT: u16 = 67;
+
+/// Parses binary HWP 5.0 OLE2 compound document bytes into `DocIr`.
+pub fn parse_hwp5(bytes: &[u8]) -> Result<DocIr> {
+    let mut comp = CompoundFile::open(Cursor::new(bytes)).context("not a valid HWP 5.0 OLE container")?;
+    let mut compressed = false;
+    if comp.exists("FileHeader") {
+        let mut hdr = Vec::new();
+        comp.open_stream("FileHeader")?.read_to_end(&mut hdr)?;
+        if hdr.len() >= 40 {
+            let flags = u32::from_le_bytes([hdr[36], hdr[37], hdr[38], hdr[39]]);
+            compressed = (flags & 1) != 0;
+        }
+    }
+
+    let mut section_paths = Vec::new();
+    let mut media = Vec::new();
+    for entry in comp.walk() {
+        let p = entry.path().to_string_lossy().replace('\\', "/");
+        if p.starts_with("/BodyText/Section") && entry.is_stream() {
+            section_paths.push(p);
+        } else if p.starts_with("/BinData/") && entry.is_stream() {
+            media.push(EmbeddedMedia { path: p, bytes_len: entry.len() as usize });
+        }
+    }
+    section_paths.sort();
+
+    let mut blocks = Vec::new();
+    let mut lines = Vec::new();
+    for spath in section_paths {
+        let mut raw = Vec::new();
+        comp.open_stream(&spath)?.read_to_end(&mut raw)?;
+        let data = if compressed {
+            let mut dec = DeflateDecoder::new(Cursor::new(&raw));
+            let mut out = Vec::new();
+            if dec.read_to_end(&mut out).is_ok() { out } else { raw }
+        } else {
+            raw
+        };
+        for para in decode_hwp5_section(&data) {
+            lines.push(para.clone());
+            blocks.push(DocBlock::Paragraph { text: para, track_changes: Vec::new() });
+        }
+    }
+
+    let fallback = match (lines.is_empty(), media.is_empty()) {
+        (true, false) => VisionFallbackNeed::FullPage,
+        (false, false) => VisionFallbackNeed::EmbeddedOnly,
+        (true, true) => VisionFallbackNeed::FullPage,
+        (false, true) => VisionFallbackNeed::None,
+    };
+    Ok(DocIr { format: "hwp5".to_string(), blocks, media, fallback, plain_text: lines.join("\n") })
+}
+
+fn decode_hwp5_section(data: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos + 4 <= data.len() {
+        let hdr = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        pos += 4;
+        let tag_id = (hdr & 0x3FF) as u16;
+        let mut size = ((hdr >> 20) & 0xFFF) as usize;
+        if size == 0xFFF {
+            if pos + 4 > data.len() {
+                break;
+            }
+            size = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            pos += 4;
+        }
+        if pos + size > data.len() {
+            break;
+        }
+        if tag_id == HWPTAG_PARA_TEXT {
+            let text = decode_hwp5_para_text(&data[pos..pos + size]);
+            if !text.trim().is_empty() {
+                out.push(text);
+            }
+        }
+        pos += size;
+    }
+    out
+}
+
+fn decode_hwp5_para_text(rec: &[u8]) -> String {
+    let mut u16s = Vec::with_capacity(rec.len() / 2);
+    let mut i = 0usize;
+    while i + 1 < rec.len() {
+        let code = u16::from_le_bytes([rec[i], rec[i + 1]]);
+        i += 2;
+        if matches!(code, 1..=3 | 11..=12 | 14..=18 | 21..=23) {
+            i = (i + 14).min(rec.len());
+            continue;
+        }
+        if code == 9 {
+            u16s.push(b'\t' as u16);
+        } else if code == 10 || code == 13 {
+            u16s.push(b'\n' as u16);
+        } else if code >= 32 {
+            u16s.push(code);
+        }
+    }
+    String::from_utf16_lossy(&u16s)
+}
+
+/// Parses `.hwpx` OWPML ZIP package into `DocIr`, restoring merged cells and flattening 1x1 fake tables.
+pub fn parse_hwpx(bytes: &[u8]) -> Result<DocIr> {
+    let mut arc = ZipArchive::new(Cursor::new(bytes)).context("not a valid HWPX ZIP container")?;
+    let mut sections = Vec::new();
+    let mut media = Vec::new();
+    for i in 0..arc.len() {
+        let f = arc.by_index(i)?;
+        let name = f.name().to_string();
+        if name.starts_with("Contents/section") && name.ends_with(".xml") {
+            sections.push(name);
+        } else if name.starts_with("BinData/") {
+            media.push(EmbeddedMedia { path: name, bytes_len: f.size() as usize });
+        }
+    }
+    sections.sort();
+    if sections.is_empty() {
+        bail!("HWPX contains no Contents/section*.xml");
+    }
+
+    let mut blocks = Vec::new();
+    for s in sections {
+        let mut xml = String::new();
+        arc.by_name(&s)?.read_to_string(&mut xml)?;
+        blocks.extend(parse_hwpx_section_xml(&xml)?);
+    }
+
+    let mut plain_lines = Vec::new();
+    for b in &blocks {
+        match b {
+            DocBlock::Heading { text, .. } | DocBlock::Paragraph { text, .. } => {
+                if !text.trim().is_empty() {
+                    plain_lines.push(text.clone());
+                }
+            }
+            DocBlock::Table(t) => {
+                plain_lines.extend(t.to_plain_rows().into_iter().filter(|l| !l.trim().is_empty()));
+            }
+        }
+    }
+
+    let fallback = match (plain_lines.is_empty(), media.is_empty()) {
+        (true, _) => VisionFallbackNeed::FullPage,
+        (false, false) => VisionFallbackNeed::EmbeddedOnly,
+        (false, true) => VisionFallbackNeed::None,
+    };
+    Ok(DocIr { format: "hwpx".to_string(), blocks, media, fallback, plain_text: plain_lines.join("\n") })
+}
+
+fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut blocks = Vec::new();
+
+    let mut in_table = false;
+    let mut tbl_rows = 0usize;
+    let mut tbl_cols = 0usize;
+    let mut cells: Vec<CellIr> = Vec::new();
+
+    let mut in_tc = false;
+    let mut cur_row = 0usize;
+    let mut cur_col = 0usize;
+    let mut cur_rspan = 1usize;
+    let mut cur_cspan = 1usize;
+    let mut cell_text = String::new();
+
+    let mut in_t = false;
+    let mut para_text = String::new();
+
+    let attr_usize = |e: &quick_xml::events::BytesStart<'_>, keys: &[&[u8]]| -> Option<usize> {
+        for a in e.attributes().flatten() {
+            let local = a.key.local_name();
+            if keys.iter().any(|k| *k == local.as_ref()) {
+                if let Ok(s) = std::str::from_utf8(&a.value) {
+                    if let Ok(v) = s.trim().parse::<usize>() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                let ln = e.local_name();
+                match ln.as_ref() {
+                    b"tbl" => {
+                        in_table = true;
+                        tbl_rows = attr_usize(&e, &[b"rowCnt"]).unwrap_or(0);
+                        tbl_cols = attr_usize(&e, &[b"colCnt"]).unwrap_or(0);
+                        cells.clear();
+                    }
+                    b"tc" if in_table => {
+                        in_tc = true;
+                        cur_row = 0;
+                        cur_col = 0;
+                        cur_rspan = 1;
+                        cur_cspan = 1;
+                        cell_text.clear();
+                    }
+                    b"cellAddr" if in_tc => {
+                        if let Some(c) = attr_usize(&e, &[b"colAddr"]) {
+                            cur_col = c;
+                        }
+                        if let Some(r) = attr_usize(&e, &[b"rowAddr"]) {
+                            cur_row = r;
+                        }
+                    }
+                    b"cellSpan" if in_tc => {
+                        cur_cspan = attr_usize(&e, &[b"colSpan"]).unwrap_or(1).max(1);
+                        cur_rspan = attr_usize(&e, &[b"rowSpan"]).unwrap_or(1).max(1);
+                    }
+                    b"p" if !in_tc => para_text.clear(),
+                    b"t" => in_t = true,
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(e)) if in_t => {
+                let s = String::from_utf8_lossy(e.as_ref());
+                if in_tc {
+                    if !cell_text.is_empty() && !cell_text.ends_with('\n') && !s.is_empty() {
+                        // Append inline segments directly; separate paragraphs on </hp:p>
+                    }
+                    cell_text.push_str(&s);
+                } else {
+                    para_text.push_str(&s);
+                }
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                b"t" => in_t = false,
+                b"p" => {
+                    if in_tc {
+                        if !cell_text.ends_with('\n') && !cell_text.is_empty() {
+                            cell_text.push('\n');
+                        }
+                    } else if !para_text.trim().is_empty() {
+                        blocks.push(DocBlock::Paragraph { text: para_text.trim().to_string(), track_changes: Vec::new() });
+                        para_text.clear();
+                    }
+                }
+                b"tc" if in_table => {
+                    tbl_rows = tbl_rows.max(cur_row + cur_rspan);
+                    tbl_cols = tbl_cols.max(cur_col + cur_cspan);
+                    cells.push(CellIr {
+                        row: cur_row,
+                        col: cur_col,
+                        row_span: cur_rspan,
+                        col_span: cur_cspan,
+                        text: cell_text.trim().to_string(),
+                    });
+                    in_tc = false;
+                }
+                b"tbl" => {
+                    in_table = false;
+                    // Flatten 1x1 decorative framing box into regular paragraphs.
+                    if tbl_rows == 1 && tbl_cols == 1 && cells.len() == 1 {
+                        for line in cells[0].text.lines().filter(|l| !l.trim().is_empty()) {
+                            blocks.push(DocBlock::Paragraph {
+                                text: line.trim().to_string(),
+                                track_changes: Vec::new(),
+                            });
+                        }
+                    } else {
+                        blocks.push(DocBlock::Table(TableIr {
+                            rows: tbl_rows,
+                            cols: tbl_cols,
+                            col_widths: vec![1; tbl_cols],
+                            cells: std::mem::take(&mut cells),
+                        }));
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(err) => bail!("HWPX XML parse error: {err}"),
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(blocks)
+}
