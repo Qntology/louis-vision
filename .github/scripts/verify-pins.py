@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_CANDLE_REV = "f73415d4d149d7949e8a6a94911af670e4e10f7f"
-EXPECTED_PD_REV = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+EXPECTED_PD_REV = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 FORBIDDEN_CANDLE_REVS = ("ebaf93d", "3abdfab7")
 
 TIER1_BANNED_CRATES = (

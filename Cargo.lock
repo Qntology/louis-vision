@@ -2710,7 +2710,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-cpu-kernels"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "half",
  "rayon",
@@ -2719,7 +2719,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-eval"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "anyhow",
  "serde",
@@ -2729,7 +2729,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-manifest"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -2737,7 +2737,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-nms"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "anyhow",
  "premium-discount-cpu-kernels",
@@ -2748,7 +2748,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-quant"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "anyhow",
  "half",
@@ -2765,7 +2765,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-sds"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=6e49b5ab81302c5895ac3b1e13ef3bad3eba0019#6e49b5ab81302c5895ac3b1e13ef3bad3eba0019"
+source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
 dependencies = [
  "anyhow",
  "serde",
