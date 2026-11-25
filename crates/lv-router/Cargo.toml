@@ -1,0 +1,29 @@
+[package]
+name = "lv-router"
+description = "Zero-network local vault cryptography (X25519 + ChaCha20-Poly1305 + 8-shard XOR RAM split + BIP-39), CounterKiosk lock, and CacheAccessMode Residency router"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default    = ["planar-2d"]
+planar-2d  = ["dep:lv-doc"]
+spatial-3d = ["dep:lv-spatial"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+x25519-dalek.workspace = true
+chacha20poly1305.workspace = true
+lv-core.workspace = true
+lv-doc = { workspace = true, optional = true }
+lv-spatial = { workspace = true, optional = true }
+
+[dev-dependencies]
+candle-core.workspace = true

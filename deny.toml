@@ -1,0 +1,31 @@
+# cargo-deny v2 policy enforcing Zero-Net / Zero-DB / Zero-UI / Zero-SAM3.1 isolation in louis-vision/crates/*
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    # Network / HTTP / Async runtimes (air-gapped core invariant)
+    { name = "reqwest", reason = "louis-vision Tier 1 libraries are strictly zero-network" },
+    { name = "ureq", reason = "louis-vision Tier 1 libraries are strictly zero-network" },
+    { name = "hyper", reason = "louis-vision Tier 1 libraries are strictly zero-network" },
+    { name = "tokio", reason = "louis-vision Tier 1 libraries must stay sync / zero-async-runtime" },
+    { name = "async-std", reason = "louis-vision Tier 1 libraries must stay sync" },
+    { name = "tungstenite", reason = "louis-vision Tier 1 libraries are strictly zero-network" },
+
+    # Vector DB / Desktop UI / P2P media shells (belong in apps/* only)
+    { name = "lancedb", reason = "DB belongs strictly in Tier 2 apps/*" },
+    { name = "tauri", reason = "UI shells belong strictly in Tier 2 apps/*" },
+    { name = "wry", reason = "UI shells belong strictly in Tier 2 apps/*" },
+    { name = "tao", reason = "UI shells belong strictly in Tier 2 apps/*" },
+    { name = "webrtc", reason = "P2P WebRTC belongs strictly in Tier 2 apps/*" },
+
+    # Sibling simulator / legacy PD / banned SAM 3.1 / 9GB external rhwp
+    { name = "noto-core", reason = "Physics simulation belongs in noto-sandbox, not louis-vision" },
+    { name = "world-sim", reason = "Physics simulation belongs in noto-sandbox, not louis-vision" },
+    { name = "premium-discount-mcp", reason = "MCP transport belongs in premium-discount" },
+    { name = "premium-discount-vision", reason = "Replaced by crates/lv-screen in Tier 1" },
+    { name = "premium-discount-sensor", reason = "Replaced by crates/lv-screen + premium-discount-sds::geometry" },
+    { name = "sammie-sam3", reason = "SAM 3.1 excluded; lv-spatial uses Census-SGBM + mask_ops" },
+    { name = "sammie-accel", reason = "SAM 3.1 excluded; lv-spatial uses Census-SGBM + lv-kernels" },
+    { name = "rhwp", reason = "Avoid 9GB default rhwp dependency in lv-doc" },
+]

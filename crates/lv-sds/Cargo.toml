@@ -1,0 +1,20 @@
+[package]
+name = "lv-sds"
+description = "Layer 0 zero-network SDS facade over premium-discount-sds (+audit, +geometry, +temporal) with optional Granite TTM-R3 Candle forecaster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+granite-ttm = ["dep:candle-core", "dep:candle-nn"]
+
+[dependencies]
+premium-discount-sds = { workspace = true, features = ["audit"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }

@@ -1,0 +1,21 @@
+[package]
+name = "lv-agent"
+description = "Zero-network 5-Gate approval engine, unyielding AutomationPolicy, Korean fact-locking, lock-free staged inference, and declarative hardware/workflow interlocks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+lv-sds.workspace = true
+lv-core.workspace = true
+lv-doc.workspace = true
+lv-domain.workspace = true
+premium-discount-sds.workspace = true
+premium-discount-eval.workspace = true

@@ -1,0 +1,36 @@
+[package]
+name = "lv-spatial"
+description = "Zero-network 3D stereo & live XR vision: 1:2:4 multi-rate pyramid, patent-clear 8-path Census-SGBM, StereoSpatialTier (FastTick/MetricGrasp/StageLive), OpenCV-exact mask_ops, empty-stage Z-Keying, TIPSv2 monocular fallback, and egoexo anisotropic covariance fusion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default     = ["granite-ttm"]
+granite-ttm = ["lv-sds/granite-ttm"]
+cuda        = ["lv-core/cuda"]
+rocm        = ["lv-core/rocm"]
+vulkan      = ["lv-core/vulkan"]
+metal       = ["lv-core/metal"]
+flash-attn  = ["lv-core/flash-attn"]
+turbo-quant = ["lv-core/turbo-quant"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+imageproc.workspace = true
+webp.workspace = true
+rayon.workspace = true
+half.workspace = true
+safetensors.workspace = true
+candle-core.workspace = true
+candle-nn.workspace = true
+lv-kernels.workspace = true
+lv-sds.workspace = true
+lv-core.workspace = true
+premium-discount-sds.workspace = true
+premium-discount-eval.workspace = true

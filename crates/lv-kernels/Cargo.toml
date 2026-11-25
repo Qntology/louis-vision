@@ -1,0 +1,11 @@
+[package]
+name = "lv-kernels"
+description = "Layer 0 zero-network vision SIMD kernels: re-exports premium-discount-cpu-kernels + PyTorch GELU-tanh, chroma/morph dilation, 1-hop halo max-pool, and 5x5 24-bit Census Transform + SGBM DP aggregation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+premium-discount-cpu-kernels.workspace = true
+rayon.workspace = true

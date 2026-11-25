@@ -1,0 +1,108 @@
+# Qntology/louis-vision — Tier 1 Unified Zero-Net / Zero-DB / Zero-UI / Zero-SAM3.1 Vision Engine
+# Apps (apps/office, apps/xr-live) live in excluded Tier 2-B workspaces to prevent cyclic workspace entanglement.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/lv-kernels",
+    "crates/lv-sds",
+    "crates/lv-core",
+    "crates/lv-screen",
+    "crates/lv-doc",
+    "crates/lv-spatial",
+    "crates/lv-router",
+    "crates/lv-domain",
+    "crates/lv-agent",
+]
+exclude = [
+    "apps/office",
+    "apps/xr-live",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Qntology/louis-vision"
+
+[workspace.dependencies]
+# Internal Layer 0..3 crates
+lv-kernels = { path = "crates/lv-kernels" }
+lv-sds     = { path = "crates/lv-sds" }
+lv-core    = { path = "crates/lv-core" }
+lv-screen  = { path = "crates/lv-screen" }
+lv-doc     = { path = "crates/lv-doc" }
+lv-spatial = { path = "crates/lv-spatial" }
+lv-router  = { path = "crates/lv-router" }
+lv-domain  = { path = "crates/lv-domain" }
+lv-agent   = { path = "crates/lv-agent" }
+
+# Tier 0 (Qntology/premium-discount) pure eval / stats / kernels pinned to <PD_LIB_PIN_REV>
+premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+premium-discount-nlp         = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019", default-features = false }
+premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+premium-discount-verdict     = { git = "https://github.com/Qntology/premium-discount", rev = "6e49b5ab81302c5895ac3b1e13ef3bad3eba0019" }
+
+# Shared ecosystem crate versions aligned with existing lockfiles
+anyhow      = "1"
+thiserror   = "2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = { version = "1", features = ["float_roundtrip"] }
+sha2        = "0.10"
+zeroize     = { version = "1", features = ["derive"] }
+half        = "2.4"
+rayon       = "1.10"
+once_cell   = "1.19"
+memmap2     = "0.9"
+smallvec    = "1"
+safetensors = "0.8"
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+imageproc   = "0.25"
+webp        = "0.3"
+tokenizers  = { version = "0.22", default-features = false, features = ["onig"] }
+candle-core         = "0.11.0"
+candle-nn           = "0.11.0"
+candle-rocm         = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+chrono              = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+rand                = "0.8"
+x25519-dalek        = { version = "2", features = ["static_secrets"] }
+chacha20poly1305    = "0.11"
+
+[patch.crates-io]
+candle-core       = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-nn         = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-flash-attn = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.premium-discount-cpu-kernels]
+opt-level = 3
+[profile.dev.package.premium-discount-quant]
+opt-level = 3
+[profile.dev.package.lv-kernels]
+opt-level = 3
+[profile.dev.package.lv-core]
+opt-level = 2
+[profile.dev.package.lv-screen]
+opt-level = 2
+[profile.dev.package.lv-doc]
+opt-level = 2
+[profile.dev.package.lv-spatial]
+opt-level = 3
+[profile.dev.package.rayon]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
