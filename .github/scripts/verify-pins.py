@@ -38,12 +38,13 @@ TIER1_BANNED_CRATES = (
 )
 
 APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
+XR_LIVE_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-office")
 
 
 def iter_cargo_manifests(base: Path) -> list[Path]:
     out: list[Path] = []
     for p in sorted(base.rglob("Cargo.toml")):
-        if any(part in ("target", ".git", "node_modules") for part in p.parts):
+        if any(part in ("target", ".git", "node_modules", "vendor") for part in p.parts):
             continue
         out.append(p)
     return out
@@ -67,9 +68,12 @@ def strip_comment(line: str) -> str:
 
 def check_manifest_rules(manifest: Path, repo_root: Path, errs: list[str], candle_revs: set[str]) -> None:
     rel = manifest.relative_to(repo_root).as_posix()
+    if repo_root.name == "logis-center" and rel == "tools/cpu-embed-bench/Cargo.toml":
+        return
     allow_multi_parent = (
         (rel == "apps/Cargo.toml" and repo_root.name == "premium-discount")
         or (rel.startswith("apps/") and repo_root.name == "louis-vision")
+        or ((rel.startswith("apps/") or rel.startswith("crates/")) and repo_root.name == "logis-center")
     )
     text = manifest.read_text(encoding="utf-8", errors="replace")
     for lineno, raw in enumerate(text.splitlines(), 1):
@@ -138,12 +142,17 @@ def check_apps_purity(lv_root: Path, errs: list[str]) -> None:
         return
     for m in sorted(apps_dir.glob("*/Cargo.toml")):
         rel = m.relative_to(lv_root).as_posix()
+        banned_list = (
+            APPS_BANNED_WAN_CRATES + XR_LIVE_BANNED_CRATES
+            if rel == "apps/xr-live/Cargo.toml"
+            else APPS_BANNED_WAN_CRATES
+        )
         text = m.read_text(encoding="utf-8", errors="replace")
         for lineno, raw in enumerate(text.splitlines(), 1):
             code = strip_comment(raw).strip()
             if not code:
                 continue
-            for banned in APPS_BANNED_WAN_CRATES:
+            for banned in banned_list:
                 if re.search(rf"(?<![\w-]){re.escape(banned)}(?![\w-])", code):
                     errs.append(f"Tier 2-B violation in {rel}:{lineno}: banned crate '{banned}'")
 

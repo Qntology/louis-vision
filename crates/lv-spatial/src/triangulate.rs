@@ -97,9 +97,12 @@ pub fn triangulate(rays: &[Bearing], min_parallax_deg: f32) -> Result<Fix, TriEr
         sq_err += perp * perp;
     }
     let residual_m = (sq_err / rays.len() as f64).sqrt() as f32;
+    let first = rays.first().unwrap();
     let last = rays.last().unwrap();
+    let range0 = (x - first.x).hypot(z - first.z);
     let range_m = (x - last.x).hypot(z - last.z);
-    let sigma_m = (h00 + h11).recip().sqrt() as f32 * 2.0 + residual_m * 0.5;
+    let sigma_m = (range0 * first.sigma).hypot(range_m * last.sigma)
+        / parallax_deg.to_radians().sin().max(1e-3);
 
     Ok(Fix {
         x,
@@ -177,5 +180,26 @@ pub fn plan_step(
         baseline_perp_m,
         expected_parallax_deg,
         face,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_parallax_reflects_range_uncertainty() {
+        let rays = [
+            Bearing { x: 0.0, z: 0.0, heading: 0.0, sigma: 0.005 },
+            Bearing { x: 0.0, z: 1.0, heading: (-1.0f32).atan2(8.0), sigma: 0.005 },
+        ];
+        let fix = triangulate(&rays, 2.0).expect("triangulate succeeds");
+        assert!((fix.x - 8.0).abs() < 0.05, "x={}", fix.x);
+        assert!(fix.z.abs() < 0.05, "z={}", fix.z);
+        assert!(
+            fix.sigma_m > 0.3,
+            "near-parallel rays at 8 m must report large range uncertainty, got {}",
+            fix.sigma_m
+        );
     }
 }

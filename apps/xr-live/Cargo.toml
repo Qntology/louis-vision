@@ -1,0 +1,68 @@
+# Qntology/louis-vision/apps/xr-live/Cargo.toml (Tier 2-B2 60fps concert/broadcast XR live engine)
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "louis-stage"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Qntology/louis-vision"
+
+[features]
+default = []
+cuda    = ["lv-core/cuda"]
+rocm    = ["lv-core/rocm"]
+vulkan  = ["lv-core/vulkan"]
+metal   = ["lv-core/metal"]
+
+[dependencies]
+# Tier 1 zero-SAM3.1 stereo spatial, residency & temporal gate crates ONLY
+# (never depends on lv-doc, lv-screen, lv-agent, lv-domain, lancedb, sammie-*, reqwest, ureq)
+lv-kernels = { path = "../../crates/lv-kernels" }
+lv-sds     = { path = "../../crates/lv-sds", features = ["granite-ttm"] }
+lv-core    = { path = "../../crates/lv-core" }
+lv-spatial = { path = "../../crates/lv-spatial", features = ["granite-ttm"] }
+lv-router  = { path = "../../crates/lv-router", default-features = false, features = ["spatial-3d"] }
+
+# Tier 0 universal evaluation & hash-chained audit ledger
+premium-discount-eval = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-sds  = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
+
+# Local runtime, lossless image decode, and loopback/LAN transport (0 WAN HTTP crates)
+anyhow      = "1"
+thiserror   = "2"
+candle-core = "0.11.0"
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2       = "0.10"
+image      = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs"] }
+
+[patch.crates-io]
+candle-core       = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-nn         = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-flash-attn = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.premium-discount-cpu-kernels]
+opt-level = 3
+[profile.dev.package.premium-discount-quant]
+opt-level = 3
+[profile.dev.package.lv-kernels]
+opt-level = 3
+[profile.dev.package.lv-spatial]
+opt-level = 3
+[profile.dev.package.rayon]
+opt-level = 3
+[profile.dev.package.lv-core]
+opt-level = 2

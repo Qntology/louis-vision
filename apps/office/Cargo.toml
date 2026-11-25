@@ -1,0 +1,88 @@
+# Qntology/louis-vision/apps/office/Cargo.toml (Tier 2-B1 air-gapped office automation suite)
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "louis-office"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Qntology/louis-vision"
+
+[features]
+default       = ["hwp-writer"]
+hwp-writer    = ["lv-doc/hwp-writer"]
+field-3d      = ["dep:lv-spatial", "lv-router/spatial-3d"]
+local-lancedb = ["dep:lancedb"]
+cuda          = ["lv-core/cuda", "lv-screen/cuda"]
+rocm          = ["lv-core/rocm", "lv-screen/rocm"]
+vulkan        = ["lv-core/vulkan", "lv-screen/vulkan"]
+metal         = ["lv-core/metal", "lv-screen/metal"]
+
+[dependencies]
+# Tier 1 local vision, router & 5-Gate crates
+lv-kernels = { path = "../../crates/lv-kernels" }
+lv-sds     = { path = "../../crates/lv-sds" }
+lv-core    = { path = "../../crates/lv-core" }
+lv-screen  = { path = "../../crates/lv-screen" }
+lv-doc     = { path = "../../crates/lv-doc", features = ["office-io"] }
+lv-spatial = { path = "../../crates/lv-spatial", optional = true }
+lv-router  = { path = "../../crates/lv-router", features = ["planar-2d"] }
+lv-domain  = { path = "../../crates/lv-domain" }
+lv-agent   = { path = "../../crates/lv-agent" }
+
+# Tier 0 universal evaluation, stats, course & overlay crates
+premium-discount-eval    = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["hygiene"] }
+premium-discount-sds     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
+premium-discount-verdict = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-nav     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-window  = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-nms     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-relay   = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+
+# Local runtime & LAN cryptography (0 WAN HTTP crates)
+anyhow      = "1"
+thiserror   = "2"
+candle-core = "0.11.0"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = { version = "1", features = ["float_roundtrip"] }
+sha2        = "0.10"
+chrono      = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+zeroize     = { version = "1", features = ["derive"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand        = "0.8"
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs"] }
+lancedb     = { version = "0.41", default-features = false, optional = true }
+
+[patch.crates-io]
+candle-core       = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-nn         = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+candle-flash-attn = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.premium-discount-cpu-kernels]
+opt-level = 3
+[profile.dev.package.premium-discount-quant]
+opt-level = 3
+[profile.dev.package.lv-kernels]
+opt-level = 3
+[profile.dev.package.lv-spatial]
+opt-level = 3
+[profile.dev.package.rayon]
+opt-level = 3
+[profile.dev.package.lv-core]
+opt-level = 2
+[profile.dev.package.lv-screen]
+opt-level = 2
+[profile.dev.package.lv-doc]
+opt-level = 2

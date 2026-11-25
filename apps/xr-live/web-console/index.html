@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Louis Stage — Concert XR Dark HUD</title>
+<style>
+  :root {
+    --bg: #0B0D10;
+    --panel: #14181F;
+    --border: #242A34;
+    --text: #D7DCE5;
+    --muted: #7C8594;
+    --ok: #2FD07B;
+    --tally-5pct: rgba(255, 24, 24, 0.05);
+    --tally-rim: rgba(255, 48, 48, 0.35);
+    --halt: #FF3B3B;
+  }
+  * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--text); padding: 18px; }
+  header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 16px; }
+  .badge { padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; background: #1B222C; border: 1px solid var(--border); }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .tally-card { background: linear-gradient(180deg, var(--tally-5pct), var(--panel)); border-color: var(--tally-rim); }
+  .halt-banner { display: none; margin-bottom: 14px; padding: 12px 16px; border: 1px solid var(--halt); background: rgba(255, 59, 59, 0.10); color: #FFB3B3; border-radius: 6px; font-weight: 600; }
+  .halt-banner.active { display: block; }
+  button { background: #202733; color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  code { color: #9CC2FF; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <strong>LOUIS STAGE · TIER 2-B2</strong>
+    <span style="color: var(--muted); margin-left: 8px;">Stereo SGBM + Z-Key + Interlock</span>
+  </div>
+  <div>
+    <span class="badge">OLED DARK #0B0D10</span>
+    <span class="badge">AIR-GAPPED / LOOPBACK OSC</span>
+  </div>
+</header>
+
+<div id="haltBanner" class="halt-banner">INTERLOCK HALT ACTIVE (/louis/interlock/halt) — AUTO TIMECODE &amp; DIRECTOR CUE REMOTE LOCKED</div>
+
+<div class="grid">
+  <section class="card">
+    <h3>1. FOH Engineering Console</h3>
+    <p>Budget: <code id="budgetVal">16,666 us (60 fps)</code></p>
+    <p>Multi-View Fusion Residual: <code id="residualVal">0.006 m (&lt; 0.02 m)</code></p>
+    <button id="toggleHaltBtn" type="button">Simulate Interlock Halt</button>
+  </section>
+
+  <section class="card tally-card">
+    <h3>2. Wireless Rig 5% Red Tally</h3>
+    <p>Tally Luma Ceiling: <code>5%</code> (Dark-Stage Safe)</p>
+    <p>Stage Touch Status: <strong id="touchStatus">LOCKED (FOH-ONLY)</strong></p>
+    <button type="button" disabled title="Touch locked on wireless stage rig">Stage Cue Disabled</button>
+  </section>
+
+  <section class="card">
+    <h3>3. Director Cue Remote</h3>
+    <p>Valid Stereo Ratio Floor: <code>&gt;= 0.85</code></p>
+    <p>Target Track Count: <code>Unlimited (&gt; 16 IDs)</code></p>
+    <button id="cueGoBtn" type="button">Fire Cue (/louis/cue/main)</button>
+    <span id="cueFeedback" style="display:block; margin-top:8px; color: var(--muted);">Ready</span>
+  </section>
+</div>
+
+<script>
+(function () {
+  var halted = false;
+  var haltBanner = document.getElementById("haltBanner");
+  var cueBtn = document.getElementById("cueGoBtn");
+  var toggleBtn = document.getElementById("toggleHaltBtn");
+  var feedback = document.getElementById("cueFeedback");
+
+  toggleBtn.addEventListener("click", function () {
+    halted = !halted;
+    haltBanner.classList.toggle("active", halted);
+    cueBtn.disabled = halted;
+    toggleBtn.textContent = halted ? "Clear Interlock" : "Simulate Interlock Halt";
+    feedback.textContent = halted ? "BLOCKED by StageInterlock" : "Ready";
+  });
+
+  cueBtn.addEventListener("click", function () {
+    if (halted) return;
+    feedback.textContent = "Dispatched /louis/cue/main to 127.0.0.1:9000";
+  });
+})();
+</script>
+</body>
+</html>
