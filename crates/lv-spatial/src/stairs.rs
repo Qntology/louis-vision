@@ -1,9 +1,17 @@
-//! Scale-invariant forward corridor step/curb detection along camera optical axis.
+//! Forward corridor step/curb detection using a sliding-window median profile.
 
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{Intrinsics, Pose};
 use crate::frame::DepthMap;
+
+fn default_min_points() -> usize {
+    3
+}
+
+fn default_window() -> usize {
+    4
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StepCfg {
@@ -12,16 +20,22 @@ pub struct StepCfg {
     pub half_width_m: f32,
     pub bin_m: f32,
     pub min_step_m: f32,
+    #[serde(default = "default_min_points")]
+    pub min_points: usize,
+    #[serde(default = "default_window")]
+    pub window: usize,
 }
 
 impl Default for StepCfg {
     fn default() -> Self {
         Self {
-            near_m: 0.35,
-            far_m: 3.0,
-            half_width_m: 0.45,
-            bin_m: 0.08,
-            min_step_m: 0.045,
+            near_m: 0.55,
+            far_m: 1.7,
+            half_width_m: 0.28,
+            bin_m: 0.05,
+            min_step_m: 0.06,
+            min_points: default_min_points(),
+            window: default_window(),
         }
     }
 }
@@ -33,114 +47,167 @@ pub struct StepRead {
     pub coverage: f32,
 }
 
+fn median(v: &mut [f32]) -> f32 {
+    v.sort_by(f32::total_cmp);
+    v[v.len() / 2]
+}
+
+/// Detects the first height step along the camera-forward corridor ahead of the agent.
 pub fn read_step(
     depth: &DepthMap,
     intr: &Intrinsics,
     pose: &Pose,
     cfg: &StepCfg,
 ) -> Option<StepRead> {
-    let n = ((cfg.far_m - cfg.near_m) / cfg.bin_m).ceil().max(4.0) as usize;
-    let mut bins: Vec<Vec<(f32, f32)>> = vec![Vec::new(); n];
+    let n = ((cfg.far_m - cfg.near_m) / cfg.bin_m).ceil().max(1.0) as usize;
+    let window = cfg.window.max(1);
+    if n < 2 * window {
+        return None;
+    }
+    let mut bins: Vec<Vec<f32>> = vec![Vec::new(); n];
     let sx = intr.width as f32 / depth.width.max(1) as f32;
     let sy = intr.height as f32 / depth.height.max(1) as f32;
-    let (cy, sy_yaw) = (pose.yaw.cos(), pose.yaw.sin());
 
-    let mut samples = Vec::new();
     for y in 0..depth.height {
         for x in 0..depth.width {
             let d = depth.at(x, y);
             if !d.is_finite() || d <= 0.0 {
                 continue;
             }
-            let px = (x as f32 + 0.5) * sx;
-            let py = (y as f32 + 0.5) * sy;
-            let r = intr.ray(pose.yaw, px, py);
-            let fwd = (r[0] * cy + r[2] * sy_yaw) * d;
-            let lat = (-r[0] * sy_yaw + r[2] * cy) * d;
-            if lat.abs() <= cfg.half_width_m && fwd >= 0.25 && fwd <= cfg.far_m * 1.4 {
-                samples.push((fwd, pose.eye_m + r[1] * d));
+            // Camera optical axis aligns with heading; avoid double rotation by pose.yaw.
+            let r = intr.ray(0.0, (x as f32 + 0.5) * sx, (y as f32 + 0.5) * sy);
+            let (along, across, up) = (r[0] * d, r[2] * d, r[1] * d);
+            if across.abs() > cfg.half_width_m || along < cfg.near_m || along >= cfg.far_m {
+                continue;
+            }
+            let idx = ((along - cfg.near_m) / cfg.bin_m) as usize;
+            if idx < n {
+                bins[idx].push(pose.eye_m + up);
             }
         }
     }
-    if samples.len() < 16 {
+
+    let profile: Vec<Option<f32>> = bins
+        .iter_mut()
+        .map(|b| (b.len() >= cfg.min_points).then(|| median(b)))
+        .collect();
+    let read = profile.iter().flatten().count();
+    if read < 2 * window {
         return None;
     }
+    let coverage = read as f32 / n as f32;
 
-    // Near-band scale alignment onto eye height so uncalibrated scale errors cancel out.
-    let mut near_heights: Vec<f32> = samples
-        .iter()
-        .filter(|(f, _)| *f <= cfg.near_m + 0.45)
-        .map(|(_, _)| 1.0f32)
-        .collect();
-    near_heights.clear();
-    let mut scale_ratios: Vec<f32> = samples
-        .iter()
-        .filter(|(f, _)| *f >= cfg.near_m && *f <= cfg.near_m + 0.45)
-        .filter_map(|(_, h)| {
-            let off = pose.eye_m - h;
-            (off > 0.2).then_some(pose.eye_m / off)
-        })
-        .collect();
-    let scale = if scale_ratios.len() >= 4 {
-        scale_ratios.sort_by(f32::total_cmp);
-        scale_ratios[scale_ratios.len() / 2].clamp(0.4, 2.5)
-    } else {
-        1.0
+    let side = |r: std::ops::Range<usize>| {
+        let mut v: Vec<f32> = profile[r].iter().flatten().copied().collect();
+        (v.len() * 2 > window).then(|| median(&mut v))
     };
 
-    for (f_raw, h_raw) in samples {
-        let f = f_raw * scale;
-        let h = pose.eye_m - (pose.eye_m - h_raw) * scale;
-        if f >= cfg.near_m && f < cfg.far_m {
-            let idx = ((f - cfg.near_m) / cfg.bin_m) as usize;
-            if idx < n {
-                bins[idx].push((f, h));
-            }
-        }
-    }
-
-    let mut med: Vec<Option<(f32, f32)>> = Vec::with_capacity(n);
-    let mut valid_bins = 0usize;
-    for mut b in bins {
-        if b.len() < 3 {
-            med.push(None);
+    let mut peak: Option<(usize, f32)> = None;
+    for i in window..=n - window {
+        let (Some(a), Some(b)) = (side(i - window..i), side(i..i + window)) else {
             continue;
+        };
+        let jump = b - a;
+        match peak {
+            None if jump.abs() >= cfg.min_step_m => peak = Some((i, jump)),
+            Some((_, p)) if jump * p > 0.0 && jump.abs() > p.abs() => peak = Some((i, jump)),
+            Some((_, p)) if jump.abs() < 0.5 * p.abs() => break,
+            _ => {}
         }
-        valid_bins += 1;
-        b.sort_by(|a, c| a.1.total_cmp(&c.1));
-        med.push(Some(b[b.len() / 2]));
-    }
-    let coverage = valid_bins as f32 / n as f32;
-    if coverage < 0.35 || valid_bins < 4 {
-        return None;
     }
 
-    let base = med.iter().flatten().take(3).map(|x| x.1).sum::<f32>()
-        / (med.iter().flatten().take(3).count().max(1) as f32);
+    peak.map(|(i, jump)| StepRead {
+        dist_m: cfg.near_m + i as f32 * cfg.bin_m,
+        height_m: jump,
+        coverage,
+    })
+}
 
-    let mut best: Option<(usize, f32)> = None;
-    for (idx, item) in med.iter().enumerate() {
-        let Some((_, h)) = item else { continue };
-        let dh = h - base;
-        if dh.abs() >= cfg.min_step_m {
-            if best.is_none_or(|(_, bdh)| dh.abs() > bdh.abs()) {
-                best = Some((idx, dh));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::DepthKind;
+
+    fn scene(eye: f32, pitch_deg: f32, edge: f32, h: f32, noise: f32) -> (DepthMap, Intrinsics, Pose) {
+        let intr = Intrinsics { width: 192, height: 128, fov_deg: 70.0, pitch_deg, roll_deg: 0.0 };
+        let mut data = Vec::new();
+        for y in 0..intr.height {
+            for x in 0..intr.width {
+                let r = intr.ray(0.0, x as f32 + 0.5, y as f32 + 0.5);
+                let mut d = f32::NAN;
+                if r[1] < -1e-4 {
+                    let top = -(eye - h) / r[1];
+                    let low = -eye / r[1];
+                    d = if h >= 0.0 {
+                        if r[0] * top >= edge {
+                            top
+                        } else if r[0] * low >= edge {
+                            edge / r[0]
+                        } else {
+                            low
+                        }
+                    } else if r[0] * top < edge {
+                        low.min(edge / r[0]).max(0.0).min(top).max(low.min(top))
+                    } else {
+                        top
+                    };
+                    let u = ((x * 73 + y * 37) % 101) as f32 / 100.0 - 0.5;
+                    d *= 1.0 + noise * u;
+                }
+                data.push(d);
             }
         }
+        (
+            DepthMap { width: intr.width, height: intr.height, kind: DepthKind::Metric, data },
+            intr,
+            Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: eye },
+        )
     }
 
-    let (idx, _) = best?;
-    let mut plateau: Vec<f32> = med[idx..]
-        .iter()
-        .flatten()
-        .map(|x| x.1 - base)
-        .filter(|d| d.abs() >= cfg.min_step_m * 0.6)
-        .collect();
-    if plateau.is_empty() {
-        return None;
+    #[test]
+    fn level_ground_is_no_step() {
+        let (d, i, p) = scene(1.5, -40.0, 9.0, 0.0, 0.01);
+        assert_eq!(read_step(&d, &i, &p, &StepCfg::default()), None);
     }
-    plateau.sort_by(f32::total_cmp);
-    let height_m = plateau[plateau.len() / 2];
-    let dist_m = cfg.near_m + (idx as f32 + 0.5) * cfg.bin_m;
-    Some(StepRead { dist_m, height_m, coverage })
+
+    #[test]
+    fn a_step_up_is_read_for_its_height_and_where_it_starts() {
+        for (edge, h) in [(1.2f32, 0.15f32), (0.95, 0.08), (1.3, 0.18)] {
+            let (d, i, p) = scene(1.5, -40.0, edge, h, 0.005);
+            let r = read_step(&d, &i, &p, &StepCfg::default()).expect("a step");
+            assert!((r.height_m - h).abs() < 0.03, "{r:?} for {h}");
+            assert!((r.dist_m - edge).abs() < 0.15, "{r:?} for {edge}");
+        }
+    }
+
+    #[test]
+    fn a_depth_off_in_scale_reads_the_same_step() {
+        let (mut d, i, p) = scene(1.5, -40.0, 1.2, 0.15, 0.0);
+        for v in d.data.iter_mut() {
+            *v *= 0.85;
+        }
+        let r = read_step(&d, &i, &p, &StepCfg::default()).expect("a step");
+        assert!((r.height_m - 0.15).abs() < 0.04, "{r:?}");
+    }
+
+    #[test]
+    fn missing_pixels_do_not_make_a_step() {
+        let (mut d, i, p) = scene(1.5, -40.0, 9.0, 0.0, 0.0);
+        for (k, v) in d.data.iter_mut().enumerate() {
+            if k % 3 == 0 {
+                *v = f32::NAN;
+            }
+        }
+        assert_eq!(read_step(&d, &i, &p, &StepCfg::default()), None);
+    }
+
+    #[test]
+    fn nonzero_pose_yaw_does_not_double_rotate() {
+        let (d, i, p0) = scene(1.5, -40.0, 1.2, 0.15, 0.005);
+        let p_yaw = Pose { yaw: 1.2, ..p0 };
+        let r0 = read_step(&d, &i, &p0, &StepCfg::default()).expect("yaw 0 step");
+        let r1 = read_step(&d, &i, &p_yaw, &StepCfg::default()).expect("yaw 1.2 step");
+        assert!((r0.height_m - r1.height_m).abs() < 1e-4);
+        assert!((r0.dist_m - r1.dist_m).abs() < 1e-4);
+    }
 }
