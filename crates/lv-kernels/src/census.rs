@@ -1,7 +1,7 @@
 //! 5x5 24-bit Census Transform, Hamming block cost volume, and Semi-Global (4/8-path) DP aggregation.
 //!
 //! Patent-clear single left cost-volume SGBM primitives shared with `lv-spatial::stereo` and
-//! real-time Z-Keying (`StereoStageLive`): computes one cost volume over the left image with
+//! real-time Z-Keying (`StereoSandboxLive`): computes one cost volume over the left image with
 //! illumination-invariant local rank bits and edge-adaptive P2 smoothness penalties.
 
 use rayon::prelude::*;

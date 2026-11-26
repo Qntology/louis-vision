@@ -63,7 +63,7 @@ pub fn encode_osc_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Decodes an OSC 1.0 packet produced by `encode_osc_message` or external stage gear.
+/// Decodes an OSC 1.0 packet produced by `encode_osc_message` or external sandbox gear.
 pub fn decode_osc_message(pkt: &[u8]) -> Result<(String, Vec<OscArg>)> {
     let mut cursor = 0usize;
     let address = read_osc_padded(pkt, &mut cursor)?;

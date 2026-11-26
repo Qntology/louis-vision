@@ -1,11 +1,11 @@
-# Qntology/louis-vision/apps/louis/Cargo.toml (Tier 2-B1 air-gapped office automation suite)
+# Qntology/louis-vision/apps/louis/Cargo.toml (Tier 2-B1 air-gapped docs automation suite)
 
 [workspace]
 resolver = "2"
 members = ["."]
 
 [package]
-name = "louis"
+name = "louis-docs"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ lv-kernels = { path = "../../crates/lv-kernels" }
 lv-sds     = { path = "../../crates/lv-sds" }
 lv-core    = { path = "../../crates/lv-core" }
 lv-screen  = { path = "../../crates/lv-screen" }
-lv-doc     = { path = "../../crates/lv-doc", features = ["office-io"] }
+lv-doc     = { path = "../../crates/lv-doc", features = ["docs-io"] }
 lv-spatial = { path = "../../crates/lv-spatial", optional = true }
 lv-router  = { path = "../../crates/lv-router", features = ["planar-2d"] }
 lv-domain  = { path = "../../crates/lv-domain" }

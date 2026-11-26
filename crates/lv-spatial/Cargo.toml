@@ -1,6 +1,6 @@
 [package]
 name = "lv-spatial"
-description = "Zero-network 3D stereo & live XR vision: 1:2:4 multi-rate pyramid, patent-clear 8-path Census-SGBM, StereoSpatialTier (FastTick/MetricGrasp/StageLive), OpenCV-exact mask_ops, empty-stage Z-Keying, TIPSv2 monocular fallback, and egoexo anisotropic covariance fusion"
+description = "Zero-network 3D stereo & live XR vision: 1:2:4 multi-rate pyramid, patent-clear 8-path Census-SGBM, StereoSpatialTier (FastTick/MetricGrasp/SandboxLive), OpenCV-exact mask_ops, empty-sandbox Z-Keying, TIPSv2 monocular fallback, and egoexo anisotropic covariance fusion"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

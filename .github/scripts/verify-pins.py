@@ -38,7 +38,7 @@ TIER1_BANNED_CRATES = (
 )
 
 APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
-VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis")
+VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-docs", "louis")
 
 
 def iter_cargo_manifests(base: Path) -> list[Path]:

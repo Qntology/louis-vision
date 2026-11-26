@@ -1,8 +1,8 @@
-//! CLI entry point for `louis` (Tier 2-B1 air-gapped office automation engine).
+//! CLI entry point for `louis-docs` (Tier 2-B1 air-gapped docs automation engine).
 
 use anyhow::Result;
-use louis::run_selftest;
-use louis::workflow::evaluate_all_packs;
+use louis_docs::run_selftest;
+use louis_docs::workflow::evaluate_all_packs;
 use lv_domain::EngineMode;
 
 fn parse_mode(args: &[String]) -> EngineMode {
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "app": "louis",
+            "app": "louis-docs",
             "tier": "2-B1",
             "mode": mode,
             "packs": 7,

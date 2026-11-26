@@ -40,6 +40,7 @@ BANNED_VISION = BANNED_GLOBAL + (
     "lv-agent",
     "lv-domain",
     "lancedb",
+    "louis-docs",
     "louis",
 )
 CRATE_LINE_RE = re.compile(r"^([A-Za-z0-9_-]+)\s+v")

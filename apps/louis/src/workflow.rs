@@ -1,4 +1,4 @@
-//! 7-pack air-gapped office workflow engine (`LOUIS_ENGINE=rules` fast path, unyielding 5-Gate
+//! 7-pack air-gapped docs workflow engine (`LOUIS_ENGINE=rules` fast path, unyielding 5-Gate
 //! `AutomationPolicy`, factcheck, guarded `.hwpx`/`.docx` emission, and offline `premium-discount-eval`).
 
 use std::collections::BTreeMap;
@@ -7,9 +7,9 @@ use anyhow::Result;
 use lv_agent::factcheck::draft_or_fallback;
 use lv_agent::gates::{check_citizen_text, judge_by_axes, AgentVerdict, Axis, AxisScorer, Decided};
 use lv_agent::policy::{AutomationPolicy, Disposition, OperatingMode, AUTO_CONFIDENCE_FLOOR, POST_AUDIT_MOD};
-use lv_doc::office::parse_office_bytes;
+use lv_doc::docs::parse_docs_bytes;
 use lv_doc::writer::{build_hwpx, fill_docx_template_text, NoticeSpec, WriterGuard};
-use lv_domain::{evaluate_pack, EngineMode, OfficeDomainPack, PackCheckInput, PackCheckResult};
+use lv_domain::{evaluate_pack, EngineMode, DocsDomainPack, PackCheckInput, PackCheckResult};
 use premium_discount_eval::gate_ab::{compare_gate_arms, ArmRunSummary, DetectionCounters, GateAbVerdict};
 use premium_discount_eval::rule::{judge, Rule};
 use serde::{Deserialize, Serialize};
@@ -24,9 +24,9 @@ pub struct PackSuiteSummary {
     pub results: Vec<PackCheckResult>,
 }
 
-/// Evaluates all 7 office domain packs deterministically and cross-scores via `premium-discount-eval`.
+/// Evaluates all 7 docs domain packs deterministically and cross-scores via `premium-discount-eval`.
 pub fn evaluate_all_packs(mode: EngineMode) -> PackSuiteSummary {
-    let inputs: Vec<PackCheckInput> = OfficeDomainPack::ALL
+    let inputs: Vec<PackCheckInput> = DocsDomainPack::ALL
         .iter()
         .map(|&pack| PackCheckInput {
             pack,
@@ -142,9 +142,9 @@ impl LouisApprovalFlow {
             &guard,
         )?;
 
-        // Round-trip parse verification via lv-doc::office.
-        let parsed_hwpx = parse_office_bytes("hwpx", &hwpx)?;
-        let parsed_docx = parse_office_bytes("docx", &docx)?;
+        // Round-trip parse verification via lv-doc::docs.
+        let parsed_hwpx = parse_docs_bytes("hwpx", &hwpx)?;
+        let parsed_docx = parse_docs_bytes("docx", &docx)?;
         anyhow::ensure!(!parsed_hwpx.blocks.is_empty() && !parsed_docx.blocks.is_empty());
         Ok((hwpx, docx, fact_ok))
     }

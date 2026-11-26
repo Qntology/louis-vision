@@ -1,4 +1,4 @@
-//! Tier 2-B1 air-gapped office automation application (`louis`).
+//! Tier 2-B1 air-gapped docs automation application (`louis-docs`).
 
 pub mod overlay;
 pub mod vault_lan;
@@ -55,7 +55,7 @@ pub fn run_selftest(mode: EngineMode) -> Result<String> {
     anyhow::ensure!(suite.total_packs == 7 && suite.passed_packs == 7 && suite.gate_ab.passed);
 
     Ok(format!(
-        "[LOUIS] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} ex_style=0x{:08X} affinity=0x{:02X}",
+        "[LOUIS-DOCS] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} ex_style=0x{:08X} affinity=0x{:02X}",
         suite.mode,
         suite.passed_packs,
         suite.total_packs,

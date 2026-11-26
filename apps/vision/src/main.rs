@@ -1,12 +1,12 @@
-//! CLI entry point for `vision` (Tier 2-B2 60fps concert/broadcast XR engine).
+//! CLI entry point for `vision-sandbox` (Tier 2-B2 60fps concert/broadcast XR engine).
 
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use vision::rig_capture::{STEREO_KEYFRAME_QUALITY, MAX_STAGE_TALLY_LUMA_PCT};
-use vision::run_selftest;
-use vision::show_io::DEFAULT_OSC_ADDR;
-use vision::validate_local_socket;
+use vision_sandbox::rig_capture::{STEREO_KEYFRAME_QUALITY, MAX_SANDBOX_TALLY_LUMA_PCT};
+use vision_sandbox::run_selftest;
+use vision_sandbox::show_io::DEFAULT_OSC_ADDR;
+use vision_sandbox::validate_local_socket;
 
 fn parse_osc_addr(args: &[String]) -> Result<SocketAddr> {
     let raw = args
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::json!({
-                "app": "vision",
+                "app": "vision-sandbox",
                 "mode": "headless-rig",
                 "osc_target": osc_addr.to_string(),
                 "selftest": msg,
@@ -44,11 +44,11 @@ fn main() -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "app": "vision",
+            "app": "vision-sandbox",
             "tier": "2-B2",
             "osc_target": osc_addr.to_string(),
             "stereo_keyframe_quality": STEREO_KEYFRAME_QUALITY,
-            "tally_red_luma_pct": MAX_STAGE_TALLY_LUMA_PCT,
+            "tally_red_luma_pct": MAX_SANDBOX_TALLY_LUMA_PCT,
             "air_gapped": true,
         })
     );

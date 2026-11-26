@@ -1,5 +1,5 @@
-//! Stereo stage keying & unlimited 3D performer tracking (`StereoSpatialTier::StereoStageLive`).
-//! Wires `lv_spatial::stereo::sgbm` -> `StageZKeyTracker` (NaN hole motion recovery + RGB Joint
+//! Stereo sandbox keying & unlimited 3D performer tracking (`StereoSpatialTier::StereoSandboxLive`).
+//! Wires `lv_spatial::stereo::sgbm` -> `SandboxZKeyTracker` (NaN hole motion recovery + RGB Joint
 //! Bilateral `AlphaMatte` + Hungarian 3D tracker) -> `mask_ops::postprocess` -> 21-color ID matte.
 
 use anyhow::Result;
@@ -11,10 +11,10 @@ use lv_spatial::mask_ops::postprocess::{apply as postprocess_mask, PostprocessPa
 use lv_spatial::pyramid::PyramidCfg;
 use lv_spatial::stereo::{SgbmCfg, StereoOut, StereoRig};
 use lv_spatial::track::{StereoSpatialOut, StereoSpatialPipeline, StereoSpatialTier};
-use lv_spatial::zkey::{PerformerTrack3D, StageBackground, StageKeyOut, StageZKeyTracker, ZKeyCfg};
+use lv_spatial::zkey::{PerformerTrack3D, SandboxBackground, SandboxKeyOut, SandboxZKeyTracker, ZKeyCfg};
 
 #[derive(Clone, Debug)]
-pub struct StageFrameOut {
+pub struct SandboxFrameOut {
     pub frame_index: u64,
     pub depth: DepthMap,
     pub stereo_valid_ratio: f32,
@@ -25,36 +25,36 @@ pub struct StageFrameOut {
     pub hole_recovered_px: u32,
 }
 
-pub struct StereoStageLive {
+pub struct StereoSandboxLive {
     pipeline: StereoSpatialPipeline,
-    standalone_zkey: StageZKeyTracker,
+    standalone_zkey: SandboxZKeyTracker,
     intr: Intrinsics,
     pose: Pose,
-    rig_to_stage: Similarity,
+    rig_to_sandbox: Similarity,
     postprocess: PostprocessParams,
     frame_index: u64,
 }
 
-impl StereoStageLive {
+impl StereoSandboxLive {
     pub fn new(
         rig: StereoRig,
         sgbm_cfg: SgbmCfg,
         pyramid: Option<PyramidCfg>,
-        bg: StageBackground,
+        bg: SandboxBackground,
         zkey_cfg: ZKeyCfg,
         intr: Intrinsics,
         pose: Pose,
-        rig_to_stage: Similarity,
+        rig_to_sandbox: Similarity,
     ) -> Self {
-        let tracker_pipe = StageZKeyTracker::new(bg.clone(), zkey_cfg);
-        let standalone_zkey = StageZKeyTracker::new(bg, zkey_cfg);
+        let tracker_pipe = SandboxZKeyTracker::new(bg.clone(), zkey_cfg);
+        let standalone_zkey = SandboxZKeyTracker::new(bg, zkey_cfg);
         let pipeline = StereoSpatialPipeline::new(rig, sgbm_cfg, pyramid, Some(tracker_pipe));
         Self {
             pipeline,
             standalone_zkey,
             intr,
             pose,
-            rig_to_stage,
+            rig_to_sandbox,
             postprocess: PostprocessParams {
                 holes: 2,
                 dots: 2,
@@ -70,8 +70,8 @@ impl StereoStageLive {
         self
     }
 
-    /// Full zero-SAM3.1 live pipeline: Census-SGBM -> empty-stage ΔZ Z-Key -> ID matte & stage coords.
-    pub fn process_stereo_pair(&mut self, left: &Rgb, right: &Rgb) -> Result<StageFrameOut> {
+    /// Full zero-SAM3.1 live pipeline: Census-SGBM -> empty-sandbox ΔZ Z-Key -> ID matte & sandbox coords.
+    pub fn process_stereo_pair(&mut self, left: &Rgb, right: &Rgb) -> Result<SandboxFrameOut> {
         let StereoSpatialOut {
             stereo: StereoOut { depth, stats, .. },
             matte,
@@ -79,7 +79,7 @@ impl StereoStageLive {
             hole_recovered_px,
             ..
         } = self.pipeline.run_tier(
-            StereoSpatialTier::StereoStageLive,
+            StereoSpatialTier::StereoSandboxLive,
             left,
             right,
             &self.intr,
@@ -95,10 +95,10 @@ impl StereoStageLive {
         self.finalize_frame(depth, valid_ratio, raw_mask, matte, performers, hole_recovered_px)
     }
 
-    /// Processes a pre-computed metric `DepthMap` directly through `StageZKeyTracker` (e.g. calibrated
+    /// Processes a pre-computed metric `DepthMap` directly through `SandboxZKeyTracker` (e.g. calibrated
     /// depth sensors or deterministic synthetic stereo-depth test harnesses).
-    pub fn process_calibrated_depth(&mut self, rgb: &Rgb, depth: &DepthMap) -> Result<StageFrameOut> {
-        let StageKeyOut {
+    pub fn process_calibrated_depth(&mut self, rgb: &Rgb, depth: &DepthMap) -> Result<SandboxFrameOut> {
+        let SandboxKeyOut {
             mask,
             matte,
             performers,
@@ -126,7 +126,7 @@ impl StereoStageLive {
         matte: AlphaMatte,
         mut performers: Vec<PerformerTrack3D>,
         hole_recovered_px: u32,
-    ) -> Result<StageFrameOut> {
+    ) -> Result<SandboxFrameOut> {
         let refined_mask = if self.postprocess != PostprocessParams::default() {
             let gray = postprocess_mask(&raw_mask.to_gray(), &self.postprocess)?;
             Mask::from_gray(&gray)
@@ -135,7 +135,7 @@ impl StereoStageLive {
         };
 
         for p in &mut performers {
-            let world = self.rig_to_stage.apply([
+            let world = self.rig_to_sandbox.apply([
                 p.pos_m[0] as f64,
                 p.pos_m[1] as f64,
                 p.pos_m[2] as f64,
@@ -146,7 +146,7 @@ impl StereoStageLive {
         let id_matte_rgba = render_id_matte_rgba(&matte, &refined_mask, &performers);
         self.frame_index += 1;
 
-        Ok(StageFrameOut {
+        Ok(SandboxFrameOut {
             frame_index: self.frame_index,
             depth,
             stereo_valid_ratio,
@@ -232,11 +232,11 @@ mod tests {
         let (bg_l, bg_r) = decode_sbs_stereo_pair(&synthetic_textured_sbs(288, 192, None, 6, 6), 100.0, &src).unwrap();
         let bg_out = sgbm(&bg_l, &bg_r, &rig, &cfg, None).unwrap();
         let bg_refs: Vec<&DepthMap> = (0..30).map(|_| &bg_out.depth).collect();
-        let bg = StageBackground::capture_median(&bg_refs, Some(bg_l), 0.03).unwrap();
+        let bg = SandboxBackground::capture_median(&bg_refs, Some(bg_l), 0.03).unwrap();
 
         let intr = Intrinsics { width: 288, height: 192, fov_deg: 70.0, pitch_deg: 0.0, roll_deg: 0.0 };
         let pose = Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: 1.5 };
-        let mut live = StereoStageLive::new(rig, cfg, None, bg, ZKeyCfg::default(), intr, pose, identity_sim());
+        let mut live = StereoSandboxLive::new(rig, cfg, None, bg, ZKeyCfg::default(), intr, pose, identity_sim());
 
         let (fg_l, fg_r) = decode_sbs_stereo_pair(
             &synthetic_textured_sbs(288, 192, Some([112, 48, 176, 152]), 6, 14),
@@ -260,11 +260,11 @@ mod tests {
         let bg_depth = DepthMap { width: dw, height: dh, kind: DepthKind::Metric, data: vec![6.0; (dw * dh) as usize] };
         let bg_refs: Vec<&DepthMap> = (0..30).map(|_| &bg_depth).collect();
         let bg_rgb = Rgb::new(120, 80, vec![30u8; 120 * 80 * 3]);
-        let bg = StageBackground::capture_median(&bg_refs, Some(bg_rgb), 0.03).unwrap();
+        let bg = SandboxBackground::capture_median(&bg_refs, Some(bg_rgb), 0.03).unwrap();
 
         let intr = Intrinsics { width: 120, height: 80, fov_deg: 70.0, pitch_deg: 0.0, roll_deg: 0.0 };
         let pose = Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: 1.5 };
-        let mut live = StereoStageLive::new(rig, SgbmCfg::default(), None, bg, ZKeyCfg::default(), intr, pose, identity_sim());
+        let mut live = StereoSandboxLive::new(rig, SgbmCfg::default(), None, bg, ZKeyCfg::default(), intr, pose, identity_sim());
 
         let mut d = DepthMap { width: dw, height: dh, kind: DepthKind::Metric, data: vec![6.0; (dw * dh) as usize] };
         let mut rgb_buf = vec![30u8; 120 * 80 * 3];
@@ -308,7 +308,7 @@ mod tests {
         let (w, h) = (200u32, 20u32);
         let bg_d = DepthMap { width: w, height: h, kind: DepthKind::Metric, data: vec![8.0; (w * h) as usize] };
         let bg_refs: Vec<&DepthMap> = (0..30).map(|_| &bg_d).collect();
-        let bg = StageBackground::capture_median(&bg_refs, None, 0.02).unwrap();
+        let bg = SandboxBackground::capture_median(&bg_refs, None, 0.02).unwrap();
         let mut cur = bg_d;
         for k in 0..20u32 {
             let x0 = k * 10 + 1;
@@ -322,7 +322,7 @@ mod tests {
         let intr = Intrinsics { width: w, height: h, fov_deg: 90.0, pitch_deg: 0.0, roll_deg: 0.0 };
         let pose = Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: 1.5 };
         let zcfg = ZKeyCfg { border_fix: 0, hole_fill: 0, dot_remove: 0, min_cluster_px: 4, ..ZKeyCfg::default() };
-        let mut live = StereoStageLive::new(rig, SgbmCfg::default(), None, bg, zcfg, intr, pose, identity_sim())
+        let mut live = StereoSandboxLive::new(rig, SgbmCfg::default(), None, bg, zcfg, intr, pose, identity_sim())
             .with_postprocess(PostprocessParams::default());
 
         let out = live.process_calibrated_depth(&rgb, &cur).unwrap();

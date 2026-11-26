@@ -1,12 +1,12 @@
-//! Integration tests for `lv-doc` (`vision` + `office-io` + `writer` round-trip gates).
+//! Integration tests for `lv-doc` (`vision` + `docs-io` + `writer` round-trip gates).
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 
 use image::{GrayImage, Luma, Rgb, RgbImage};
-use lv_doc::office::{
+use lv_doc::docs::{
     hwp_native::{parse_hwp5, parse_hwpx},
-    parse_office_bytes,
+    parse_docs_bytes,
     sheet_pdf::{parse_csv, repair_hangul_false_kerning},
     DocBlock, TrackChange, VisionFallbackNeed,
 };
@@ -267,7 +267,7 @@ fn gate_delta_centered_feed_shift_red_pen_and_ab_eval() {
 }
 
 #[test]
-fn gate_office_docx_hwpx_pdf_and_caches_round_trip() {
+fn gate_docs_docx_hwpx_pdf_and_caches_round_trip() {
     let guard = WriterGuard::citizen_guard(vec!["박영희".into()], vec!["200,000원".into(), "제2조".into()]);
     assert!(guard.verify_text("차액 200,000원 (제2조 적용) LatticeDB").is_err());
 
@@ -282,7 +282,7 @@ fn gate_office_docx_hwpx_pdf_and_caches_round_trip() {
         &guard,
     )
     .expect("docx build");
-    let docx_ir = parse_office_bytes("docx", &docx_bytes).expect("docx parse");
+    let docx_ir = parse_docs_bytes("docx", &docx_bytes).expect("docx parse");
     assert!(docx_ir.plain_text.contains("200,000원"));
     assert_eq!(docx_ir.fallback, VisionFallbackNeed::None);
 
@@ -302,7 +302,7 @@ fn gate_office_docx_hwpx_pdf_and_caches_round_trip() {
         z.write_all(complex_xml.as_bytes()).unwrap();
         z.finish().unwrap();
     }
-    let complex_ir = parse_office_bytes("docx", &cur.into_inner()).unwrap();
+    let complex_ir = parse_docs_bytes("docx", &cur.into_inner()).unwrap();
     assert!(matches!(&complex_ir.blocks[0], DocBlock::Heading { level: 1, .. }));
     assert!(matches!(&complex_ir.blocks[1], DocBlock::Paragraph { track_changes, .. } if track_changes.contains(&TrackChange::Inserted("추가조항".into()))));
 
@@ -377,5 +377,5 @@ fn gate_office_docx_hwpx_pdf_and_caches_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // Ensure direct build_docx also compiles & parses cleanly
-    let _ = parse_office_bytes("docx", &build_docx(&["테스트"], &[]).unwrap()).unwrap();
+    let _ = parse_docs_bytes("docx", &build_docx(&["테스트"], &[]).unwrap()).unwrap();
 }

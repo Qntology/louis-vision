@@ -1,8 +1,8 @@
-//! Declarative 3-step `StageInterlock`:
+//! Declarative 3-step `SandboxInterlock`:
 //!   1. `MetricZoneClear` — 0 voxels/points inside hazard OBBs AND every active view `valid_ratio >= 0.85`
 //!   2. `RigSyncSteady` — multi-view `egoexo` fusion residual `< 0.02 m`
 //!   3. `TemporalGateClear` — `lv_sds::temporal::temporal_gate` `!Held`
-//! Any violation trips `/louis/interlock/halt`, blocks both `AutoTimecode` and `StageCueRemote`,
+//! Any violation trips `/louis/interlock/halt`, blocks both `AutoTimecode` and `SandboxCueRemote`,
 //! and appends to a hash-chained `AuditLog`.
 
 use std::path::{Path, PathBuf};
@@ -19,13 +19,13 @@ pub const MIN_STEREO_VALID_RATIO: f32 = 0.85;
 pub const INTERLOCK_HALT_OSC: &str = "/louis/interlock/halt";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StageHazardObb {
+pub struct SandboxHazardObb {
     pub name: String,
     pub min_xyz: [f32; 3],
     pub max_xyz: [f32; 3],
 }
 
-impl StageHazardObb {
+impl SandboxHazardObb {
     pub fn contains(&self, p: [f32; 3]) -> bool {
         p[0].is_finite()
             && p[1].is_finite()
@@ -43,7 +43,7 @@ impl StageHazardObb {
 #[serde(rename_all = "snake_case")]
 pub enum CueTriggerSource {
     AutoTimecode,
-    StageCueRemote,
+    SandboxCueRemote,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -78,15 +78,15 @@ pub struct InterlockDispatch {
     pub decision: InterlockDecision,
 }
 
-pub struct StageInterlock {
-    pub hazards: Vec<StageHazardObb>,
+pub struct SandboxInterlock {
+    pub hazards: Vec<SandboxHazardObb>,
     gate_cfg: GateConfig,
     audit: AuditLog,
     tick: u64,
 }
 
-impl StageInterlock {
-    pub fn new_memory(hazards: Vec<StageHazardObb>, audit_capacity: usize) -> Self {
+impl SandboxInterlock {
+    pub fn new_memory(hazards: Vec<SandboxHazardObb>, audit_capacity: usize) -> Self {
         Self {
             hazards,
             gate_cfg: GateConfig::default(),
@@ -96,7 +96,7 @@ impl StageInterlock {
     }
 
     pub fn new_persistent(
-        hazards: Vec<StageHazardObb>,
+        hazards: Vec<SandboxHazardObb>,
         log_dir: &Path,
         session_name: &str,
         audit_capacity: usize,
@@ -189,7 +189,7 @@ impl StageInterlock {
             self.audit.log_with_tick(
                 "interlock",
                 Level::Info,
-                "stage_interlock_clear",
+                "sandbox_interlock_clear",
                 Some(json!({
                     "fusion_residual_m": inputs.fusion_residual_m,
                     "temporal_outcome": format!("{:?}", verdict.outcome),
@@ -203,7 +203,7 @@ impl StageInterlock {
             self.audit.log_with_tick(
                 "interlock",
                 Level::Info,
-                "stage_interlock_halt",
+                "sandbox_interlock_halt",
                 Some(json!({
                     "osc": INTERLOCK_HALT_OSC,
                     "reasons": reasons,
@@ -219,7 +219,7 @@ impl StageInterlock {
         }
     }
 
-    /// Attempts to dispatch a stage cue; any halted interlock blocks both `AutoTimecode` and `StageCueRemote`.
+    /// Attempts to dispatch a sandbox cue; any halted interlock blocks both `AutoTimecode` and `SandboxCueRemote`.
     pub fn dispatch_cue(
         &mut self,
         source: CueTriggerSource,
@@ -258,7 +258,7 @@ impl StageInterlock {
     }
 }
 
-/// Verifies a hash-chained `StageInterlock` JSONL audit file and returns verified line count.
+/// Verifies a hash-chained `SandboxInterlock` JSONL audit file and returns verified line count.
 pub fn verify_audit_chain(path: &Path) -> Result<usize> {
     let report = verify_file(path).map_err(|e| anyhow::anyhow!("audit chain verification failed: {e:?}"))?;
     Ok(report.lines)
@@ -284,29 +284,29 @@ mod tests {
     fn three_step_interlock_triggers_halt_and_verifies_hash_chain() {
         let dir = std::env::temp_dir().join(format!("vision_interlock_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let hazards = vec![StageHazardObb {
+        let hazards = vec![SandboxHazardObb {
             name: "pyro_pit".into(),
             min_xyz: [-1.0, 0.0, 0.2],
             max_xyz: [1.0, 2.5, 1.0],
         }];
-        let mut il = StageInterlock::new_persistent(hazards, &dir, "interlock_test", 128).unwrap();
+        let mut il = SandboxInterlock::new_persistent(hazards, &dir, "interlock_test", 128).unwrap();
 
-        // 0. Clear baseline allows both AutoTimecode & StageCueRemote.
+        // 0. Clear baseline allows both AutoTimecode & SandboxCueRemote.
         let ok = il.dispatch_cue(CueTriggerSource::AutoTimecode, "c1", &steady_inputs()).unwrap();
         assert!(ok.allowed && ok.osc_address == "/louis/cue/c1");
 
-        // 1a. Low stereo valid ratio (< 0.85) halts both AutoTimecode & StageCueRemote.
+        // 1a. Low stereo valid ratio (< 0.85) halts both AutoTimecode & SandboxCueRemote.
         let mut low_cov = steady_inputs();
         low_cov.active_view_valid_ratios[1] = 0.72;
         let h_cov_auto = il.dispatch_cue(CueTriggerSource::AutoTimecode, "c2", &low_cov).unwrap();
-        let h_cov_rem = il.dispatch_cue(CueTriggerSource::StageCueRemote, "c2", &low_cov).unwrap();
+        let h_cov_rem = il.dispatch_cue(CueTriggerSource::SandboxCueRemote, "c2", &low_cov).unwrap();
         assert!(!h_cov_auto.allowed && h_cov_auto.osc_address == INTERLOCK_HALT_OSC);
         assert!(!h_cov_rem.allowed && h_cov_rem.osc_address == INTERLOCK_HALT_OSC);
 
         // 1b. Point inside hazard OBB trips MetricZoneClear.
         let mut in_obb = steady_inputs();
         in_obb.metric_points_m.push([0.1, 1.0, 0.5]);
-        let h_obb = il.dispatch_cue(CueTriggerSource::StageCueRemote, "c3", &in_obb).unwrap();
+        let h_obb = il.dispatch_cue(CueTriggerSource::SandboxCueRemote, "c3", &in_obb).unwrap();
         assert!(!h_obb.allowed);
 
         // 2. Rig sync residual >= 0.02 m trips RigSyncSteady.
@@ -319,7 +319,7 @@ mod tests {
         // 3. Sudden residual spike inside allowed <0.02 m band triggers TemporalGateClear::Held.
         let mut spike = steady_inputs();
         spike.fusion_residual_m = Some(0.018); // < 0.02, but sudden spike over steady ~0.005 baseline
-        let h_temp = il.dispatch_cue(CueTriggerSource::StageCueRemote, "c5", &spike).unwrap();
+        let h_temp = il.dispatch_cue(CueTriggerSource::SandboxCueRemote, "c5", &spike).unwrap();
         assert!(!h_temp.allowed);
         if let InterlockDecision::Halt { reasons, .. } = &h_temp.decision {
             assert!(reasons.iter().any(|r| r.contains("temporal_gate_clear")));

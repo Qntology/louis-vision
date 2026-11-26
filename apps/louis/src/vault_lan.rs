@@ -39,7 +39,7 @@ impl LouisVaultSession {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
-                AuditLog::open(dir, &format!("louis_{ts}"), 512)?
+                AuditLog::open(dir, &format!("louis_docs_{ts}"), 512)?
             }
             None => AuditLog::memory(512),
         };
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(kiosk.state(), VaultState::Sealed);
 
         // Localhost X25519 LAN handshake unlocks PersonalPhone & encrypts department ledger.
-        let tmp = std::env::temp_dir().join(format!("louis-vault-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("louis-docs-vault-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let mut session = LouisVaultSession::new(DeviceRole::PersonalPhone, Some(&tmp)).unwrap();
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

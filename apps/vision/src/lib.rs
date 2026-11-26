@@ -1,12 +1,12 @@
-//! Tier 2-B2 60fps concert/broadcast XR live engine (`vision`).
+//! Tier 2-B2 60fps concert/broadcast XR live engine (`vision-sandbox`).
 //! Zero SAM 3.1 / MobileSAM / `lv-doc` / `lv-screen` / `lv-agent` / `lancedb` / WAN HTTP crates.
 
 pub mod calibration;
 pub mod interlock;
 pub mod live_loop;
 pub mod rig_capture;
+pub mod sandbox_stereo;
 pub mod show_io;
-pub mod stage_stereo;
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -17,15 +17,15 @@ use lv_spatial::fit3::V3;
 use lv_spatial::frame::{DepthKind, DepthMap, Rgb};
 use lv_spatial::stereo::{sgbm, SgbmCfg, StereoRig};
 
-use calibration::StageCalibration;
-use interlock::{CueTriggerSource, InterlockDecision, InterlockInputs, StageHazardObb, StageInterlock};
-use live_loop::{fuse_multi_view_tracks, StageLiveEngine};
+use calibration::SandboxCalibration;
+use interlock::{CueTriggerSource, InterlockDecision, InterlockInputs, SandboxHazardObb, SandboxInterlock};
+use live_loop::{fuse_multi_view_tracks, SandboxLiveEngine};
 use rig_capture::{decode_sbs_stereo_pair, RigSource, TallyState, WirelessCameraRig};
+use sandbox_stereo::StereoSandboxLive;
 use show_io::{
-    build_zero_copy_descriptor, map_to_openxr_stage_space, pack_ndi_video_alpha,
+    build_zero_copy_descriptor, map_to_openxr_sandbox_space, pack_ndi_video_alpha,
     GpuShareBackend, OscUdpBridge, DEFAULT_OSC_ADDR,
 };
-use stage_stereo::StereoStageLive;
 
 /// Returns `true` only for loopback or private RFC1918 LAN addresses (blocks all WAN IPs).
 pub fn is_local_or_rfc1918(ip: &IpAddr) -> bool {
@@ -117,7 +117,7 @@ pub fn synthetic_textured_sbs(w_eye: u32, h: u32, fg: Option<[u32; 4]>, bg_sh: i
 }
 
 /// Runs an end-to-end offline self-test covering rig capture, 30-frame SE(3) calibration,
-/// SGBM + Z-Keying, pinned residency + `egoexo::fuse`, 3-step `StageInterlock`, and loopback OSC UDP.
+/// SGBM + Z-Keying, pinned residency + `egoexo::fuse`, 3-step `SandboxInterlock`, and loopback OSC UDP.
 pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     let target = osc_target.unwrap_or_else(|| DEFAULT_OSC_ADDR.parse().unwrap());
     validate_local_socket(target, "CLI OSC target")?;
@@ -142,12 +142,12 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     let bg_frames: Vec<&DepthMap> = (0..30).map(|_| &bg_stereo.depth).collect();
 
     let rig_markers: Vec<V3> = vec![[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]];
-    let cal = StageCalibration::calibrate_rigid(&rig_markers, &rig_markers, &bg_frames, Some(bg_l), 0.03)?;
-    ensure!((cal.rig_to_stage.s - 1.0).abs() < 1e-9 && cal.bg.frame_count == 30);
+    let cal = SandboxCalibration::calibrate_rigid(&rig_markers, &rig_markers, &bg_frames, Some(bg_l), 0.03)?;
+    ensure!((cal.rig_to_sandbox.s - 1.0).abs() < 1e-9 && cal.bg.frame_count == 30);
 
     let intr = Intrinsics { width: 288, height: 192, fov_deg: 70.0, pitch_deg: 0.0, roll_deg: 0.0 };
     let pose = Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: 1.5 };
-    let stage = StereoStageLive::new(
+    let sandbox = StereoSandboxLive::new(
         rig,
         sgbm_cfg,
         None,
@@ -155,9 +155,9 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
         Default::default(),
         intr,
         pose,
-        cal.rig_to_stage,
+        cal.rig_to_sandbox,
     );
-    let mut engine = StageLiveEngine::new(64 * 1024 * 1024, stage)?;
+    let mut engine = SandboxLiveEngine::new(64 * 1024 * 1024, sandbox)?;
 
     let fg_sbs = synthetic_textured_sbs(288, 192, Some([112, 48, 176, 152]), 6, 14);
     let (fg_l, fg_r) = decode_sbs_stereo_pair(&fg_sbs, 96.5, &src_lan)?;
@@ -172,8 +172,8 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     .ok_or_else(|| anyhow::anyhow!("egoexo fuse failed"))?;
     ensure!(fused.within_20mm);
 
-    let mut interlock = StageInterlock::new_memory(
-        vec![StageHazardObb { name: "pyro_front".into(), min_xyz: [-1.0, 0.0, 0.2], max_xyz: [1.0, 2.5, 0.8] }],
+    let mut interlock = SandboxInterlock::new_memory(
+        vec![SandboxHazardObb { name: "pyro_front".into(), min_xyz: [-1.0, 0.0, 0.2], max_xyz: [1.0, 2.5, 0.8] }],
         64,
     );
     let inputs = InterlockInputs {
@@ -192,19 +192,19 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     osc.send_track_xyz(frame.performers[0].id, frame.performers[0].pos_m)?;
     let _gpu = build_zero_copy_descriptor(
         GpuShareBackend::default_for_host(),
-        "VisionStage_ID",
+        "VisionSandbox_ID",
         &frame.matte,
         &frame.id_matte_rgba,
         &frame.depth,
         frame.frame_index,
     )?;
-    let _ndi = pack_ndi_video_alpha("StageMain", "192.168.1.99:5961".parse()?, &fg_l, &frame.matte)?;
-    let xr = map_to_openxr_stage_space(frame.frame_index, &frame.performers);
+    let _ndi = pack_ndi_video_alpha("SandboxMain", "192.168.1.99:5961".parse()?, &fg_l, &frame.matte)?;
+    let xr = map_to_openxr_sandbox_space(frame.frame_index, &frame.performers);
 
     let _dummy_depth = DepthMap { width: 2, height: 2, kind: DepthKind::Metric, data: vec![2.0; 4] };
 
     Ok(format!(
-        "[VISION] selftest PASS frame={} performers={} valid_ratio={:.3} fusion_res_mm={:.2} evictions={} xr_anchors={} budget_us={}",
+        "[VISION-SANDBOX] selftest PASS frame={} performers={} valid_ratio={:.3} fusion_res_mm={:.2} evictions={} xr_anchors={} budget_us={}",
         frame.frame_index,
         frame.performers.len(),
         frame.stereo_valid_ratio,

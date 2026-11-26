@@ -1,5 +1,5 @@
 //! Domain modes & packs for `louis-vision` (Layer 3):
-//! - 7 Air-Gapped Office Domain Packs (`construction_settle`, `rnd_audit`, `insolvency_legal`,
+//! - 7 Air-Gapped Docs Domain Packs (`construction_settle`, `rnd_audit`, `insolvency_legal`,
 //!   `finance_3way`, `claims_med`, `ra_qa_esg`, `safety_hr`) with `LOUIS_ENGINE=rules` fast path
 //!   and offline `premium-discount-eval` pack self-scoring.
 //! - Industrial (`PowerPlant` KKS <-> `AiDataCenter` DCIM) `Terms` & `CodeScheme` repair.
@@ -33,10 +33,10 @@ impl EngineMode {
     }
 }
 
-/// Seven core air-gapped office workflow domain packs shipped with `louis`.
+/// Seven core air-gapped docs workflow domain packs shipped with `louis-docs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OfficeDomainPack {
+pub enum DocsDomainPack {
     ConstructionSettle,
     RndAudit,
     InsolvencyLegal,
@@ -46,7 +46,7 @@ pub enum OfficeDomainPack {
     SafetyHr,
 }
 
-impl OfficeDomainPack {
+impl DocsDomainPack {
     pub const ALL: [Self; 7] = [
         Self::ConstructionSettle,
         Self::RndAudit,
@@ -100,7 +100,7 @@ impl OfficeDomainPack {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackCheckInput {
-    pub pack: OfficeDomainPack,
+    pub pack: DocsDomainPack,
     pub claimed_total: i64,
     pub evidence_total: i64,
     pub fields_present: Vec<String>,
@@ -110,7 +110,7 @@ pub struct PackCheckInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackCheckResult {
-    pub pack: OfficeDomainPack,
+    pub pack: DocsDomainPack,
     pub mode: EngineMode,
     pub missing_fields: Vec<String>,
     pub variance: i64,
@@ -118,7 +118,7 @@ pub struct PackCheckResult {
     pub char_cer: f64,
 }
 
-/// Evaluates an office pack deterministically without requiring any neural model,
+/// Evaluates a docs pack deterministically without requiring any neural model,
 /// and computes character CER via `premium_discount_eval::ranking::cer_char_level`.
 pub fn evaluate_pack(input: &PackCheckInput, mode: EngineMode) -> PackCheckResult {
     let missing_fields: Vec<String> = input
@@ -300,10 +300,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seven_office_packs_and_rules_mode_evaluate_deterministically() {
-        assert_eq!(OfficeDomainPack::ALL.len(), 7);
-        for pack in OfficeDomainPack::ALL {
-            assert_eq!(OfficeDomainPack::from_id(pack.id()), Some(pack));
+    fn seven_docs_packs_and_rules_mode_evaluate_deterministically() {
+        assert_eq!(DocsDomainPack::ALL.len(), 7);
+        for pack in DocsDomainPack::ALL {
+            assert_eq!(DocsDomainPack::from_id(pack.id()), Some(pack));
             let res = evaluate_pack(
                 &PackCheckInput {
                     pack,

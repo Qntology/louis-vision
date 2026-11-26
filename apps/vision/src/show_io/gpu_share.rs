@@ -75,7 +75,7 @@ mod tests {
         let matte = AlphaMatte { width: 16, height: 8, alpha: vec![255; 128] };
         let rgba = vec![0u8; 16 * 8 * 4];
         let depth = DepthMap { width: 8, height: 4, kind: DepthKind::Metric, data: vec![2.5; 32] };
-        let desc = build_zero_copy_descriptor(GpuShareBackend::Spout2, "VisionStage_ID", &matte, &rgba, &depth, 12)
+        let desc = build_zero_copy_descriptor(GpuShareBackend::Spout2, "VisionSandbox_ID", &matte, &rgba, &depth, 12)
             .unwrap();
         assert_eq!(desc.color_format, "RGBA8_UNORM");
         assert_eq!(desc.depth_format, "R32_FLOAT_METRIC");
