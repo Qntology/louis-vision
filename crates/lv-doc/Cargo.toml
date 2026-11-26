@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default     = ["docs-io"]
 docs-io     = ["dep:cfb", "dep:zip", "dep:quick-xml", "dep:calamine", "dep:csv", "dep:pdf-extract", "dep:flate2"]
+html-pug    = ["docs-io", "dep:scraper", "dep:ego-tree", "dep:regex"]
 hwp-writer  = ["docs-io"]
 cuda        = ["lv-core/cuda"]
 rocm        = ["lv-core/rocm"]
@@ -45,3 +46,6 @@ calamine    = { version = "0.36", optional = true }
 csv         = { version = "1.4", optional = true }
 pdf-extract = { version = "0.12", optional = true }
 flate2      = { version = "1.0", optional = true }
+scraper     = { version = "0.25", optional = true }
+ego-tree    = { version = "0.10", optional = true }
+regex       = { version = "1", optional = true }

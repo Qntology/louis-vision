@@ -531,13 +531,14 @@ pub fn ux_lines(summaries: &[Summary]) -> Vec<String> {
     out
 }
 
-pub const ENGINE_FILES: [&str; 13] = [
+pub const ENGINE_FILES: [&str; 14] = [
     "crates/sandbox-core/src/**/*.rs",
     "crates/sandbox-world/src/**/*.rs",
     "crates/sandbox-runtime/src/stereo.rs",
     "crates/sandbox-runtime/src/driver.rs",
     "crates/sandbox-runtime/src/mldrive.rs",
     "crates/sandbox-runtime/src/vision.rs",
+    "crates/sandbox-runtime/src/planar_read.rs",
     "crates/sandbox-runtime/src/precision.rs",
     "crates/sandbox-runtime/src/foreuse.rs",
     "crates/sandbox-runtime/src/runtime.rs",

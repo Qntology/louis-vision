@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Louis Field-3D — 현장 정사영 AR &amp; 순차 LOTO 인터록</title>
+  <link rel="stylesheet" href="./css/studio.css" />
+</head>
+<body data-surface="field_3d_lens" data-n2sf="sensitive" data-trait="no-fine-gesture">
+  <div class="lv-n2sf-edge" aria-hidden="true"></div>
+
+  <!-- CounterKiosk Fail-Closed Blocker -->
+  <div id="kiosk-shield" class="kiosk-shield" role="alertdialog" hidden>
+    <h1 style="margin:0 0 8px 0;">접근 차단 (`VaultError::KioskForbidden`)</h1>
+    <p>창구 키오스크(`CounterKiosk`)는 `Field-3D` 3D 정사영 · 원장 복호화 · `Base2B`/`Heavy4B` 모델 적재를 수행할 수 없습니다.</p>
+    <button id="btn-kiosk-reset" type="button" class="lv-glove-btn" style="margin-top:16px;">운영자 단말로 전환</button>
+  </div>
+
+  <main class="field-shell">
+    <header class="studio-topbar" style="grid-column:1 / -1;">
+      <div class="studio-nav">
+        <a class="lv-btn" href="./studio.html">◂ Docs Studio 복귀</a>
+        <strong>Field-3D 현장 렌즈</strong>
+        <label for="field-role-select">단말 등급:</label>
+        <select id="field-role-select" class="inp" style="width:auto;">
+          <option value="OperatorTablet" selected>OperatorTablet (현장/원격)</option>
+          <option value="CounterKiosk">CounterKiosk (창구 Open - 차단 검증)</option>
+        </select>
+        <label for="reposition-reason-select">거리·각도 시뮬레이션:</label>
+        <select id="reposition-reason-select" class="inp" style="width:auto;">
+          <option value="LowEffectiveDpi">해상도 부족 (3.1m -> 1.55 px/mm)</option>
+          <option value="SteepViewingAngle">시선각 71° &gt; 65°</option>
+          <option value="SpecularGlareHoles">빛반사 NaN 홀 48%</option>
+          <option value="ClippedByFrameEdge">모서리 프레임 잘림</option>
+          <option value="Pass">가독 통과 (6.4 px/mm - 350ms 프리즈)</option>
+        </select>
+      </div>
+      <div class="studio-nav">
+        <span id="field-lock-us" class="lv-pill">원장 커밋 락: 412 us (&lt; 2,000 us)</span>
+      </div>
+    </header>
+
+    <section class="field-viewfinder" id="field-viewfinder" aria-label="AR 카메라 뷰파인더">
+      <div id="reposition-banner" class="lv-banner warn" style="margin:10px;">
+        VLM 호출 0회: 해상도 부족 (1.55 &lt; 5.5 px/mm) - 표면 정면으로 2.38m 접근하세요
+      </div>
+
+      <div id="verified-callouts-layer">
+        <div class="callout-badge" style="left:28%;top:32%;">KKS: 10LAB10AP001 (RMSE 8.2mm)</div>
+        <div class="callout-badge" style="left:55%;top:44%;">ISO6346: MSCU1234566</div>
+      </div>
+
+      <div id="privacy-quad-stamp" class="lv-banner ok" style="position:absolute;right:12px;top:64px;max-width:260px;">
+        3D 모니터 45° 사각형 Fail-Closed zeroize: 비영 픽셀 0개 확인
+      </div>
+
+      <aside id="rectified-pip" class="rectified-pip">
+        <strong>#rectified-pip 3×3 정사영 복원</strong>
+        <div id="pip-text" style="margin-top:4px;">10LAB10AP001 | UN1263 | NaN 홀 18% 보완 완료</div>
+        <div id="freeze-status" style="margin-top:4px;color:#3fb950;">대기 중</div>
+      </aside>
+    </section>
+
+    <aside class="pane-glass" id="interlock-drawer" aria-label="AOP-103 순차 LOTO 인터록">
+      <h2 style="margin:0;font-size:14px;">#interlock-drawer (`AOP-103` LOTO)</h2>
+      <div id="interlock-alert" class="lv-banner ok">Step 1(감압) 완료 -> Step 2(개도 &gt;= 50%) 입력 대기</div>
+
+      <div class="lv-banner ok" data-step="1">
+        <strong>Step 1 [`req_depth=1` · Below]</strong>
+        <div>상류 압력 `p_up_bar &lt; 30.0` (DCS: 27.5 bar 통과)</div>
+      </div>
+
+      <div class="lv-banner" data-step="2">
+        <strong>Step 2 [`req_depth=2` · AtLeast &gt;= 50%]</strong>
+        <label class="fld" style="margin-top:4px;">바이패스 개도(%) [`InterlockEvidence::Value`]
+          <input id="loto-step2-val" class="inp" type="number" value="40" />
+        </label>
+        <button id="btn-loto-step2" type="button" class="lv-glove-btn" style="margin-top:6px;width:100%;">Step 2 계측값 확정</button>
+      </div>
+
+      <div class="lv-banner warn" data-step="3">
+        <strong>Step 3 [`req_depth=3` · RadioLoto]</strong>
+        <label class="fld" style="margin-top:4px;">감독자 사번 [`RadioLoto`]
+          <input id="loto-sup-id" class="inp" type="text" value="SUP-01" />
+        </label>
+        <button id="btn-loto-step3" type="button" class="lv-glove-btn" style="margin-top:6px;width:100%;">Step 3 LOTO 서명 체결</button>
+      </div>
+    </aside>
+
+    <footer id="glove-action-dock" data-trait="no-fine-gesture">
+      <button id="btn-glove-freeze" type="button" class="lv-glove-shutter">정사영 고정 / 재촬영 (Vol+ / Enter)</button>
+      <button id="btn-glove-next" type="button" class="lv-glove-btn">다음 인터록 / PiP 확대 (Vol-)</button>
+      <button id="btn-glove-commit" type="button" class="lv-glove-btn">원장 커밋 (&lt; 2ms)</button>
+    </footer>
+  </main>
+
+  <aside id="lv-star-root"></aside>
+  <script type="module" src="./js/field-lens.js"></script>
+</body>
+</html>

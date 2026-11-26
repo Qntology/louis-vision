@@ -177,7 +177,13 @@ mod tests {
     #[test]
     fn two_phase_ocr_engine_unloads_vision_before_loading_language_weights() {
         let res = Residency::shared(Device::Cpu, 2048, ResidencyMode::StrictSwap);
-        let engine = OcrEngine::new(Arc::clone(&res), ModelId::Gocr, 2, DummyEnc, DummyDec);
+        let engine = OcrEngine::new(
+            Arc::clone(&res),
+            ModelId::Qwen35(crate::residency::QwenTier::Base2B),
+            2,
+            DummyEnc,
+            DummyDec,
+        );
         let outs = engine
             .recognize(&[vec![1.0, 2.0], vec![3.0, 4.0]], |g| Ok(Arc::new(Loaded::empty(g, 500))))
             .unwrap();

@@ -1,0 +1,12 @@
+{
+  "lang": "pt",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "Carregar mensagens anteriores",
+  "pair_title": "Pareamento local seguro (Zero-WAN · X25519)",
+  "pair_qr_hint": "Escanear na mesma rede local",
+  "pair_role_label": "Definir função do dispositivo",
+  "pair_connect": "Conectar LAN",
+  "pair_recover": "Inserir frase de 12 palavras",
+  "sql_blocked": "Bloqueado pelo guarda SQL AST",
+  "reposition_hint": "Ajuste distância ou ângulo"
+}

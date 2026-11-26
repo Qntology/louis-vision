@@ -1,5 +1,5 @@
-// 필수 모델 관리: SigLIP2 · TTM · TIPSv2 · SAM 을 받고(진행률·속도·남은 시간), 지우고, 불러온다.
-// 네 모델이 모두 장치에 올라가기 전에는 월드가 돌지 않으므로(백엔드가 거부), 시작할 때 게이트 창을 띄우고 기다린다.
+// 필수 모델 관리: SigLIP2 · Granite TTM · TIPSv2 를 받고(진행률·속도·남은 시간), 지우고, 불러온다.
+// 세 모델이 모두 장치에 올라가기 전에는 월드가 돌지 않으므로(백엔드가 거부), 시작할 때 게이트 창을 띄우고 기다린다.
 import { call } from './api.js';
 import { bus, state } from './state.js';
 import { $, clear, el } from './util.js';
@@ -28,7 +28,7 @@ function eta(s) {
   return m < 60 ? `${m}분 ${Math.round(s % 60)}초` : `${Math.floor(m / 60)}시간 ${m % 60}분`;
 }
 
-const LOADING = { siglip2: 'SigLIP2 를 불러오고 사전 문구를 임베딩하는 중', ttm: 'Granite TTM 을 불러오는 중', tips: 'TIPSv2 깊이 모델을 불러오는 중', sam: 'MobileSAM 을 불러오는 중' };
+const LOADING = { siglip2: 'SigLIP2 를 불러오고 사전 문구를 임베딩하는 중', ttm: 'Granite TTM 을 불러오는 중', tips: 'TIPSv2 깊이 모델을 불러오는 중' };
 
 function downloading() {
   return !!cat?.download?.running;
@@ -97,7 +97,7 @@ function summaryLine() {
   if (cat.load_error) return { pct: 0, text: cat.load_error, err: true };
   if (dl.phase === 'cancelled') return { pct: 0, text: '받기를 취소했습니다. 받은 부분(.part)은 남아 있어 이어 받을 수 있습니다.' };
   const hint = cat.gpu_hint ? ` ${cat.gpu_hint}` : '';
-  if (cat.ready) return { pct: 100, text: `${cat.cameras === 2 ? '필요한 세 모델(카메라 2대: 깊이는 SGBM)이' : '네 모델 모두'} ${cat.device.backend.toUpperCase()} #${cat.device.ordinal} 에 올라가 있습니다.${hint}`, err: !!cat.gpu_hint };
+  if (cat.ready) return { pct: 100, text: `${cat.cameras === 2 ? '필요한 두 모델(카메라 2대: SGBM 가중치 0 B)이' : '세 모델 모두'} ${cat.device.backend.toUpperCase()} #${cat.device.ordinal} 에 올라가 있습니다.${hint}`, err: !!cat.gpu_hint };
   if (cat.all_present) return { pct: 100, text: '모든 파일을 받았습니다. 불러오기를 누르면 장치에 올립니다.' };
   return { pct: 0, text: `받아야 할 용량 ${size(missingBytes())} — 받기 전에는 시뮬레이터가 실행되지 않습니다.` };
 }
@@ -214,7 +214,7 @@ async function onDelete(m) {
   render();
 }
 
-/** 네 모델을 선택한 장치에 올린다. 진행 중이면 그 Promise 를 돌려준다. */
+/** 필수 모델을 선택한 장치에 올린다. 진행 중이면 그 Promise 를 돌려준다. */
 export function activate() {
   if (activating) return activating;
   if (!cat?.all_present) return Promise.resolve(false);
@@ -226,7 +226,7 @@ export function activate() {
         state.models = c.status;
         bus.emit('models', state.models);
       }
-      setStatus(`모델 준비 완료 — SigLIP2 · TTM · TIPSv2 · SAM (${c.device.backend.toUpperCase()} #${c.device.ordinal})`);
+      setStatus(`모델 준비 완료 — SigLIP2 · Granite TTM · TIPSv2 (${c.device.backend.toUpperCase()} #${c.device.ordinal})`);
       return true;
     })
     .catch(() => false)

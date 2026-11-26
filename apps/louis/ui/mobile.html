@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Louis LAN Mobile — 4 스킨 &amp; GraceBlurred</title>
+  <link rel="stylesheet" href="./css/studio.css" />
+</head>
+<body data-surface="mobile_webrtc_qr" data-n2sf="open" data-skin="field_inspection">
+  <div id="grace-blurred" class="grace-blurred" role="alertdialog" hidden>
+    <h1 style="margin:0 0 8px 0;">연결 유예 잠금 (`GraceBlurred`)</h1>
+    <p>호스트 루프백/WebRTC 페어링 유예 시간이 만료되어 8-샤드 세션 뷰를 블러 보호합니다.</p>
+    <button id="btn-mobile-reconnect" type="button" class="lv-glove-btn" style="margin-top:16px;">QR / 12-단어 재인증</button>
+  </div>
+
+  <main class="studio-shell">
+    <header class="studio-topbar">
+      <div class="studio-nav">
+        <a class="lv-btn" href="./studio.html">◂ Studio</a>
+        <strong>LAN WebRTC 모바일 4-스킨</strong>
+        <select id="mobile-skin-select" class="inp" style="width:auto;">
+          <option value="field_inspection">1. 현장 3D 점검 (Operator)</option>
+          <option value="docs_review">2. 서류 심사 (Auditor)</option>
+          <option value="kiosk_intake">3. 창구 민원 접수 (CounterKiosk · Open)</option>
+          <option value="executive_audit">4. 사후 감사 브리핑 (Executive)</option>
+        </select>
+      </div>
+      <div class="studio-nav">
+        <button id="btn-trigger-grace" type="button" class="lv-btn danger">GraceBlurred 시뮬레이션</button>
+      </div>
+    </header>
+
+    <section class="pane-glass" id="mobile-skin-stage" style="grid-column:1 / -1;">
+      <div id="mobile-qr-card" class="lv-banner ok">
+        <strong>LAN 사설망 전용 WebRTC QR 페어링 (공인 WAN 100% 차단)</strong>
+        <div id="mobile-skin-desc" style="margin-top:6px;">
+          활성 스킨: field_inspection — 안전장갑 56px 조작 · Field-3D 스트림 연결
+        </div>
+      </div>
+      <div class="studio-nav" style="margin-top:8px;">
+        <button id="btn-wan-probe" type="button" class="lv-btn danger">공인 WAN(8.8.8.8:9999) 페어링 차단 테스트</button>
+        <span id="mobile-wan-msg" class="lv-pill">LAN Only (127.0.0.1 / RFC1918)</span>
+      </div>
+      <div id="esc-ime-log" class="worm-log" style="margin-top:12px;">
+        8-단계 ESC/IME 스택 대기 중 (IME composing=229 보호 활성)
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./js/mobile-skins.js"></script>
+</body>
+</html>

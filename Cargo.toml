@@ -10,6 +10,7 @@ members = [
     "crates/lv-screen",
     "crates/lv-doc",
     "crates/lv-spatial",
+    "crates/lv-planar",
     "crates/lv-router",
     "crates/lv-domain",
     "crates/lv-agent",
@@ -31,8 +32,9 @@ lv-kernels = { path = "crates/lv-kernels" }
 lv-sds     = { path = "crates/lv-sds" }
 lv-core    = { path = "crates/lv-core" }
 lv-screen  = { path = "crates/lv-screen" }
-lv-doc     = { path = "crates/lv-doc" }
+lv-doc     = { path = "crates/lv-doc", default-features = false }
 lv-spatial = { path = "crates/lv-spatial" }
+lv-planar  = { path = "crates/lv-planar", default-features = false }
 lv-router  = { path = "crates/lv-router" }
 lv-domain  = { path = "crates/lv-domain" }
 lv-agent   = { path = "crates/lv-agent" }
@@ -97,6 +99,8 @@ opt-level = 2
 [profile.dev.package.lv-doc]
 opt-level = 2
 [profile.dev.package.lv-spatial]
+opt-level = 3
+[profile.dev.package.lv-planar]
 opt-level = 3
 [profile.dev.package.rayon]
 opt-level = 3

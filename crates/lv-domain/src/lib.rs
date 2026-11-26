@@ -5,7 +5,16 @@
 //! - Industrial (`PowerPlant` KKS <-> `AiDataCenter` DCIM) `Terms` & `CodeScheme` repair.
 
 use anyhow::Result;
+pub use lv_sds::N2sfGrade;
 use serde::{Deserialize, Serialize};
+
+pub mod bridge;
+pub mod gov_fin_tax_audit;
+pub mod identify;
+pub mod registry;
+pub mod retail_srm;
+pub mod sec_eng_mro_hr;
+pub mod trade_logistics;
 
 pub const ENGINE_ENV: &str = "LOUIS_ENGINE";
 
@@ -221,23 +230,55 @@ pub enum CodeScheme {
     #[default]
     Kks,
     Dcim,
+    Iso6346Container,
 }
 
 impl CodeScheme {
-    pub fn mask(self) -> &'static [u8; 12] {
+    #[inline]
+    pub fn mask(self) -> &'static [u8] {
         match self {
             Self::Kks => b"99AAA99AA999",
             Self::Dcim => b"AA9AAA99AA99",
+            Self::Iso6346Container => b"AAAA9999999",
         }
     }
 
     pub fn shape(self, code: &str) -> bool {
         let b = code.as_bytes();
-        b.len() == 12
+        let m = self.mask();
+        b.len() == m.len()
             && b.iter()
-                .zip(self.mask())
+                .zip(m)
                 .all(|(c, m)| if *m == b'9' { c.is_ascii_digit() } else { c.is_ascii_uppercase() })
     }
+}
+
+pub fn iso6346_check_digit(prefix10: &[u8]) -> Option<u8> {
+    if prefix10.len() != 10 {
+        return None;
+    }
+    let mut sum = 0u32;
+    for (i, &b) in prefix10.iter().enumerate() {
+        let val: u32 = match b.to_ascii_uppercase() {
+            b'0'..=b'9' => (b - b'0') as u32,
+            b'A'..=b'Z' => {
+                let idx = (b.to_ascii_uppercase() - b'A') as u32;
+                let raw = 10 + idx;
+                raw + (raw >= 11) as u32 + (raw + (raw >= 11) as u32 >= 22) as u32 + (raw + 2 >= 33 && idx >= 21) as u32
+            }
+            _ => return None,
+        };
+        sum += val * (1u32 << i);
+    }
+    Some(((sum % 11) % 10) as u8)
+}
+
+pub fn verify_iso6346_check_digit(code11: &str) -> bool {
+    let bytes = code11.as_bytes();
+    if bytes.len() != 11 || !bytes[10].is_ascii_digit() {
+        return false;
+    }
+    iso6346_check_digit(&bytes[..10]).is_some_and(|cd| cd == bytes[10] - b'0')
 }
 
 fn as_digit(c: char) -> Option<char> {
@@ -274,17 +315,24 @@ pub fn repair_code(raw: &str, scheme: CodeScheme) -> String {
         .chars()
         .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '.' | '_' | ':' | '·'))
         .collect();
-    if squeezed.len() != 12 {
+    let mask = scheme.mask();
+    if squeezed.len() != mask.len() {
         return squeezed.iter().map(|c| c.to_ascii_uppercase()).collect();
     }
-    squeezed
+    let mut out: String = squeezed
         .iter()
-        .zip(scheme.mask())
+        .zip(mask)
         .map(|(&c, m)| {
             let fixed = if *m == b'9' { as_digit(c) } else { as_letter(c) };
             fixed.unwrap_or(c.to_ascii_uppercase())
         })
-        .collect()
+        .collect();
+    if scheme == CodeScheme::Iso6346Container && out.as_bytes().get(10) == Some(&b'?') {
+        if let Some(cd) = iso6346_check_digit(&out.as_bytes()[..10]) {
+            out.replace_range(10..11, &cd.to_string());
+        }
+    }
+    out
 }
 
 pub fn score_pack_regression(results: &[PackCheckResult]) -> Result<f64> {

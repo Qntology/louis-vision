@@ -1,0 +1,12 @@
+{
+  "lang": "ru",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "Загрузить предыдущие сообщения",
+  "pair_title": "Локальное сопряжение (Zero-WAN · X25519)",
+  "pair_qr_hint": "Отсканируйте в той же локальной сети",
+  "pair_role_label": "Назначить роль устройства",
+  "pair_connect": "Подключить LAN",
+  "pair_recover": "Ввести фразу восстановления из 12 слов",
+  "sql_blocked": "Заблокировано SQL AST защитой",
+  "reposition_hint": "Скорректируйте угол или расстояние"
+}

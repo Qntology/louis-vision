@@ -37,6 +37,7 @@ import { initCursor } from './cursor.js';
 import { initProgressBand } from './progress-band.js';
 import { initNnPanel } from './nn-panel.js';
 import { initSdsExplorer } from './sds-explorer.js';
+import { initStageMode } from './stage-mode.js';
 
 const recentErrors = new Map();
 
@@ -103,7 +104,8 @@ async function main() {
   // 손·발 프리셋이 있어야 월드 생성(SandboxConfig 전달)과 PiP 가 의미가 있으므로 먼저 기다린다.
   await initHandPanel().catch(() => {});
   await Promise.allSettled([initDevice(), initDataPanel(), initLogs(), initPresets(), initUnitPreset()]);
-  // 필수 모델(SigLIP2 · TTM · TIPSv2 · SAM)이 장치에 올라가기 전에는 월드를 만들지 않는다.
+  initStageMode();
+  // 필수 모델(SigLIP2 · Granite TTM · TIPSv2)이 장치에 올라가기 전에는 월드를 만들지 않는다.
   await initModels().catch(() => {});
   await modelsReady();
   await regenerate();

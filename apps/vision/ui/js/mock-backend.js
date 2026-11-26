@@ -145,8 +145,7 @@ const handlers = {
     models: [
       ['siglip2', 'SigLIP2 base (patch16, NaFlex)', '비전 인식 · 의미 위치 · 명령 임베딩', 'google/siglip2-base-patch16-naflex', 1535341857],
       ['ttm', 'Granite TTM-R3 (52-16)', '시계열 예측 (정밀도 게이트)', 'ibm-granite/granite-timeseries-ttm-r3', 5888229],
-      ['tips', 'TIPSv2-B/14 DPT', '깊이 추정 (키프레임)', 'google/tipsv2-b14-dpt', 632074338],
-      ['sam', 'MobileSAM (TinyViT)', '마스크 추적', 'lmz/candle-sam', 40613024],
+      ['tips', 'TIPSv2-B/14 DPT', '깊이 추정 (단안 키프레임 · 2캠 SGBM 가중치 0 B)', 'google/tipsv2-b14-dpt', 632074338],
     ].map(([id, label, role_ko, repo, bytes]) => ({ id, label, role_ko, repo, revision: '(모의)', license: 'Apache-2.0', dir: '(브라우저 모의)', files: [], bytes, have: 0, present: false })),
   }),
   models_download: async () => { throw '모델 받기는 Tauri 앱에서만 됩니다'; },
@@ -185,6 +184,33 @@ const handlers = {
   audit_verify: async () => ({ files: [{ session: 'mock', lines: 0, broken_at: null, reason: null, anchor_ok: true, seal_ok: true }] }),
   replay: async () => ({ matched: true, first_mismatch_tick: null, ticks: 0, original_digests: [], replay_digests: [] }),
   world_terrain: async () => { throw '모의 백엔드에는 지형 격자가 없습니다'; },
+  peer_state: async () => ({
+    host_connected: true,
+    owns_star_fallback: true,
+    active_mode: 'sim_sandbox',
+    lease: 'coexist_sim',
+    privacy_epoch: 0,
+    privacy_locked: false,
+    louis_resident_mb: 0.0,
+  }),
+  peer_request_stage_live: async ({ hostAckLouisMb = 0.0 } = {}) => ({
+    host_connected: true,
+    owns_star_fallback: true,
+    active_mode: 'xr_stage_live',
+    lease: 'stage_pinned_lock',
+    privacy_epoch: 0,
+    privacy_locked: false,
+    louis_resident_mb: hostAckLouisMb,
+  }),
+  peer_apply_privacy_epoch: async ({ epoch = 0, locked = false } = {}) => ({
+    host_connected: true,
+    owns_star_fallback: true,
+    active_mode: 'xr_stage_live',
+    lease: 'stage_pinned_lock',
+    privacy_epoch: epoch,
+    privacy_locked: locked,
+    louis_resident_mb: 0.0,
+  }),
 };
 
 export async function invoke(cmd, args = {}) {

@@ -1,0 +1,300 @@
+/* apps/louis/ui/css/studio.css — Docs Studio, Field-3D & Mobile 4-Skin Zero-CDN Layout */
+@import "../../../shared-ui/css/tokens.css";
+@import "../../../shared-ui/css/widgets.css";
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: var(--font-sans, "Pretendard", "Segoe UI", system-ui, sans-serif);
+  color: var(--fg, #e6edf3);
+  background: var(--bg-canvas, #0d1117);
+  overflow: hidden;
+}
+
+.studio-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 48px 1fr;
+  padding: 8px;
+  gap: 8px;
+}
+
+.studio-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--glass, rgba(20, 26, 36, 0.78));
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 10px;
+}
+
+.studio-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.studio-grid {
+  display: grid;
+  grid-template-columns: minmax(290px, 1.05fr) minmax(340px, 1.25fr) minmax(320px, 1.05fr);
+  gap: 8px;
+  min-height: 0;
+}
+
+.pane-glass {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--glass, rgba(20, 26, 36, 0.78));
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.lv-pill, .lv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.lv-btn.primary {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #ffffff;
+}
+
+.lv-btn.danger {
+  background: rgba(218, 54, 51, 0.22);
+  border-color: #f85149;
+  color: #ffb4ae;
+}
+
+.lv-banner {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(56, 139, 253, 0.14);
+}
+
+.lv-banner.warn {
+  background: rgba(210, 153, 34, 0.18);
+  border-color: #d29922;
+}
+
+.lv-banner.err {
+  background: rgba(248, 81, 73, 0.20);
+  border-color: #f85149;
+}
+
+.lv-banner.ok {
+  background: rgba(46, 160, 67, 0.20);
+  border-color: #3fb950;
+}
+
+.crop-stage {
+  position: relative;
+  min-height: 170px;
+  border-radius: 10px;
+  background: #161b22;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 10px;
+}
+
+.crop-stage.retry-15 {
+  border: 2px dashed #f0883e;
+  box-shadow: 0 0 0 4px rgba(240, 136, 62, 0.18);
+}
+
+.forensic-gridlines {
+  background-image:
+    linear-gradient(to right, rgba(180, 180, 180, 0.42) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(180, 180, 180, 0.42) 1px, transparent 1px);
+  background-size: 64px 28px;
+}
+
+.forensic-del {
+  background: rgba(248, 81, 73, 0.25);
+  border: 1px solid #f85149;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.forensic-struck {
+  text-decoration: line-through;
+  opacity: 0.72;
+  background: rgba(139, 148, 158, 0.22);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.a0-minimap {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.a0-tile {
+  padding: 6px 4px;
+  text-align: center;
+  border-radius: 6px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.a0-tile.skip {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+.a0-tile.dirty {
+  background: rgba(240, 136, 62, 0.24);
+  border-color: #f0883e;
+  font-weight: 700;
+}
+
+.worm-log {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.worm-row.broken {
+  background: rgba(248, 81, 73, 0.28);
+  border-left: 3px solid #f85149;
+  padding-left: 6px;
+}
+
+/* Field-3D & Glove-friendly Controls (>= 56px hit target) */
+.field-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  grid-template-rows: auto 1fr auto;
+  gap: 8px;
+  padding: 8px;
+}
+
+.field-viewfinder {
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: radial-gradient(circle at center, #1b2432, #0d1117);
+  overflow: hidden;
+  min-height: 240px;
+}
+
+.rectified-pip {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 220px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(13, 17, 23, 0.88);
+  border: 1px solid #388bfd;
+  font-size: 11px;
+}
+
+.callout-badge {
+  position: absolute;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(31, 111, 235, 0.88);
+  color: #fff;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.kiosk-shield, .grace-blurred {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 12, 16, 0.86);
+  backdrop-filter: blur(20px);
+  padding: 24px;
+  text-align: center;
+}
+
+.kiosk-shield[hidden], .grace-blurred[hidden] {
+  display: none;
+}
+
+#glove-action-dock {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--glass, rgba(20, 26, 36, 0.84));
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.lv-glove-btn,
+.lv-glove-shutter,
+[data-trait="no-fine-gesture"] button {
+  min-width: 56px;
+  min-height: 56px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(56, 139, 253, 0.22);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.field-form, .studio-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+label.fld {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+input.inp, select.inp, textarea.inp {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(13, 17, 23, 0.72);
+  color: inherit;
+  font-size: 12px;
+}

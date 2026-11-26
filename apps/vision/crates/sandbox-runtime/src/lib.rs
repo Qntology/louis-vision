@@ -21,6 +21,8 @@ mod mldrive;
 mod mlsds;
 pub mod nnlive;
 pub mod perception;
+#[cfg(feature = "planar-xr")]
+pub mod planar_read;
 pub mod precision;
 pub mod progress;
 pub mod record;

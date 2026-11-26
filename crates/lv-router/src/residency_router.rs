@@ -7,7 +7,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use lv_core::residency::{Group, Loaded, ModelId, Phase, ResidencyMode, SharedResidency};
+use lv_core::residency::{Group, Loaded, ModelId, Phase, QwenTier, ResidencyMode, SharedResidency};
+use lv_core::vocab_trim::canonical_policy_key;
+
+use crate::vault::{DeviceRole, VaultError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,8 +31,36 @@ pub enum RouteTarget {
 pub enum RouterError {
     #[error("ReadOnly cache access cannot evict or load model {model:?}/{phase}; already-resident slot required")]
     ReadOnlyMiss { model: ModelId, phase: String },
+    #[error("CounterKiosk terminal forbidden from loading higher-grade model {model:?}")]
+    KioskForbidden { model: ModelId },
+    #[error("retired or blocked model rejected: {reason}")]
+    ModelPolicyBlocked { reason: String },
     #[error(transparent)]
     Inner(#[from] anyhow::Error),
+}
+
+/// Validates N2SF device-role clearance for `model`.
+/// `CounterKiosk` permits ONLY `Siglip2` and `Qwen35(Nano08B)`.
+pub fn ensure_role_allows_model(role: DeviceRole, model: ModelId) -> std::result::Result<(), VaultError> {
+    if role == DeviceRole::CounterKiosk
+        && !matches!(model, ModelId::Siglip2 | ModelId::Qwen35(QwenTier::Nano08B))
+    {
+        return Err(VaultError::KioskForbidden);
+    }
+    Ok(())
+}
+
+/// Validates both N2SF device-role clearance and retired-model policy (`canonical_policy_key`) prior to acquisition.
+pub fn validate_model_access(role: DeviceRole, model: ModelId, canonical_name: Option<&str>) -> std::result::Result<(), RouterError> {
+    if ensure_role_allows_model(role, model).is_err() {
+        return Err(RouterError::KioskForbidden { model });
+    }
+    if let Some(name) = canonical_name {
+        if let Err(e) = canonical_policy_key(name) {
+            return Err(RouterError::ModelPolicyBlocked { reason: e.to_string() });
+        }
+    }
+    Ok(())
 }
 
 pub struct ResidencyRouter {
@@ -49,6 +80,25 @@ impl ResidencyRouter {
         self.residency.lock().unwrap_or_else(|p| p.into_inner()).resident_bytes()
     }
 
+    /// Acquires model group leases for `role` after enforcing `CounterKiosk` & `canonical_policy_key` clearance.
+    pub fn acquire_for_role<F>(
+        &self,
+        role: DeviceRole,
+        access: CacheAccessMode,
+        model: ModelId,
+        phase: &Phase,
+        free_bytes_override: Option<u64>,
+        loader: F,
+    ) -> std::result::Result<Vec<Arc<Loaded>>, RouterError>
+    where
+        F: FnMut(Group) -> Result<Arc<Loaded>>,
+    {
+        if ensure_role_allows_model(role, model).is_err() {
+            return Err(RouterError::KioskForbidden { model });
+        }
+        self.acquire(access, model, phase, free_bytes_override, loader)
+    }
+
     /// Acquires model group leases for `phase`, honoring `CacheAccessMode::ReadOnly` so overlay/search
     /// lookups never thrash or evict another active phase.
     pub fn acquire<F>(
@@ -65,31 +115,14 @@ impl ResidencyRouter {
         let mut guard = self.residency.lock().unwrap_or_else(|p| p.into_inner());
         if access == CacheAccessMode::ReadOnly {
             // ReadOnly lookups must resolve purely from Pinned or currently loaded slots without swapping.
-            let prev_len = guard.transitions().len();
-            let res = guard.enter_phase(model, phase, free_bytes_override, |_| {
-                anyhow::bail!("read-only lookup cannot load missing weight bundle")
-            });
-            match res {
-                Ok(handles) => {
-                    let loaded_any = guard.transitions()[prev_len..]
-                        .iter()
-                        .any(|t| !matches!(t.action, lv_core::residency::Action::CoexistHit));
-                    if loaded_any {
-                        return Err(RouterError::ReadOnlyMiss {
-                            model,
-                            phase: phase.name.clone(),
-                        });
-                    }
-                    Ok(handles)
-                }
-                Err(_) => Err(RouterError::ReadOnlyMiss {
+            return guard
+                .lookup_resident(model, phase)
+                .ok_or_else(|| RouterError::ReadOnlyMiss {
                     model,
                     phase: phase.name.clone(),
-                }),
-            }
-        } else {
-            Ok(guard.enter_phase(model, phase, free_bytes_override, loader)?)
+                });
         }
+        Ok(guard.enter_phase(model, phase, free_bytes_override, loader)?)
     }
 }
 
@@ -158,10 +191,93 @@ mod tests {
         let hit = router.acquire(CacheAccessMode::ReadOnly, ModelId::Siglip2, &vis, None, |_| unreachable!()).unwrap();
         assert_eq!(hit[0].device_bytes, 512);
 
-        let miss = Phase::new("zoro", [Group::blocks(0..2)]);
+        let miss = Phase::new("qwen35_4b", [Group::blocks(0..2)]);
         assert!(matches!(
-            router.acquire(CacheAccessMode::ReadOnly, ModelId::Zoro, &miss, None, |g| Ok(Arc::new(Loaded::empty(g, 200)))),
+            router.acquire(CacheAccessMode::ReadOnly, ModelId::Qwen35(QwenTier::Heavy4B), &miss, None, |g| Ok(Arc::new(Loaded::empty(g, 200)))),
             Err(RouterError::ReadOnlyMiss { .. })
         ));
+    }
+
+    #[test]
+    fn counter_kiosk_only_permits_siglip2_and_nano08b() {
+        assert_eq!(ensure_role_allows_model(DeviceRole::CounterKiosk, ModelId::Siglip2), Ok(()));
+        assert_eq!(
+            ensure_role_allows_model(DeviceRole::CounterKiosk, ModelId::Qwen35(QwenTier::Nano08B)),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_role_allows_model(DeviceRole::CounterKiosk, ModelId::Qwen35(QwenTier::Base2B)),
+            Err(VaultError::KioskForbidden)
+        );
+        assert_eq!(
+            ensure_role_allows_model(DeviceRole::CounterKiosk, ModelId::Qwen35(QwenTier::Heavy4B)),
+            Err(VaultError::KioskForbidden)
+        );
+        assert_eq!(
+            ensure_role_allows_model(DeviceRole::CounterKiosk, ModelId::Gemma4),
+            Err(VaultError::KioskForbidden)
+        );
+
+        let res = lv_core::residency::Residency::shared(Device::Cpu, 2048, ResidencyMode::StrictSwap);
+        let router = ResidencyRouter::new(res);
+        let ph = Phase::new("lang", [Group::blocks(0..1)]);
+        assert!(matches!(
+            router.acquire_for_role(
+                DeviceRole::CounterKiosk,
+                CacheAccessMode::ReadWrite,
+                ModelId::Qwen35(QwenTier::Heavy4B),
+                &ph,
+                None,
+                |g| Ok(Arc::new(Loaded::empty(g, 100))),
+            ),
+            Err(RouterError::KioskForbidden { .. })
+        ));
+        assert!(router
+            .acquire_for_role(
+                DeviceRole::CounterKiosk,
+                CacheAccessMode::ReadWrite,
+                ModelId::Qwen35(QwenTier::Nano08B),
+                &ph,
+                None,
+                |g| Ok(Arc::new(Loaded::empty(g, 100))),
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn readonly_miss_never_evicts_resident_slot() {
+        let res = lv_core::residency::Residency::shared(Device::Cpu, 2048, ResidencyMode::StrictSwap);
+        let router = ResidencyRouter::new(Arc::clone(&res));
+        let vis = Phase::new("ov", [Group::Vision]);
+        let h1 = router
+            .acquire(CacheAccessMode::ReadWrite, ModelId::Siglip2, &vis, None, |g| {
+                Ok(Arc::new(Loaded::empty(g, 512)))
+            })
+            .unwrap();
+        assert_eq!(h1.len(), 1);
+        drop(h1);
+
+        let heavy = Phase::new("heavy", [Group::Text]);
+        assert!(matches!(
+            router.acquire(
+                CacheAccessMode::ReadOnly,
+                ModelId::Qwen35(QwenTier::Heavy4B),
+                &heavy,
+                None,
+                |_| unreachable!(),
+            ),
+            Err(RouterError::ReadOnlyMiss { .. })
+        ));
+        assert!(router
+            .acquire(CacheAccessMode::ReadOnly, ModelId::Siglip2, &vis, None, |_| unreachable!())
+            .is_ok());
+        let rel_count = res
+            .lock()
+            .unwrap()
+            .transitions()
+            .iter()
+            .filter(|t| t.action == lv_core::residency::Action::Release)
+            .count();
+        assert_eq!(rel_count, 0);
     }
 }

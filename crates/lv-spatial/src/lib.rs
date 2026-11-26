@@ -14,6 +14,7 @@ pub mod locate;
 pub mod mask_ops;
 pub mod motion_iou;
 pub mod perforate;
+pub mod planar;
 pub mod pos2;
 pub mod pyramid;
 pub mod stairs;

@@ -1,0 +1,12 @@
+{
+  "lang": "en",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "Load previous messages",
+  "pair_title": "Local Secure Pairing (Zero-WAN · X25519)",
+  "pair_qr_hint": "Scan on the same router/hotspot phone (No STUN/TURN)",
+  "pair_role_label": "Assign Device Role & Skin",
+  "pair_connect": "Connect LAN",
+  "pair_recover": "Enter 12-word offline recovery phrase",
+  "sql_blocked": "Blocked by SQL AST safety guard",
+  "reposition_hint": "Adjust angle or distance to read"
+}

@@ -2,19 +2,21 @@
 
 [workspace]
 resolver = "2"
-members = ["."]
+members = [".", "src-tauri"]
+default-members = ["."]
 
 [package]
 name = "louis-docs"
 version = "0.1.0"
 edition = "2021"
+default-run = "louis-docs"
 license = "Apache-2.0"
 repository = "https://github.com/Qntology/louis-vision"
 
 [features]
 default       = ["hwp-writer"]
 hwp-writer    = ["lv-doc/hwp-writer"]
-field-3d      = ["dep:lv-spatial", "lv-router/spatial-3d"]
+field-3d      = ["dep:lv-spatial", "dep:lv-planar", "lv-router/spatial-planar"]
 local-lancedb = ["dep:lancedb"]
 cuda          = ["lv-core/cuda", "lv-screen/cuda"]
 rocm          = ["lv-core/rocm", "lv-screen/rocm"]
@@ -27,8 +29,9 @@ lv-kernels = { path = "../../crates/lv-kernels" }
 lv-sds     = { path = "../../crates/lv-sds" }
 lv-core    = { path = "../../crates/lv-core" }
 lv-screen  = { path = "../../crates/lv-screen" }
-lv-doc     = { path = "../../crates/lv-doc", features = ["docs-io"] }
+lv-doc     = { path = "../../crates/lv-doc", features = ["docs-io", "html-pug"] }
 lv-spatial = { path = "../../crates/lv-spatial", optional = true }
+lv-planar  = { path = "../../crates/lv-planar", optional = true, features = ["domain", "screen"] }
 lv-router  = { path = "../../crates/lv-router", features = ["planar-2d"] }
 lv-domain  = { path = "../../crates/lv-domain" }
 lv-agent   = { path = "../../crates/lv-agent" }
@@ -46,15 +49,19 @@ premium-discount-relay   = { git = "https://github.com/Qntology/premium-discount
 anyhow      = "1"
 thiserror   = "2"
 candle-core = "0.11.0"
+cfb         = "0.14"
+flate2      = "1.0"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = { version = "1", features = ["float_roundtrip"] }
 sha2        = "0.10"
+smallvec    = "1"
 chrono      = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 zeroize     = { version = "1", features = ["derive"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand        = "0.8"
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs"] }
+zip         = "8.6"
 lancedb     = { version = "0.41", default-features = false, optional = true }
 
 [patch.crates-io]
@@ -78,6 +85,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.lv-spatial]
 opt-level = 3
+[profile.dev.package.lv-planar]
+opt-level = 3
 [profile.dev.package.rayon]
 opt-level = 3
 [profile.dev.package.lv-core]
@@ -86,3 +95,8 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.lv-doc]
 opt-level = 2
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"

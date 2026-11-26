@@ -458,6 +458,13 @@ pub fn evaluate_delta_gate_ab(delta_on: &ArmRunSummary, full_off: &ArmRunSummary
     compare_gate_arms(delta_on, full_off)
 }
 
+/// Runs `straight_ink` deskew alignment on a scanned RGB frame prior to `ink_changes` (`ZZD1` delta).
+pub fn straight_ink_changes(master: &Master, scan_rgb: &image::RgbImage, p: &DeltaParams) -> Result<(BlockDiff, f32)> {
+    let (_aligned, ink, deg) = super::ink::straight_ink(scan_rgb);
+    let diff = ink_changes(master, &ink, p)?;
+    Ok((diff, deg))
+}
+
 #[allow(dead_code)]
 fn _pad_keep() -> u32 {
     CLIP_PAD

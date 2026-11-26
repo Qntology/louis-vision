@@ -6,14 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::policy::DispositionNature;
 
-pub const FIELD_FORBIDDEN: &[&str] = &[
-    "LatticeDB",
-    "위장계약",
-    "특별감사",
-    "고위험",
-    "G3Violation",
-    "확실",
-];
+/// Internal terms forbidden in citizen-facing output, pointer-identical to `lv_sds::CITIZEN_FORBIDDEN_TERMS`.
+pub use lv_sds::CITIZEN_FORBIDDEN_TERMS as FIELD_FORBIDDEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentVerdict {
@@ -184,6 +178,37 @@ pub fn select_form(requested: OutputForm, supplement_count: u32, simple_doc_miss
         return FormChoice { form: OutputForm::SupplementRequest, overridden: true };
     }
     FormChoice { form: requested, overridden: false }
+}
+
+/// Hard-corrects notice output form against adjudicated `AgentVerdict` disposition nature:
+/// - `Adverse` verdicts force `RejectNotice` (`ApprovalNotice` -> `RejectNotice`, `overridden: true`).
+/// - `Procedural` verdicts (including initial `supplement_count == 0`) force `SupplementRequest`.
+/// - `Favorable` verdicts preserve compatible forms unless simple initial doc omission requires `SupplementRequest`.
+pub fn select_form_for_verdict(
+    requested: OutputForm,
+    verdict: AgentVerdict,
+    supplement_count: u32,
+    simple_doc_missing: bool,
+) -> FormChoice {
+    match verdict.nature() {
+        DispositionNature::Adverse => {
+            if requested == OutputForm::RejectNotice {
+                FormChoice { form: OutputForm::RejectNotice, overridden: false }
+            } else {
+                FormChoice { form: OutputForm::RejectNotice, overridden: true }
+            }
+        }
+        DispositionNature::Procedural => {
+            if requested == OutputForm::SupplementRequest {
+                FormChoice { form: OutputForm::SupplementRequest, overridden: false }
+            } else {
+                FormChoice { form: OutputForm::SupplementRequest, overridden: true }
+            }
+        }
+        DispositionNature::Favorable => {
+            select_form(requested, supplement_count, simple_doc_missing)
+        }
+    }
 }
 
 /// Gate 4 outbound leak check: blocks internal terminology or third-party real names.

@@ -1,0 +1,12 @@
+{
+  "lang": "cs",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "Načíst předchozí zprávy",
+  "pair_title": "Místní bezpečné párování (Zero-WAN · X25519)",
+  "pair_qr_hint": "Naskenujte ve stejné místní síti",
+  "pair_role_label": "Role zařízení",
+  "pair_connect": "Připojit LAN",
+  "pair_recover": "Zadejte 12slovnou obnovovací frázi",
+  "sql_blocked": "Blokováno SQL AST bránou",
+  "reposition_hint": "Upravte vzdálenost nebo úhel"
+}

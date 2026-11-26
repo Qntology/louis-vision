@@ -1,27 +1,40 @@
 //! Model residency manager enforcing single active phase / Coexist (SigLIP2 vision >= 512 MiB headroom)
-//! / Pinned (60fps XR swap-free) invariants, `HEAD_VIEW` row-sliced projection weights, and lease safety.
+//! / Pinned (60fps XR swap-free) invariants, quantized `TrimmedHead` handles, and lease safety.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
+use serde::{Deserialize, Serialize};
 
 use crate::device::{trim_gpu_pool_scoped, PurgeScope};
+use crate::vocab_trim::TrimmedHead;
 
-/// Row-view tensor name for vocabulary-trimmed output projection (`token_embd.weight` / `output.weight`).
+/// Handle tensor/slot name for vocabulary-trimmed output projection (`token_embd.weight` / `output.weight`).
 pub const HEAD_VIEW: &str = "head.view";
 /// Host-only token embedding table name (never uploaded wholesale to GPU VRAM).
 pub const TEXT_TOKEN_TABLE: &str = "text_model.embeddings.token_embedding.weight";
 pub const DEFAULT_COEXIST_MARGIN_BYTES: u64 = 512 << 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QwenTier {
+    /// Qwen/Qwen3.5-0.8B (24L: 18 GDN + 6 Full, H=1024, V=248,320)
+    Nano08B,
+    /// Qwen/Qwen3.5-2B (24L: 18 GDN + 6 Full, H=2048, V=248,320, 27L VLM)
+    Base2B,
+    /// Qwen/Qwen3.5-4B (32L: 24 GDN + 8 Full, H=2560, K_static=65,536, 27L VLM)
+    Heavy4B,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelId {
-    Zoro,
-    Gocr,
     Siglip2,
     Gemma4,
+    Qwen35(QwenTier),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -71,7 +84,7 @@ impl Phase {
 #[derive(Debug, Clone)]
 pub enum Weight {
     Dense(Tensor),
-    RowView { base: String, rows: Arc<Vec<u32>>, tensor: Tensor },
+    TrimmedHead(Arc<TrimmedHead>),
 }
 
 #[derive(Debug)]
@@ -98,15 +111,9 @@ impl Loaded {
         }
     }
 
-    pub fn insert_row_view(&mut self, base: impl Into<String>, rows: Vec<u32>, tensor: Tensor) {
-        self.weights.insert(
-            HEAD_VIEW.to_string(),
-            Weight::RowView {
-                base: base.into(),
-                rows: Arc::new(rows),
-                tensor,
-            },
-        );
+    /// Attaches a zero-requantized quantized `TrimmedHead` handle into `HEAD_VIEW` without F32 expansion.
+    pub fn insert_trimmed_head(&mut self, head: Arc<TrimmedHead>) {
+        self.weights.insert(HEAD_VIEW.to_string(), Weight::TrimmedHead(head));
     }
 
     pub fn get(&self, name: &str) -> Result<&Weight> {
@@ -117,17 +124,16 @@ impl Loaded {
 
     pub fn dense(&self, name: &str) -> Result<&Tensor> {
         match self.get(name)? {
-            Weight::Dense(t) | Weight::RowView { tensor: t, .. } => Ok(t),
+            Weight::Dense(t) => Ok(t),
+            Weight::TrimmedHead(_) => bail!("weight '{name}' is a quantized TrimmedHead handle, not a dense tensor"),
         }
     }
 
-    /// Slices selected row indices from a 2D tensor into `HEAD_VIEW`.
-    pub fn slice_head_view(table: &Tensor, rows: &[u32], device: &Device) -> Result<Tensor> {
-        if rows.is_empty() {
-            bail!("HEAD_VIEW rows cannot be empty");
+    pub fn trimmed_head(&self) -> Result<&Arc<TrimmedHead>> {
+        match self.get(HEAD_VIEW)? {
+            Weight::TrimmedHead(h) => Ok(h),
+            Weight::Dense(_) => bail!("{HEAD_VIEW} is not a TrimmedHead handle"),
         }
-        let idx = Tensor::from_slice(rows, rows.len(), device)?;
-        Ok(table.index_select(&idx, 0)?.to_dtype(DType::F32)?)
     }
 }
 
@@ -146,7 +152,7 @@ pub struct Transition {
     pub bytes: u64,
 }
 
-/// Thread-safe shared residency handle across SigLIP2 / VLM / Zoro.
+/// Thread-safe shared residency handle across `Siglip2`, `Gemma4`, and `Qwen35`.
 pub type SharedResidency = Arc<Mutex<Residency>>;
 
 pub struct Residency {
@@ -300,6 +306,34 @@ impl Residency {
             .collect())
     }
 
+    /// Non-mutating lookup for `CacheAccessMode::ReadOnly`: resolves purely from already-resident
+    /// `pinned` or `current` slots without switching `current_model` or releasing any group.
+    /// Records `Action::CoexistHit` telemetry only when every group in `phase` is hit in `pinned`.
+    pub fn lookup_resident(&mut self, model: ModelId, phase: &Phase) -> Option<Vec<Arc<Loaded>>> {
+        let mut resolved = Vec::with_capacity(phase.groups.len());
+        for g in &phase.groups {
+            if let Some(h) = self.pinned.get(&(model, *g)) {
+                resolved.push((true, *g, Arc::clone(h)));
+            } else if self.current_model == Some(model) {
+                let h = self.current.get(g)?;
+                resolved.push((false, *g, Arc::clone(h)));
+            } else {
+                return None;
+            }
+        }
+        for (is_pinned, g, h) in &resolved {
+            if *is_pinned {
+                self.transitions.push(Transition {
+                    action: Action::CoexistHit,
+                    model,
+                    group: *g,
+                    bytes: h.device_bytes,
+                });
+            }
+        }
+        Some(resolved.into_iter().map(|(_, _, h)| h).collect())
+    }
+
     fn release_group(&mut self, model: ModelId, group: Group) -> Result<()> {
         let Some(existing) = self.current.get(&group) else {
             return Ok(());
@@ -369,20 +403,20 @@ mod tests {
     #[test]
     fn releases_stale_groups_before_loading_new_phase_and_guards_active_leases() {
         let mut res = Residency::new(Device::Cpu, 1024, ResidencyMode::StrictSwap);
-        let vision_p = Phase::new("gocr:vision", [Group::Vision]);
-        let lang_p = Phase::new("gocr:lang", [Group::blocks(0..4), Group::Output]);
+        let vision_p = Phase::new("qwen35:vision", [Group::Vision]);
+        let lang_p = Phase::new("qwen35:lang", [Group::blocks(0..4), Group::Output]);
 
         let handles = res
-            .enter_phase(ModelId::Gocr, &vision_p, None, |g| Ok(Arc::new(Loaded::empty(g, 400))))
+            .enter_phase(ModelId::Qwen35(QwenTier::Base2B), &vision_p, None, |g| Ok(Arc::new(Loaded::empty(g, 400))))
             .unwrap();
         // Attempting to unload while handle is alive must fail cleanly.
         assert!(res
-            .enter_phase(ModelId::Gocr, &lang_p, None, |g| Ok(Arc::new(Loaded::empty(g, 300))))
+            .enter_phase(ModelId::Qwen35(QwenTier::Base2B), &lang_p, None, |g| Ok(Arc::new(Loaded::empty(g, 300))))
             .is_err());
 
         drop(handles);
         let lang_h = res
-            .enter_phase(ModelId::Gocr, &lang_p, None, |g| Ok(Arc::new(Loaded::empty(g, 300))))
+            .enter_phase(ModelId::Qwen35(QwenTier::Base2B), &lang_p, None, |g| Ok(Arc::new(Loaded::empty(g, 300))))
             .unwrap();
         assert_eq!(lang_h.len(), 2);
         // Check Release happened strictly before new Loads
@@ -413,23 +447,39 @@ mod tests {
         drop(h);
 
         // Tight free VRAM triggers eviction of Coexist pinned bundle.
-        let z_phase = Phase::new("zoro", [Group::blocks(0..2)]);
-        let _zh = res
-            .enter_phase(ModelId::Zoro, &z_phase, Some(100 << 20), |g| Ok(Arc::new(Loaded::empty(g, 400))))
+        let q_phase = Phase::new("qwen35_4b", [Group::blocks(0..2)]);
+        let _qh = res
+            .enter_phase(ModelId::Qwen35(QwenTier::Heavy4B), &q_phase, Some(100 << 20), |g| Ok(Arc::new(Loaded::empty(g, 400))))
             .unwrap();
         assert!(res.pinned.is_empty());
     }
 
     #[test]
-    fn head_view_slices_selected_rows_without_full_projection() {
-        let table = Tensor::arange(0u32, 30, &Device::Cpu)
-            .unwrap()
-            .to_dtype(DType::F32)
-            .unwrap()
-            .reshape((6, 5))
-            .unwrap();
-        let sliced = Loaded::slice_head_view(&table, &[1, 4], &Device::Cpu).unwrap();
-        assert_eq!(sliced.dims(), &[2, 5]);
-        assert_eq!(sliced.to_vec2::<f32>().unwrap(), vec![vec![5.0, 6.0, 7.0, 8.0, 9.0], vec![20.0, 21.0, 22.0, 23.0, 24.0]]);
+    fn trimmed_head_attaches_zero_requant_handle_to_loaded_group() {
+        use crate::vocab_trim::{GuardMode, TableSource, TrimmedHead};
+        use candle_core::quantized::GgmlDType;
+
+        let dir = std::env::temp_dir().join(format!("lv-res-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = TableSource::synthetic_q8_for_tests(&dir.join("head.bin"), 16, 64).unwrap();
+        let kept = Arc::new(vec![1u32, 3, 5, 7]);
+        let head = Arc::new(
+            TrimmedHead::build(
+                &src,
+                QwenTier::Nano08B,
+                0x1234,
+                kept,
+                "test_head",
+                GuardMode::Off,
+                &Device::Cpu,
+            )
+            .unwrap(),
+        );
+        let mut loaded = Loaded::empty(Group::Output, head.head_bytes() as u64);
+        loaded.insert_trimmed_head(Arc::clone(&head));
+        let got = loaded.trimmed_head().unwrap();
+        assert_eq!(got.qweight.dtype(), GgmlDType::Q8_0);
+        assert!(loaded.dense(HEAD_VIEW).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

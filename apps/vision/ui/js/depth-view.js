@@ -42,7 +42,7 @@ export function depthBlocks(d, { core = false } = {}) {
   const [lo, hi] = d.scale_m ?? [0, 1];
   const st = d.stereo;
   const figs = [
-    el('figure', {}, img(d.rgb_webp_base64, '머리 카메라 원본'), el('figcaption', { text: st ? '왼쪽 카메라 (기준 · SigLIP2 · SAM이 봄)' : '머리 카메라 (흔들림·블러 포함)' })),
+    el('figure', {}, img(d.rgb_webp_base64, '머리 카메라 원본'), el('figcaption', { text: st ? '왼쪽 카메라 (기준 · SigLIP2 · Stereo)' : '머리 카메라 (흔들림·블러 포함)' })),
     !core && st && d.right_webp_base64 ? el('figure', {}, img(d.right_webp_base64, '오른쪽 카메라'), el('figcaption', { text: `오른쪽 카메라 (기선 ${fmt.n(st.baseline_m * 100, 1)} cm 옆)` })) : null,
     el('figure', {}, img(d.pred_webp_base64, '깊이 추정'), el('figcaption', { text: st ? `SGBM 깊이 — Z = f·b/d, 매칭 못 한 화소는 비움(어둡게) · ${st.grid[0]}×${st.grid[1]}` : d.align ? `추정 깊이 — 지면 정렬 · 하늘 제외 (${d.mode})` : `추정 깊이 — ${d.mode}` })),
     el('figure', {}, img(d.truth_webp_base64, '렌더러 정답 깊이'), el('figcaption', { text: '정답 깊이 (렌더러)' })),

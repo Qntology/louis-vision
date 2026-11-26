@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Louis Docs Studio — 포렌식 검증 · A0 도면 · 5-Gate 심사</title>
+  <link rel="stylesheet" href="./css/studio.css" />
+</head>
+<body data-surface="docs_studio" data-n2sf="sensitive">
+  <div class="lv-n2sf-edge" aria-hidden="true"></div>
+  <main class="studio-shell" id="studio-shell">
+    <header class="studio-topbar">
+      <div class="studio-nav">
+        <strong>Louis Docs Studio</strong>
+        <label for="studio-pack-select">도메인:</label>
+        <select id="studio-pack-select" class="inp" style="width: auto;"></select>
+        <span id="studio-domain-badge" class="lv-pill" data-term="domain_badge">DOM-01 공공·건설 정산</span>
+        <button id="btn-run-cascade" type="button" class="lv-btn primary">[ ✦ ] 캐스케이드 검증</button>
+        <a id="link-field-3d" class="lv-btn" href="./field-lens.html">[3D 트윈 보기 ▸]</a>
+        <a class="lv-btn" href="./mobile.html">LAN 모바일 4-스킨</a>
+      </div>
+      <div class="studio-nav">
+        <span id="dsli-badge" class="lv-pill">DSLI_18: 0.42 (OK)</span>
+        <span id="post-audit-badge" class="lv-pill">사후감사 10%: 대기</span>
+      </div>
+    </header>
+
+    <div class="studio-grid">
+      <!-- Left Pane: Crop + Forensic Overlays + Multi-page Scale + L1~L3 Comparison -->
+      <section class="pane-glass" id="left-pane" aria-label="원문 크롭 및 포렌식 레이어">
+        <h2 style="margin:0;font-size:14px;">원문 크롭 · 포렌식 레이어</h2>
+        <div class="studio-nav">
+          <button id="tog-del" type="button" class="lv-btn">&lt;w:del&gt; 추적</button>
+          <button id="tog-strike" type="button" class="lv-btn">&lt;w:strike&gt; 격리</button>
+          <button id="tog-luma180" type="button" class="lv-btn">Luma=180 보조선</button>
+          <button id="tog-retry15" type="button" class="lv-btn">15% Heavy4B 테두리</button>
+        </div>
+
+        <div id="table-scale-banner" class="lv-banner ok">
+          다페이지 배율 계승(TableScaleCarry): (단위: 천 원) -> unit_multiplier = ×1,000 유지 중
+        </div>
+
+        <div id="crop-stage" class="crop-stage forensic-gridlines retry-15">
+          <div id="crop-del-layer" class="forensic-del">&lt;w:del&gt; 은닉 단가 1,000,000원 -> &lt;w:ins&gt; 1,500,000원 포착</div>
+          <div id="crop-strike-layer" class="forensic-struck" style="margin-top:6px;">&lt;w:strike&gt; 단가 18,000원 (유효 합산 제외 -> 12,000원)</div>
+          <div id="crop-active-text" style="margin-top:8px;font-size:12px;">
+            실제 유효 청구: 10^3 CFU/g · CO_2 · KKS 10LAB10AP001 · MSCU1234566
+          </div>
+        </div>
+
+        <div id="l1-l3-card" class="lv-banner">
+          <strong>L1~L3 무문자 식별 심사 비교</strong>
+          <div id="l1-l3-body" style="margin-top:4px;">
+            <div>L3 모호 쌍둥이 후보: P-101A (3.9) vs P-101B (3.5), gap = 0.40 &lt; 1.0</div>
+            <div id="l1-l3-decision" style="font-weight:700;margin-top:2px;">판정: PendingOfficer (자동 확정 기권 100%)</div>
+          </div>
+          <button id="btn-toggle-ambiguous" type="button" class="lv-btn" style="margin-top:6px;">명확(L1) / 모호(L3) 전환</button>
+        </div>
+      </section>
+
+      <!-- Center Pane: A0 4x4 Minimap, 2-hop OPC Trace, Legend Few-Shot Drawer -->
+      <section class="pane-glass" id="center-pane" aria-label="A0 도면 미니맵 및 범례 퓨샷">
+        <h2 style="margin:0;font-size:14px;">A0 4×4 미니맵 (`ZZD1` 스킵) &amp; 2-홉 역추적</h2>
+        <div id="a0-minimap" class="a0-minimap" aria-label="A0 4x4 grid minimap"></div>
+        <div class="studio-nav">
+          <button id="btn-opc-jump" type="button" class="lv-btn primary">2-홉 OPC 역추적 (`OPC-103-101`)</button>
+          <span id="opc-result" class="lv-pill">타겟: 대기 중</span>
+        </div>
+
+        <div id="legend-drawer" class="lv-banner">
+          <strong>#legend-drawer 범례 퓨샷 등록기 (`ZZS1` v2 + `NONE_CLASS`)</strong>
+          <div class="studio-nav" style="margin-top:6px;">
+            <button type="button" class="lv-btn legend-sample" data-symbol="cryo_valve">+ cryo_valve</button>
+            <button type="button" class="lv-btn legend-sample" data-symbol="immersion_tank">+ immersion_tank</button>
+            <button type="button" class="lv-btn legend-sample" data-symbol="none">비심볼 none 방어 (&lt;=1%)</button>
+          </div>
+          <div id="legend-status" style="margin-top:6px;font-size:11px;">등록된 퓨샷 클래스: 없음</div>
+        </div>
+      </section>
+
+      <!-- Right Pane: #gate-hud & Governance Drawer -->
+      <section class="pane-glass" id="gate-hud" aria-label="5-Gate 심사 및 N2SF 거버넌스">
+        <h2 style="margin:0;font-size:14px;">#gate-hud · 처분 양식 교정 · 거버넌스</h2>
+        <div class="studio-form">
+          <label class="fld">처분 판정 (`AgentVerdict`)
+            <select id="gate-verdict-select" class="inp">
+              <option value="G3EligibleNormal">G3EligibleNormal (수익적 적격)</option>
+              <option value="G1ExpiredMandatoryReject">G1ExpiredMandatoryReject (기한 도과 불이익)</option>
+              <option value="G1SignInvalidRetry">G1SignInvalidRetry (서명 불량 보완)</option>
+              <option value="G2RejectContradictionLock">G2RejectContradictionLock (모순 확정 거절)</option>
+              <option value="G2RequireRepairReceipt">G2RequireRepairReceipt (보완 영수증 요구)</option>
+              <option value="G3HoldSimpleReceiptMissing">G3HoldSimpleReceiptMissing (초회 영수증 누락)</option>
+              <option value="G3ViolationRelatedVendorSplit">G3ViolationRelatedVendorSplit (관계사 분할 위반)</option>
+              <option value="G3ViolationHighRisk">G3ViolationHighRisk (고위험 결격 거절)</option>
+              <option value="G3InterceptInterlockOrder">G3InterceptInterlockOrder (LOTO 역순 차단)</option>
+            </select>
+          </label>
+
+          <label class="fld">요청 통지 양식 (`OutputForm`)
+            <select id="output-form-select" class="inp">
+              <option value="ApprovalNotice">ApprovalNotice (승인 통지)</option>
+              <option value="SupplementRequest">SupplementRequest (보완 요구)</option>
+              <option value="RejectNotice">RejectNotice (불이익/거절 통지)</option>
+            </select>
+          </label>
+          <div id="form-override-badge" class="lv-banner warn" hidden>
+            overridden: true — 불이익/보완 처분에 ApprovalNotice 사용 불가 -> 강제 스냅 적용됨
+          </div>
+
+          <label class="fld">수동 청구 금액 검증 (증빙 한도: 85,000,000원)
+            <div style="display:flex;gap:6px;">
+              <input id="manual-amount-input" class="inp" type="number" value="85000000" />
+              <button id="btn-check-amount" type="button" class="lv-btn">금액 검증</button>
+            </div>
+          </label>
+          <div id="amount-guard-msg" class="lv-banner ok">증빙 한도 이내 (85,000,000원)</div>
+
+          <div id="g3-justification-panel" class="lv-banner">
+            <strong>G3 구조화 소명 (`Justification` + 팀장 공동서명)</strong>
+            <select id="g3-kind-select" class="inp" style="margin-top:4px;">
+              <option value="None">소명 없음 (고무도장 시도)</option>
+              <option value="ProveFalsePositive">ProveFalsePositive (증빙 스캔 첨부)</option>
+              <option value="ApplyLawException">ApplyLawException (법령 예외 + 팀장 서명)</option>
+              <option value="CancelMistake">CancelMistake (접수 취소/환원)</option>
+            </select>
+            <label style="font-size:11px;margin-top:4px;display:flex;gap:6px;align-items:center;">
+              <input id="g3-cosign" type="checkbox" /> 팀장 공동서명 확인 (`team_lead_cosign`)
+            </label>
+            <button id="btn-g3-approve" type="button" class="lv-btn primary" style="margin-top:4px;">심사 승인 실행</button>
+            <div id="g3-approve-msg" style="margin-top:4px;font-size:11px;"></div>
+          </div>
+
+          <div id="reverse-cdr-diff" class="lv-banner">
+            <strong>#reverse-cdr-diff N2SF 등급 반출 · 살균 대조</strong>
+            <div style="display:flex;gap:6px;margin-top:4px;">
+              <select id="n2sf-src" class="inp"><option value="Classified">C (기밀)</option><option value="Sensitive" selected>S (민감)</option></select>
+              <select id="n2sf-dst" class="inp"><option value="Open" selected>O (공개)</option><option value="Sensitive">S (민감)</option></select>
+            </div>
+            <input id="n2sf-declass-ref" class="inp" type="text" placeholder="재분류 승인번호 (예: N2SF-2026-0812)" style="margin-top:4px;" />
+            <button id="btn-test-reverse-cdr" type="button" class="lv-btn" style="margin-top:4px;">Reverse-CDR 반출 검증</button>
+            <div id="reverse-cdr-msg" style="margin-top:4px;font-size:11px;"></div>
+          </div>
+
+          <div class="lv-banner">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+              <strong>5년 WORM 이중 해시 원장 &amp; 실명 언마스킹</strong>
+              <button id="btn-unmask-pii" type="button" class="lv-btn">조건부 언마스킹</button>
+            </div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+              <span class="lv-pill">HighImpactAi5Y (1,825d)</span>
+              <span class="lv-pill">PrivacyPermission3Y (1,095d)</span>
+              <span class="lv-pill">Sensitive2Y (730d)</span>
+              <span class="lv-pill">Standard1Y (365d)</span>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:6px;">
+              <button id="btn-worm-verify" type="button" class="lv-btn">WORM 체인 검증</button>
+              <button id="btn-worm-tamper" type="button" class="lv-btn danger">1바이트 변조 주입</button>
+            </div>
+            <div id="worm-status" style="margin-top:4px;font-size:11px;">무결성: 정상 (400/400)</div>
+            <div id="worm-audit-viewer" class="worm-log" style="margin-top:4px;"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <aside id="lv-star-root"></aside>
+  <script type="module" src="./js/studio.js"></script>
+</body>
+</html>

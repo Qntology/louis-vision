@@ -60,18 +60,30 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<DocIr> {
             }
         }
         blocks.push(DocBlock::Heading { level: 1, breadcrumb: name.clone(), text: name });
-        let tbl = TableIr { rows, cols, col_widths: vec![1; cols], cells };
+        let tbl = TableIr {
+            rows,
+            cols,
+            col_widths: vec![1; cols],
+            cells,
+            unit_multiplier: 1,
+            carried_scale_from_prev: false,
+            headers: Vec::new(),
+        };
         plain_lines.extend(tbl.to_plain_rows().into_iter().filter(|l| !l.trim().is_empty()));
         blocks.push(DocBlock::Table(tbl));
     }
 
-    Ok(DocIr {
-        format: "xlsx".to_string(),
-        blocks,
-        media: Vec::new(),
-        fallback: if plain_lines.is_empty() { VisionFallbackNeed::FullPage } else { VisionFallbackNeed::None },
-        plain_text: plain_lines.join("\n"),
-    })
+    let mut ir = DocIr::new(
+        "xlsx",
+        if plain_lines.is_empty() {
+            VisionFallbackNeed::FullPage
+        } else {
+            VisionFallbackNeed::None
+        },
+    );
+    ir.blocks = blocks;
+    ir.plain_text = plain_lines.join("\n");
+    Ok(ir.finalize())
 }
 
 pub fn parse_csv(bytes: &[u8]) -> Result<DocIr> {
@@ -88,15 +100,27 @@ pub fn parse_csv(bytes: &[u8]) -> Result<DocIr> {
             }
         }
     }
-    let tbl = TableIr { rows, cols, col_widths: vec![1; cols], cells };
+    let tbl = TableIr {
+        rows,
+        cols,
+        col_widths: vec![1; cols],
+        cells,
+        unit_multiplier: 1,
+        carried_scale_from_prev: false,
+        headers: Vec::new(),
+    };
     let plain_text = tbl.to_plain_rows().join("\n");
-    Ok(DocIr {
-        format: "csv".to_string(),
-        blocks: vec![DocBlock::Table(tbl)],
-        media: Vec::new(),
-        fallback: if plain_text.trim().is_empty() { VisionFallbackNeed::FullPage } else { VisionFallbackNeed::None },
-        plain_text,
-    })
+    let mut ir = DocIr::new(
+        "csv",
+        if plain_text.trim().is_empty() {
+            VisionFallbackNeed::FullPage
+        } else {
+            VisionFallbackNeed::None
+        },
+    );
+    ir.blocks = vec![DocBlock::Table(tbl)];
+    ir.plain_text = plain_text;
+    Ok(ir.finalize())
 }
 
 pub fn parse_pdf(bytes: &[u8]) -> Result<DocIr> {
@@ -115,11 +139,8 @@ pub fn parse_pdf(bytes: &[u8]) -> Result<DocIr> {
         .iter()
         .map(|text| DocBlock::Paragraph { text: text.clone(), track_changes: Vec::new() })
         .collect();
-    Ok(DocIr {
-        format: "pdf".to_string(),
-        blocks,
-        media: Vec::new(),
-        fallback,
-        plain_text: repaired.join("\n"),
-    })
+    let mut ir = DocIr::new("pdf", fallback);
+    ir.blocks = blocks;
+    ir.plain_text = repaired.join("\n");
+    Ok(ir.finalize())
 }

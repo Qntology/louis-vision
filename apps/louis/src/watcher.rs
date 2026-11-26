@@ -161,6 +161,51 @@ impl StagedLouisPipeline {
         Ok(IngestResult { rev, block_count, max_lock_hold_us: max_lock_us.get() })
     }
 
+    pub fn ingest_field_records(
+        &self,
+        surface_key: &str,
+        raw_lines: Vec<String>,
+    ) -> Result<IngestResult> {
+        let max_lock_us = std::cell::Cell::new(0u128);
+        let key_owned = surface_key.to_string();
+
+        run_staged(
+            &self.engine,
+            |eng| {
+                let t0 = Instant::now();
+                let existing = eng.state.docs.get(&key_owned).cloned().unwrap_or_default();
+                let snap = StagedSnapshot {
+                    rev: eng.rev,
+                    input: (existing, raw_lines.clone()),
+                };
+                max_lock_us.set(max_lock_us.get().max(t0.elapsed().as_micros()));
+                Ok(snap)
+            },
+            |(existing, incoming)| {
+                let mut merged = existing.clone();
+                for line in incoming {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() && !merged.contains(&trimmed) {
+                        merged.push(trimmed);
+                    }
+                }
+                Ok(merged)
+            },
+            |eng, _snap_rev, merged| {
+                let t0 = Instant::now();
+                let block_count = merged.len();
+                eng.state.docs.insert(key_owned.clone(), merged.clone());
+                let commit_rev = eng.rev + 1;
+                max_lock_us.set(max_lock_us.get().max(t0.elapsed().as_micros()));
+                Ok(Commit::Done(IngestResult {
+                    rev: commit_rev,
+                    block_count,
+                    max_lock_hold_us: max_lock_us.get(),
+                }))
+            },
+        )
+    }
+
     pub fn doc_count(&self) -> usize {
         self.engine.lock().map(|g| g.state.docs.len()).unwrap_or(0)
     }

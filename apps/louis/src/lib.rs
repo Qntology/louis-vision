@@ -1,9 +1,12 @@
 //! Tier 2-B1 air-gapped docs automation application (`louis-docs`).
 
+pub mod eval_nn;
 pub mod overlay;
 pub mod vault_lan;
 pub mod watcher;
 pub mod workflow;
+#[cfg(feature = "field-3d")]
+pub mod field_3d;
 
 use anyhow::Result;
 use lv_core::residency::{Group, ModelId, Phase};
@@ -53,9 +56,10 @@ pub fn run_selftest(mode: EngineMode) -> Result<String> {
 
     let suite = evaluate_all_packs(mode);
     anyhow::ensure!(suite.total_packs == 7 && suite.passed_packs == 7 && suite.gate_ab.passed);
+    eval_nn::run_selftest_six_counterexamples()?;
 
     Ok(format!(
-        "[LOUIS-DOCS] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} ex_style=0x{:08X} affinity=0x{:02X}",
+        "[LOUIS-DOCS] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} counterexamples=6/6 ex_style=0x{:08X} affinity=0x{:02X}",
         suite.mode,
         suite.passed_packs,
         suite.total_packs,

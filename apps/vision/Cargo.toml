@@ -33,6 +33,9 @@ lv-sds     = { path = "../../crates/lv-sds", features = ["granite-ttm"] }
 lv-core    = { path = "../../crates/lv-core" }
 lv-spatial = { path = "../../crates/lv-spatial", features = ["granite-ttm"] }
 lv-router  = { path = "../../crates/lv-router", default-features = false, features = ["spatial-3d"] }
+lv-doc     = { path = "../../crates/lv-doc", default-features = false }
+lv-domain  = { path = "../../crates/lv-domain" }
+lv-planar  = { path = "../../crates/lv-planar", default-features = false, features = ["domain", "screen"] }
 
 # Tier 0 (Qntology/premium-discount) pinned to PD_LIB_PIN_REV
 premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
@@ -66,20 +69,21 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
-cuda    = ["lv-core/cuda"]
-rocm    = ["lv-core/rocm"]
-vulkan  = ["lv-core/vulkan"]
-metal   = ["lv-core/metal"]
+default   = []
+planar-xr = ["dep:lv-planar", "lv-router/spatial-planar"]
+cuda      = ["lv-core/cuda", "lv-planar?/cuda"]
+rocm      = ["lv-core/rocm", "lv-planar?/rocm"]
+vulkan    = ["lv-core/vulkan", "lv-planar?/vulkan"]
+metal     = ["lv-core/metal", "lv-planar?/metal"]
 
 [dependencies]
-# Tier 1 zero-SAM3.1 stereo spatial, residency & temporal gate crates ONLY
-# (never depends on lv-doc, lv-screen, lv-agent, lv-domain, lancedb, sammie-*, reqwest, ureq, tauri)
+# Tier 1 stereo spatial, residency, planar geometry, & temporal gate crates
 lv-kernels = { workspace = true }
 lv-sds     = { workspace = true }
 lv-core    = { workspace = true }
 lv-spatial = { workspace = true }
 lv-router  = { workspace = true }
+lv-planar  = { workspace = true, optional = true }
 
 # Tier 0 universal evaluation & hash-chained audit ledger
 premium-discount-eval = { workspace = true }
@@ -121,6 +125,12 @@ opt-level = 3
 [profile.dev.package.lv-kernels]
 opt-level = 3
 [profile.dev.package.lv-spatial]
+opt-level = 3
+[profile.dev.package.lv-planar]
+opt-level = 3
+[profile.dev.package.lv-doc]
+opt-level = 3
+[profile.dev.package.image]
 opt-level = 3
 [profile.dev.package.rayon]
 opt-level = 3

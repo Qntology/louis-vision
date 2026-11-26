@@ -1,5 +1,5 @@
-// 연산 장치 선택·칩, 그리고 SigLIP2 / TTM / 깊이 / 마스크 / 임베더 / SDS 상태 줄(상태줄과 🌍 월드 팝오버 공용).
-// 모델 받기·삭제·불러오기는 models.js 가 맡는다(네 모델은 필수라 끄는 스위치가 없다).
+// 연산 장치 선택·칩, 그리고 SigLIP2 / Granite TTM / 깊이 / 임베더 / SDS 상태 줄(상태줄과 🌍 월드 팝오버 공용).
+// 모델 받기·삭제·불러오기는 models.js 가 맡는다(세 모델은 필수라 끄는 스위치가 없다).
 import { call } from './api.js';
 import { bus, state } from './state.js';
 import { $, clear, el, fmt } from './util.js';
@@ -79,9 +79,10 @@ export async function refreshModels({ quiet = true } = {}) {
 
 function renderToggles() {
   const live = state.models?.stand_ins;
-  const NAMES = { recognizer: '인식기', locate: '의미 위치', depth: '깊이', track: '마스크', ttm: 'TTM' };
-  $('model-files').textContent = Array.isArray(live) && live.length
-    ? `아직 대역 모델로 도는 부분: ${live.map((k) => NAMES[k] ?? k).join(', ')} — 불러오기를 누르세요.`
+  const NAMES = { recognizer: '인식기', locate: '의미 위치', depth: '깊이', ttm: 'TTM' };
+  const filtered = Array.isArray(live) ? live.filter((k) => k !== 'track') : [];
+  $('model-files').textContent = filtered.length
+    ? `아직 대역 모델로 도는 부분: ${filtered.map((k) => NAMES[k] ?? k).join(', ')} — 불러오기를 누르세요.`
     : '';
 }
 
@@ -100,10 +101,9 @@ export function updateModelLines() {
   if ($('model-depth-k')) $('model-depth-k').textContent = stereo ? '깊이 (SGBM 스테레오)' : '깊이 (TIPSv2)';
   $('model-depth').textContent = ml
     ? stereo
-      ? `${ml.depth} · CPU · 기선 ${fmt.n((state.models.stereo?.baseline_m ?? 0) * 100, 1)} cm · TIPSv2 안 씀`
+      ? `${ml.depth} · CPU · 기선 ${fmt.n((state.models.stereo?.baseline_m ?? 0) * 100, 1)} cm · SGBM(가중치 0 B)`
       : `${ml.depth} · ${dev?.depth ?? '-'}`
     : '미확인';
-  $('model-mask').textContent = ml ? `${ml.track} · ${dev?.track ?? '-'}` : '미확인';
   $('model-embed').textContent = c ? (c.mode === 'embedding' ? '임베딩 + 어휘' : '어휘 전용 (lexical)') : state.models ? (state.models.parser_embedding ? '임베딩 + 어휘 (연결됨)' : '어휘 전용 (lexical)') : '미확인 — 명령 실행 시 갱신';
   $('model-sds').textContent = sds?.recipe ?? '미확인';
   $('sb-sds').textContent = sds?.recipe ?? '-';

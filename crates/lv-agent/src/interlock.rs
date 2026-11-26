@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use lv_sds::audit::{Level, LogLine, GENESIS};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,74 +164,7 @@ pub fn record_interlock(
     Ok(&state.steps[idx])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AuditEntry {
-    pub line: LogLine,
-    pub prev: String,
-    pub hash: String,
-}
-
-/// Append-only SHA-256 hash-chained audit trail backed by `lv_sds::audit::LogLine`.
-#[derive(Debug, Clone)]
-pub struct AuditChain {
-    head: String,
-    entries: Vec<AuditEntry>,
-}
-
-impl Default for AuditChain {
-    fn default() -> Self {
-        Self { head: GENESIS.to_string(), entries: Vec::new() }
-    }
-}
-
-impl AuditChain {
-    pub fn append(&mut self, ts: i64, cat: &str, msg: &str, data: Option<serde_json::Value>) -> &AuditEntry {
-        let seq = self.entries.len() as u64 + 1;
-        let line = LogLine {
-            seq,
-            ts,
-            tick: None,
-            cat: cat.to_string(),
-            level: Level::Info,
-            msg: msg.to_string(),
-            data,
-        };
-        let body = serde_json::to_string(&line).unwrap_or_default();
-        let mut h = Sha256::new();
-        h.update(self.head.as_bytes());
-        h.update(b":");
-        h.update(body.as_bytes());
-        let hash = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let entry = AuditEntry { line, prev: self.head.clone(), hash: hash.clone() };
-        self.head = hash;
-        self.entries.push(entry);
-        self.entries.last().expect("pushed entry")
-    }
-
-    pub fn verify(&self) -> bool {
-        let mut prev = GENESIS.to_string();
-        for e in &self.entries {
-            if e.prev != prev {
-                return false;
-            }
-            let body = serde_json::to_string(&e.line).unwrap_or_default();
-            let mut h = Sha256::new();
-            h.update(prev.as_bytes());
-            h.update(b":");
-            h.update(body.as_bytes());
-            let want = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
-            if e.hash != want {
-                return false;
-            }
-            prev = want;
-        }
-        true
-    }
-
-    pub fn entries(&self) -> &[AuditEntry] {
-        &self.entries
-    }
-}
+pub use lv_sds::audit_chain::{AuditChain, AuditEntry};
 
 #[cfg(test)]
 mod tests {
@@ -325,5 +256,23 @@ mod tests {
         let mut chain = AuditChain::default();
         chain.append(1000, "interlock", "passed", None);
         assert!(chain.verify());
+
+        // M1 Single-Source-of-Truth pointer identity + select_form_for_verdict check
+        assert!(std::ptr::eq(
+            lv_sds::CITIZEN_FORBIDDEN_TERMS,
+            crate::gates::FIELD_FORBIDDEN
+        ));
+        assert!(std::ptr::eq(
+            lv_sds::CITIZEN_FORBIDDEN_TERMS,
+            lv_doc::writer::guard::FIELD_FORBIDDEN
+        ));
+        let adv = crate::gates::select_form_for_verdict(
+            OutputForm::ApprovalNotice,
+            AgentVerdict::G1ExpiredMandatoryReject,
+            1,
+            false,
+        );
+        assert_eq!(adv.form, OutputForm::RejectNotice);
+        assert!(adv.overridden);
     }
 }

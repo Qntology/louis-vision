@@ -377,3 +377,45 @@ pub fn deskew(img: &RgbImage, deg: f32) -> RgbImage {
         sample(cx + dx * cos - dy * sin - 0.5, cy + dx * sin + dy * cos - 0.5)
     })
 }
+
+pub fn extract_ink_page(gray: &image::GrayImage) -> InkPage {
+    InkPage::new(gray)
+}
+
+/// Estimates skew angle (`±5.0°` in `0.25°` steps), deskews `rgb`, and returns aligned RGB, `InkPage` (with chroma), and skew angle.
+pub fn straight_ink(rgb: &RgbImage) -> (RgbImage, InkPage, f32) {
+    let gray = image::imageops::grayscale(rgb);
+    let deg = estimate_skew(&gray);
+    let aligned = if deg.abs() > 0.05 { deskew(rgb, deg) } else { rgb.clone() };
+    let aligned_gray = image::imageops::grayscale(&aligned);
+    let ink = InkPage::new(&aligned_gray).with_color(&aligned);
+    (aligned, ink, deg)
+}
+
+/// Maps a bounding box from deskewed pixel coordinates back to the original image frame (`deg` inverted).
+pub fn unrotate_bbox(b: Bbox, w: u32, h: u32, deg: f32) -> Bbox {
+    if deg.abs() <= 0.05 || w == 0 || h == 0 {
+        return b;
+    }
+    let rad = (-deg).to_radians();
+    let (s, c) = rad.sin_cos();
+    let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+    let pts = [
+        (b.0 as f32, b.1 as f32),
+        (b.2 as f32, b.1 as f32),
+        (b.2 as f32, b.3 as f32),
+        (b.0 as f32, b.3 as f32),
+    ];
+    let (mut x0, mut y0, mut x1, mut y1) = (w as f32, h as f32, 0.0f32, 0.0f32);
+    for (px, py) in pts {
+        let dx = px - cx;
+        let dy = py - cy;
+        let ox = (c * dx - s * dy + cx).clamp(0.0, w as f32);
+        let oy = (s * dx + c * dy + cy).clamp(0.0, h as f32);
+        x0 = x0.min(ox);
+        y0 = y0.min(oy);
+        x1 = x1.max(ox);
+        y1 = y1.max(oy);
+    }
+    (x0.floor() as u32, y0.floor() as u32, (x1.ceil() as u32).min(w), (y1.ceil() as u32).min(h))
+}

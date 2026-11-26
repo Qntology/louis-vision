@@ -43,7 +43,8 @@ pub struct CropPlan {
 impl CropPlan {
     pub fn patches(&self) -> u32 {
         let (w, h) = ((self.bbox.2 - self.bbox.0) as f32, (self.bbox.3 - self.bbox.1) as f32);
-        (w * h * self.upscale * self.upscale / (14.0 * 14.0)) as u32
+        let patch_px = lv_core::siglip2::PATCH as f32;
+        (w * h * self.upscale * self.upscale / (patch_px * patch_px)) as u32
     }
 }
 
@@ -279,11 +280,24 @@ pub fn plan_page(ink: &InkPage, s: &Scores, p: &PlanParams) -> PagePlan {
         if run.paragraph {
             let cells = s.cells(ink, bbox);
             let guide_wins = if p.use_arena && !cells.is_empty() {
+                let mut active = vec![false; s.rows * s.cols];
+                for &idx in &cells {
+                    if idx < active.len() {
+                        active[idx] = true;
+                    }
+                }
+                let guide_idx = 0usize;
+                let protected_kinds = [false, false, false, p.protect];
+                let arena_out = super::arena::run_arena(
+                    &[&s.guide, &s.form, &s.table, &s.title],
+                    &active,
+                    &protected_kinds,
+                );
                 let firm = cells
                     .iter()
                     .filter(|&&i| {
                         let best_other = s.form[i].max(s.table[i]).max(s.title[i]);
-                        s.guide[i] - best_other >= MIN_CELL_MARGIN
+                        arena_out.owns(guide_idx, i) && s.guide[i] - best_other >= MIN_CELL_MARGIN
                     })
                     .count();
                 firm as f32 >= cells.len() as f32 * p.drop_share
