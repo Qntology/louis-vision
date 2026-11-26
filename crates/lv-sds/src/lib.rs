@@ -25,6 +25,8 @@ pub const CITIZEN_FORBIDDEN_TERMS: &[&str] = &[
 ];
 
 pub mod audit_chain;
+pub mod blockies_haring;
+pub mod seed_tree;
 pub use audit_chain::{
     AuditChain, AuditEntry, ReflectionFlushGuard, ReflectionLogWriter, ReflectionSyncPolicy,
 };

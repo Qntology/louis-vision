@@ -2,7 +2,11 @@
 
 pub mod audit_probe;
 pub mod audit_schema;
+pub mod corpus_plan_manifest;
+pub mod dom_d6_concert_twin;
+pub mod domains;
 pub mod holdout_zh;
+pub mod mcp_bus;
 pub mod schema;
 pub mod synth_6axes;
 pub mod track_a_core7;

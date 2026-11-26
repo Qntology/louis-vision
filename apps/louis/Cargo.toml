@@ -16,6 +16,7 @@ repository = "https://github.com/Qntology/louis-vision"
 [features]
 default       = ["hwp-writer"]
 hwp-writer    = ["lv-doc/hwp-writer"]
+html-pug      = ["lv-doc/html-pug"]
 field-3d      = ["dep:lv-spatial", "dep:lv-planar", "lv-router/spatial-planar"]
 local-lancedb = ["dep:lancedb"]
 cuda          = ["lv-core/cuda", "lv-screen/cuda"]
@@ -54,6 +55,7 @@ flate2      = "1.0"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = { version = "1", features = ["float_roundtrip"] }
 sha2        = "0.10"
+sqlparser   = "0.61"
 smallvec    = "1"
 chrono      = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 zeroize     = { version = "1", features = ["derive"] }

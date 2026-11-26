@@ -2,6 +2,7 @@
 
 pub mod eval_nn;
 pub mod overlay;
+pub mod sql_guard;
 pub mod vault_lan;
 pub mod watcher;
 pub mod workflow;
