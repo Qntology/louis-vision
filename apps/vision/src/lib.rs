@@ -1,4 +1,4 @@
-//! Tier 2-B2 60fps concert/broadcast XR live engine (`louis-stage`).
+//! Tier 2-B2 60fps concert/broadcast XR live engine (`vision`).
 //! Zero SAM 3.1 / MobileSAM / `lv-doc` / `lv-screen` / `lv-agent` / `lancedb` / WAN HTTP crates.
 
 pub mod calibration;
@@ -192,7 +192,7 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     osc.send_track_xyz(frame.performers[0].id, frame.performers[0].pos_m)?;
     let _gpu = build_zero_copy_descriptor(
         GpuShareBackend::default_for_host(),
-        "LouisStage_ID",
+        "VisionStage_ID",
         &frame.matte,
         &frame.id_matte_rgba,
         &frame.depth,
@@ -204,7 +204,7 @@ pub fn run_selftest(osc_target: Option<SocketAddr>) -> Result<String> {
     let _dummy_depth = DepthMap { width: 2, height: 2, kind: DepthKind::Metric, data: vec![2.0; 4] };
 
     Ok(format!(
-        "[LOUIS-STAGE] selftest PASS frame={} performers={} valid_ratio={:.3} fusion_res_mm={:.2} evictions={} xr_anchors={} budget_us={}",
+        "[VISION] selftest PASS frame={} performers={} valid_ratio={:.3} fusion_res_mm={:.2} evictions={} xr_anchors={} budget_us={}",
         frame.frame_index,
         frame.performers.len(),
         frame.stereo_valid_ratio,

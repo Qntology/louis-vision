@@ -1,11 +1,11 @@
-# Qntology/louis-vision/apps/xr-live/Cargo.toml (Tier 2-B2 60fps concert/broadcast XR live engine)
+# Qntology/louis-vision/apps/vision/Cargo.toml (Tier 2-B2 60fps concert/broadcast XR live engine)
 
 [workspace]
 resolver = "2"
 members = ["."]
 
 [package]
-name = "louis-stage"
+name = "vision"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"

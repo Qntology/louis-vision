@@ -1,11 +1,11 @@
-# Qntology/louis-vision/apps/office/Cargo.toml (Tier 2-B1 air-gapped office automation suite)
+# Qntology/louis-vision/apps/louis/Cargo.toml (Tier 2-B1 air-gapped office automation suite)
 
 [workspace]
 resolver = "2"
 members = ["."]
 
 [package]
-name = "louis-office"
+name = "louis"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"

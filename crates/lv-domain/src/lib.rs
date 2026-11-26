@@ -33,7 +33,7 @@ impl EngineMode {
     }
 }
 
-/// Seven core air-gapped office workflow domain packs shipped with `louis-office`.
+/// Seven core air-gapped office workflow domain packs shipped with `louis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OfficeDomainPack {

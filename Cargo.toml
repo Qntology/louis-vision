@@ -1,5 +1,5 @@
 # Qntology/louis-vision — Tier 1 Unified Zero-Net / Zero-DB / Zero-UI / Zero-SAM3.1 Vision Engine
-# Apps (apps/office, apps/xr-live) live in excluded Tier 2-B workspaces to prevent cyclic workspace entanglement.
+# Apps (apps/louis, apps/vision) live in excluded Tier 2-B workspaces to prevent cyclic workspace entanglement.
 
 [workspace]
 resolver = "2"
@@ -15,8 +15,8 @@ members = [
     "crates/lv-agent",
 ]
 exclude = [
-    "apps/office",
-    "apps/xr-live",
+    "apps/louis",
+    "apps/vision",
 ]
 
 [workspace.package]

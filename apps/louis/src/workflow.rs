@@ -88,17 +88,17 @@ impl AxisScorer for StaticAxisScorer {
     }
 }
 
-pub struct OfficeApprovalFlow {
+pub struct LouisApprovalFlow {
     pub policy: AutomationPolicy,
 }
 
-impl Default for OfficeApprovalFlow {
+impl Default for LouisApprovalFlow {
     fn default() -> Self {
         Self { policy: AutomationPolicy::default() }
     }
 }
 
-impl OfficeApprovalFlow {
+impl LouisApprovalFlow {
     pub fn evaluate_case(
         &self,
         case_id: &str,
@@ -190,7 +190,7 @@ mod tests {
         assert!(suite.gate_ab.passed);
         assert_eq!(cer_char_level("DOM-01", "DOM-01"), 0.0);
 
-        let mut flow = OfficeApprovalFlow::default();
+        let mut flow = LouisApprovalFlow::default();
         assert_eq!(flow.policy.mode(), OperatingMode::Assist);
         assert!(flow.policy.enable_auto("", "law", Utc::now()).is_err());
         flow.policy.enable_auto("EMP-001", "행정절차법 제14조", Utc::now()).unwrap();
@@ -230,7 +230,7 @@ mod tests {
         assert!(check_citizen_text("내부 LatticeDB 확인", &[]).is_err());
 
         // Guarded .hwpx and .docx generation + roundtrip parse.
-        let (_hwpx, _docx, fact_ok) = OfficeApprovalFlow::emit_guarded_deliverables(
+        let (_hwpx, _docx, fact_ok) = LouisApprovalFlow::emit_guarded_deliverables(
             "보완 안내",
             "확인 금액 1,000원입니다.",
             "원본 금액 1,000원",

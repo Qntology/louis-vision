@@ -1603,27 +1603,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "louis-stage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "candle-core",
- "image",
- "lv-core",
- "lv-kernels",
- "lv-router",
- "lv-sds",
- "lv-spatial",
- "premium-discount-eval",
- "premium-discount-sds",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "lv-core"
 version = "0.1.0"
 dependencies = [
@@ -3221,6 +3200,27 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vision"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "image",
+ "lv-core",
+ "lv-kernels",
+ "lv-router",
+ "lv-sds",
+ "lv-spatial",
+ "premium-discount-eval",
+ "premium-discount-sds",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "walkdir"
