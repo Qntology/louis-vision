@@ -19,7 +19,9 @@ use crate::kin::{self, KinLoads, KinPose};
 use crate::parts::Segment;
 
 pub mod edit;
+pub mod haring_dancer;
 pub mod urdf;
+pub mod venue_cad;
 
 pub const SHELL: [u8; 3] = [226, 228, 232];
 pub const TRIM: [u8; 3] = [150, 154, 164];

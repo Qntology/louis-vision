@@ -1,5 +1,6 @@
 //! Native HWP 5.0 OLE2 (`cfb`) and OWPML `.hwpx` (`zip` + `quick-xml`) AST parsers.
 
+use std::borrow::Cow;
 use std::io::{Cursor, Read};
 
 use anyhow::{bail, Context, Result};
@@ -9,7 +10,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
-use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, VisionFallbackNeed};
+use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange, VisionFallbackNeed};
 
 const HWPTAG_PARA_TEXT: u16 = 67;
 
@@ -190,9 +191,10 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
 
     let mut in_t = false;
     let mut in_strike = false;
+    let mut run_vert: u8 = 0; // 0 = normal, 1 = superscript (^), 2 = subscript (_)
     let mut para_text = String::new();
-    let mut para_struck: Vec<super::ir::TrackChange> = Vec::new();
-    let mut cell_struck: Vec<super::ir::TrackChange> = Vec::new();
+    let mut para_struck: Vec<TrackChange> = Vec::new();
+    let mut cell_struck: Vec<TrackChange> = Vec::new();
 
     let attr_usize = |e: &quick_xml::events::BytesStart<'_>, keys: &[&[u8]]| -> Option<usize> {
         for a in e.attributes().flatten() {
@@ -203,6 +205,15 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                         return Some(v);
                     }
                 }
+            }
+        }
+        None
+    };
+
+    let attr_str = |e: &quick_xml::events::BytesStart<'_>, key: &[u8]| -> Option<String> {
+        for a in e.attributes().flatten() {
+            if a.key.local_name().as_ref() == key {
+                return std::str::from_utf8(&a.value).ok().map(str::to_string);
             }
         }
         None
@@ -243,26 +254,44 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                         para_text.clear();
                         para_struck.clear();
                     }
+                    b"run" => {
+                        in_strike = false;
+                        run_vert = 0;
+                    }
                     b"strikeout" | b"strike" => in_strike = true,
+                    b"supscript" => run_vert = 1,
+                    b"subscript" => run_vert = 2,
+                    b"vertAlign" => {
+                        if let Some(val) = attr_str(&e, b"val") {
+                            let up = val.trim().to_ascii_uppercase();
+                            run_vert = match up.as_str() {
+                                "SUPERSCRIPT" => 1,
+                                "SUBSCRIPT" => 2,
+                                _ => 0,
+                            };
+                        }
+                    }
                     b"t" => in_t = true,
                     _ => {}
                 }
             }
             Ok(Event::Text(e)) if in_t => {
-                let s = String::from_utf8_lossy(e.as_ref());
+                let raw = String::from_utf8_lossy(e.as_ref());
+                let s: Cow<'_, str> = match run_vert {
+                    1 if !raw.trim().is_empty() => Cow::Owned(format!("^{}", raw.trim())),
+                    2 if !raw.trim().is_empty() => Cow::Owned(format!("_{}", raw.trim())),
+                    _ => raw,
+                };
                 if in_strike {
                     let t = s.trim();
                     if !t.is_empty() {
                         if in_tc {
-                            cell_struck.push(super::ir::TrackChange::Struck(t.to_string()));
+                            cell_struck.push(TrackChange::Struck(t.to_string()));
                         } else {
-                            para_struck.push(super::ir::TrackChange::Struck(t.to_string()));
+                            para_struck.push(TrackChange::Struck(t.to_string()));
                         }
                     }
                 } else if in_tc {
-                    if !cell_text.is_empty() && !cell_text.ends_with('\n') && !s.is_empty() {
-                        // Append inline segments directly; separate paragraphs on </hp:p>
-                    }
                     cell_text.push_str(&s);
                 } else {
                     para_text.push_str(&s);
@@ -271,6 +300,11 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"t" => in_t = false,
                 b"strikeout" | b"strike" => in_strike = false,
+                b"supscript" | b"subscript" | b"charPr" => run_vert = 0,
+                b"run" => {
+                    in_strike = false;
+                    run_vert = 0;
+                }
                 b"p" => {
                     if in_tc {
                         if !cell_text.ends_with('\n') && !cell_text.is_empty() {
@@ -327,4 +361,37 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
         buf.clear();
     }
     Ok(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn parses_hwpx_flattens_1x1_preserves_merged_cells_and_superscript() {
+        let sec = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:tbl rowCnt="1" colCnt="1"><hp:tr><hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:p><hp:run><hp:t>장식표 제목</hp:t></hp:run></hp:p></hp:tc></hp:tr></hp:tbl></hp:run></hp:p>
+  <hp:p><hp:run><hp:t>농도 1.2 x 10</hp:t></hp:run><hp:run><hp:supscript/><hp:t>4</hp:t></hp:run><hp:run><hp:t> CFU/g</hp:t></hp:run></hp:p>
+  <hp:p><hp:run><hp:tbl rowCnt="2" colCnt="2">
+    <hp:tr><hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="2" rowSpan="1"/><hp:p><hp:run><hp:t>합계</hp:t></hp:run></hp:p></hp:tc></hp:tr>
+    <hp:tr><hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:p><hp:run><hp:t>A</hp:t></hp:run></hp:p></hp:tc><hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:p><hp:run><hp:t>500</hp:t></hp:run></hp:p></hp:tc></hp:tr>
+  </hp:tbl></hp:run></hp:p>
+</hs:sec>"#;
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cur);
+            zw.start_file("Contents/section0.xml", SimpleFileOptions::default()).unwrap();
+            zw.write_all(sec.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+        let ir = parse_hwpx(&cur.into_inner()).unwrap();
+        assert!(ir.plain_text.contains("장식표 제목"));
+        assert!(ir.plain_text.contains("10^4"));
+        assert_eq!(ir.tables.len(), 1);
+        assert_eq!(ir.tables[0].cells[0].col_span, 2);
+    }
 }

@@ -15,6 +15,7 @@ mod driver;
 pub mod embedding;
 pub mod feedback;
 pub mod foreuse;
+pub mod haring_visual_audit;
 pub mod mcp;
 pub mod ml;
 mod mldrive;

@@ -10,6 +10,30 @@ use serde::{Deserialize, Serialize};
 
 pub const DOCS_NN_HOLDOUT_SEED: u64 = 2026_1126;
 pub const DOCS_NN_DIAG_SEED: u64 = 2026_0501;
+pub const MASTER_DIAG_SEED: u64 = 2026_0501;
+pub const MASTER_HOLDOUT_SEED: u64 = 2026_1126;
+pub const FIXED_EVAL_NOW_MS: i64 = lv_sds::seed_tree::FIXED_EVAL_NOW_MS;
+
+pub fn derive_stream_seed(
+    split: EvalSplit,
+    domain_or_track: &str,
+    bundle_idx: u32,
+    tag: lv_sds::seed_tree::SeedStreamTag,
+) -> u64 {
+    let (root, s) = match split {
+        EvalSplit::Diag => (MASTER_DIAG_SEED, lv_sds::seed_tree::EvalSplit::Diag),
+        EvalSplit::Holdout => (MASTER_HOLDOUT_SEED, lv_sds::seed_tree::EvalSplit::Holdout),
+    };
+    lv_sds::seed_tree::derive_stream_seed_with_root(root, s, domain_or_track, bundle_idx, tag)
+}
+
+pub fn derive_deterministic_wallet_key32(split: EvalSplit, actor_slot: &str) -> [u8; 32] {
+    let (root, s) = match split {
+        EvalSplit::Diag => (MASTER_DIAG_SEED, lv_sds::seed_tree::EvalSplit::Diag),
+        EvalSplit::Holdout => (MASTER_HOLDOUT_SEED, lv_sds::seed_tree::EvalSplit::Holdout),
+    };
+    lv_sds::seed_tree::derive_deterministic_wallet_key32_with_root(root, s, actor_slot)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

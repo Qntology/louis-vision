@@ -151,3 +151,10 @@ opt-level = 2
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+[dev-dependencies]
+sandbox-core = { path = "crates/sandbox-core" }
+sandbox-runtime = { path = "crates/sandbox-runtime", features = ["planar-xr"] }
+lv-planar = { workspace = true }
+lv-domain  = { workspace = true }
+lv-doc     = { workspace = true, default-features = false }
