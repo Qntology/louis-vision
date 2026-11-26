@@ -1,0 +1,128 @@
+/* 월드 화면 위에 얹는 HUD — 프레임 · 탐지 상자, 유닛 HUD 의 신체 상태 · 관절 표 · 부위 그림, 1인칭 줍기 절차, 미니맵.
+   유리 패널은 endmill .vp-hud 와 같다(rgba(17,17,19,.84~.95) + blur 6px). 배치는 overlay.css 가 맡는다. */
+.viewport-canvas-wrap { position: absolute; inset: 0; overflow: hidden; background: var(--bg-plot); }
+.viewport-canvas-wrap.can-pick { cursor: pointer; }
+.vp-glass { background: var(--glass); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; }
+
+.frame-box { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.frame-box canvas { width: 100%; height: 100%; display: block; background: var(--bg-plot); }
+.det-layer { position: absolute; inset: 0; pointer-events: none; }
+.det-box { position: absolute; border: 1.5px solid var(--success); border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45); }
+.det-box.hold { border-style: dashed; border-color: var(--warning); }
+.det-tag { position: absolute; left: -1.5px; top: -1.5px; transform: translateY(-100%); font-family: var(--font-mono); font-size: 0.58rem; line-height: 1.5; background: rgba(9, 9, 11, 0.82); color: var(--text-bright); padding: 0 5px; white-space: nowrap; border-radius: 3px 3px 0 0; }
+.det-box.hold .det-tag { color: var(--warning); }
+.det-box.edge .det-tag { transform: none; top: 0; border-radius: 0 0 3px 0; }
+.world-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; color: var(--text-muted); font-size: 0.76rem; line-height: 1.6; }
+.world-empty.err { color: var(--danger); }
+
+/* ── (a) 신체 상태 HUD ─────────────────────────────────────────── */
+.body-hud { padding: 8px 10px 8px; }
+.bh-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.bh-title { font-size: 0.58rem; font-weight: 600; letter-spacing: var(--track-caps); color: var(--text-muted); text-transform: uppercase; }
+.bh-toggle { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid var(--border-light); border-radius: var(--radius-sm); color: var(--text-dim); font-size: 9px; cursor: pointer; }
+.bh-toggle:hover { background: var(--bg-hover); color: var(--text-bright); }
+.bh-head .bh-reset { margin-left: auto; width: auto; padding: 0 6px; font-size: 0.6rem; white-space: nowrap; }
+.body-hud.folded .bh-body, .body-hud.folded .bh-unit, .body-hud.folded .bh-effects, .body-hud.folded .bh-meta, .body-hud.folded .bh-note { display: none; }
+.bh-body { display: flex; gap: 10px; align-items: flex-start; }
+#body-svg { width: 128px; height: auto; flex-shrink: 0; display: block; overflow: visible; }
+.bh-list { list-style: none; display: flex; flex-direction: column; gap: 3px; min-width: 108px; padding-top: 4px; }
+.bh-list li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 6px; align-items: center; font-size: 0.68rem; color: var(--text-dim); padding: 2px 4px; border-radius: 3px; cursor: help; white-space: nowrap; }
+.bh-list li:hover, .bh-list li.hl { background: var(--bg-hover); color: var(--text-bright); }
+.bh-list .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--zc, var(--text-muted)); }
+.bh-list .val { font-family: var(--font-mono); font-size: 0.62rem; color: var(--text-bright); }
+.bh-list li[data-group="hand"] .nm::before { content: '손 '; color: var(--text-muted); }
+.bh-list li[data-group="foot"] .nm::before { content: '발 '; color: var(--text-muted); }
+[data-level="ok"] { --zc: var(--lv-ok); }
+[data-level="warn"] { --zc: var(--lv-warn); }
+[data-level="bad"] { --zc: var(--lv-bad); }
+[data-level="crit"] { --zc: var(--lv-crit); }
+.zone { --zc: var(--text-muted); cursor: help; outline: none; }
+.zone .z-base { fill: var(--zc); fill-opacity: 0.12; stroke: var(--zc); stroke-width: 1.2; transition: fill-opacity 0.15s; }
+.zone .z-fill { fill: var(--zc); fill-opacity: 0.42; transition: y 0.3s, height 0.3s; }
+.zone .z-val { fill: var(--text-bright); font: 600 10px var(--font-mono); text-anchor: middle; dominant-baseline: central; pointer-events: none; paint-order: stroke; stroke: rgba(0, 0, 0, 0.6); stroke-width: 2px; }
+.zone .z-cap { fill: var(--text-dim); font: 600 7px var(--font-sans); text-anchor: middle; pointer-events: none; }
+.zone:hover .z-base, .zone.hl .z-base, .zone:focus-visible .z-base { fill-opacity: 0.3; stroke-width: 2; }
+.zone:focus-visible .z-base { stroke-dasharray: 3 2; }
+.zone[data-level="crit"] .z-base { animation: pulse 1s ease-in-out infinite; }
+.sil-line { fill: none; stroke: var(--border-strong); stroke-width: 1; }
+.bh-effects { list-style: none; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.fx-chip { font-size: 0.6rem; line-height: 1.5; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border-light); color: var(--text-muted); cursor: help; }
+.fx-chip[data-level="warn"], .fx-chip[data-level="bad"], .fx-chip[data-level="crit"] { color: var(--zc); border-color: var(--zc); background: rgba(255, 255, 255, 0.03); }
+.fx-chip[data-level="ok"] { opacity: 0.7; }
+.bh-meta { font-family: var(--font-mono); font-size: 0.56rem; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+.bh-note { font-size: 0.56rem; color: var(--text-muted); margin-top: 3px; line-height: 1.45; white-space: normal; }
+
+/* ── (b) 미니맵 ─────────────────────────────────────────────── */
+.vp-minimap { padding: 6px; }
+.vp-minimap canvas { display: block; width: 148px; height: 148px; border-radius: 5px; background: var(--bg-plot); }
+.vp-minimap .mm-cap { font-family: var(--font-mono); font-size: 0.56rem; color: var(--text-muted); margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; }
+
+/* 3인칭 관절 물리: 관절 점·CoM·ZMP 오버레이와 관절 표 */
+.frame-box .joint-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; background: transparent; }
+.joint-panel { padding: 8px 10px; font-size: 0.66rem; color: var(--text); }
+.joint-panel .jp-head { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
+.joint-panel .jp-head span { color: var(--text-dim); text-align: right; }
+.joint-panel canvas { display: block; width: 100%; height: 90px; background: var(--bg-plot); border-radius: 4px; }
+.jp-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.jp-table th { text-align: left; font-weight: 600; color: var(--text-muted); padding: 1px 2px; }
+.jp-table td { padding: 1px 2px; border-top: 1px solid var(--border); white-space: nowrap; }
+.jp-table td.r { text-align: right; }
+.jp-table tr.sat td { color: var(--warning); }
+.jp-table tr.stall td, .jp-table tr.over td { color: var(--danger); }
+.jp-table tr.statics td:first-child::after { content: ' ·정역학'; color: var(--text-muted); }
+.jp-table tr.structure td:first-child::after { content: ' ·구조'; color: var(--text-muted); }
+.jp-bar { display: inline-block; width: 46px; height: 6px; background: var(--bg-active); border-radius: 3px; overflow: hidden; vertical-align: middle; }
+.jp-bar > i { display: block; height: 100%; }
+.jp-notes { margin: 6px 0 0; padding-left: 14px; color: var(--text-dim); }
+/* 포커스 시점: 행위가 쓰는 부위의 힘·관절 그림 (sandbox_core::act::focus) */
+.focus-hud { padding: 8px 10px; font-size: 0.66rem; color: var(--text); }
+.focus-hud .fh-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 4px; }
+.focus-hud .fh-head select { min-height: 22px; font-size: 0.62rem; }
+.focus-hud canvas { display: block; width: 100%; height: 150px; border-radius: 4px; }
+.focus-hud .fh-cap { margin-top: 4px; color: var(--text-dim); line-height: 1.4; overflow-wrap: anywhere; }
+.focus-hud .fh-cap .fail { color: var(--danger); }
+#orbit-range { width: 96px; flex: 0 0 96px; }
+
+/* 줍기 절차: 고개 숙여 응시 → 비전 확인 → 자세 낮춤 → 쥐기 → 들어올림 (procedure) */
+.pick-hud { width: 236px; padding: 8px 10px 9px; font-size: 0.66rem; color: var(--text); }
+.pick-hud .ph-head { font-size: 0.72rem; color: var(--text-bright); margin-bottom: 4px; overflow-wrap: anywhere; }
+.ph-stages { list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0 0 5px; padding: 0; }
+.ph-stage { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 6px; align-items: center; color: var(--text-muted); }
+.ph-stage .ph-dot { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--border-strong); }
+.ph-stage .ph-st { font-size: 0.58rem; }
+.ph-stage.done { color: var(--text-dim); }
+.ph-stage.done .ph-dot { background: var(--success); border-color: var(--success); }
+.ph-stage.active { color: var(--text-bright); font-weight: 600; }
+.ph-stage.active .ph-dot { background: var(--accent-strong); border-color: var(--accent-strong); animation: pulse 1s ease-in-out infinite; }
+.ph-stage.failed { color: var(--danger); }
+.ph-stage.failed .ph-dot { background: var(--danger); border-color: var(--danger); }
+.ph-check { line-height: 1.4; padding: 3px 6px; border-radius: 4px; border-left: 3px solid var(--border-strong); background: rgba(255, 255, 255, 0.03); overflow-wrap: anywhere; }
+.ph-check.ok { border-left-color: var(--success); color: var(--text-bright); }
+.ph-check.fail { border-left-color: var(--danger); color: #f0a5a5; }
+.ph-check.wait { border-left-color: var(--warning); color: var(--text-dim); }
+.ph-pose { margin-top: 4px; font-family: var(--font-mono); font-size: 0.56rem; color: var(--text-muted); line-height: 1.45; }
+.gaze-reticle { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border: 1.5px solid var(--warning); border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5); }
+.gaze-reticle::before, .gaze-reticle::after { content: ''; position: absolute; background: currentColor; }
+.gaze-reticle { color: var(--warning); }
+.gaze-reticle::before { left: 50%; top: -8px; bottom: -8px; width: 1.5px; margin-left: -0.75px; }
+.gaze-reticle::after { top: 50%; left: -8px; right: -8px; height: 1.5px; margin-top: -0.75px; }
+.gaze-reticle.ok { border-color: var(--success); color: var(--success); }
+.gaze-reticle.fail { border-color: var(--danger); color: var(--danger); }
+.ph-forkcam { margin: 6px 0 0; position: relative; }
+.ph-forkcam canvas { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 4px; border: 1px solid var(--border-strong); background: #000; }
+.ph-forkcam figcaption { position: absolute; left: 5px; top: 4px; font-size: 0.56rem; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+@media (prefers-reduced-motion: reduce) { .ph-stage.active .ph-dot { animation: none; } }
+.ph-cross { display: flex; flex-direction: column; gap: 2px; }
+.ph-forkcam.live canvas { border-color: var(--accent-strong); box-shadow: 0 0 0 1px var(--accent-strong); }
+/* 다리 몸의 줍기: 머리 카메라 SGBM 깊이 · 팔 관절 · 손가락 패드. 손 화면이 뜨면 HUD 를 두 칸으로 넓힌다. */
+.pick-hud.wide { width: 452px; }
+.ph-views { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 6px; }
+.pick-hud.wide .ph-views { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.ph-view { margin: 0; position: relative; }
+.ph-view canvas { display: block; width: 100%; aspect-ratio: 3 / 2; border-radius: 4px; border: 1px solid var(--border-strong); background: var(--bg-card); }
+.ph-eyedepth canvas { background: #000; }
+.pick-hud.wide .ph-view.ph-wide { grid-column: 1 / -1; }
+.ph-view.ph-wide canvas { aspect-ratio: 2 / 1; }
+.ph-view figcaption { position: absolute; left: 5px; top: 4px; right: 5px; font-size: 0.56rem; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); pointer-events: none; }
+.ph-item { margin-top: 4px; padding: 2px 6px; font-size: 0.6rem; line-height: 1.4; color: var(--text-bright); border-left: 3px solid var(--accent-strong); background: rgba(255, 255, 255, 0.03); overflow-wrap: anywhere; }
+.ph-forkcam.blocked canvas { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning); }

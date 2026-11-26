@@ -1,0 +1,17 @@
+/models
+/src-tauri/gen
+node_modules/
+*.safetensors
+
+# Lance dataset written by the app
+/data/lance
+
+# SDS ledgers and hash-chained logs written by the world runtime
+/data/runtime
+
+# Test runner logs and downloaded protoc
+/test_logs
+/tools
+
+# The SolidCraft web package, fetched by fetch_solidcraft.bat
+/ui/vendor/solidcraft

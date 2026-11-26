@@ -1,0 +1,44 @@
+/* 레이아웃 — 풀스크린 월드 무대 하나와 28px 상태줄. 나머지는 모두 무대 위에 뜬다(overlay.css). */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  background: var(--bg-darkest);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) var(--statusbar-h);
+  grid-template-columns: minmax(0, 1fr);
+  -webkit-font-smoothing: antialiased;
+}
+button, select, input { font-family: inherit; }
+strong, b { font-weight: 600; color: var(--text-bright); }
+[hidden] { display: none !important; }
+.hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* 키보드 포커스 링 — 토큰만 사용 */
+:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; box-shadow: 0 0 0 4px var(--accent-glow); }
+input[type=text]:focus-visible, input[type=number]:focus-visible, select:focus-visible { outline: none; }
+
+.stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-plot); }
+
+/* ── 상태 바 ───────────────────────────────────────────────────── */
+.status-bar {
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 16px;
+  font-family: var(--font-mono); font-size: 0.64rem; color: var(--text-muted);
+  gap: 14px; white-space: nowrap; overflow: hidden;
+}
+.status-bar strong { color: var(--text); font-weight: 500; }
+.status-bar .sb-item { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.status-bar .sb-sep { width: 1px; height: 12px; background: var(--border-light); flex-shrink: 0; }
+.status-bar .sb-msg { margin-left: auto; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.status-bar .sb-msg.err { color: var(--danger); }
+.status-bar .sb-device { background: none; border: 1px solid var(--border-light); border-radius: 999px; padding: 1px 8px; color: var(--text); font: inherit; cursor: pointer; }
+.status-bar .sb-device:hover { background: var(--bg-hover); }
+.status-bar .sb-mock { color: var(--warning); border: 1px solid rgba(214, 182, 94, 0.45); background: rgba(214, 182, 94, 0.1); border-radius: var(--radius-sm); padding: 0 6px; font-weight: 600; }
+
+@media (max-width: 1100px) {
+  .status-bar .sb-opt { display: none; }
+}

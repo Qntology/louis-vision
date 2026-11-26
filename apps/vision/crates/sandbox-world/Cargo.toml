@@ -1,0 +1,14 @@
+[package]
+name = "sandbox-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight deterministic open-world resource-gathering simulator: terrain, nodes, drops, an agent bound to the Vision Sandbox robot models, a software renderer with ground truth, and WebP frame capture"
+
+[dependencies]
+sandbox-core = { path = "../sandbox-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+image = { workspace = true, features = ["webp"] }
+rayon = { workspace = true }
+webp = { workspace = true }

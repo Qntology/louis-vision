@@ -1,15 +1,69 @@
-# Qntology/louis-vision/apps/vision/Cargo.toml (Tier 2-B2 60fps concert/broadcast XR live engine — vision-sandbox)
+# Qntology/louis-vision/apps/vision/Cargo.toml
+# Unified Tier 2-B2 workspace:
+#   - `vision-sandbox` (root package): 100% air-gapped 60fps concert/broadcast XR live engine
+#   - `sandbox-core`, `sandbox-world`, `sandbox-search`, `sandbox-quest`, `sandbox-runtime`:
+#     pure-Rust simulator engine crates (0 WAN HTTP / 0 lancedb / 0 tauri in normal dependencies)
+#   - `sandbox-data`: synthetic LanceDB dataset store (isolates `lancedb`)
+#   - `vision-sandbox-app` (`src-tauri`): desktop UI & offline/optional model manager (isolates `tauri` + `reqwest`)
 
 [workspace]
 resolver = "2"
-members = ["."]
+members = [
+    ".",
+    "crates/sandbox-core",
+    "crates/sandbox-data",
+    "crates/sandbox-world",
+    "crates/sandbox-search",
+    "crates/sandbox-quest",
+    "crates/sandbox-runtime",
+    "src-tauri",
+]
+default-members = ["."]
 
-[package]
-name = "vision-sandbox"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Qntology/louis-vision"
+
+[workspace.dependencies]
+# Tier 1 zero-SAM3.1 stereo spatial, residency & temporal gate crates (local paths ONLY)
+lv-kernels = { path = "../../crates/lv-kernels" }
+lv-sds     = { path = "../../crates/lv-sds", features = ["granite-ttm"] }
+lv-core    = { path = "../../crates/lv-core" }
+lv-spatial = { path = "../../crates/lv-spatial", features = ["granite-ttm"] }
+lv-router  = { path = "../../crates/lv-router", default-features = false, features = ["spatial-3d"] }
+
+# Tier 0 (Qntology/premium-discount) pinned to PD_LIB_PIN_REV
+premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-manifest    = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
+
+# Shared runtime, image, tokenizer & compute crates (0 lancedb / 0 tauri / 0 WAN HTTP in workspace root)
+anyhow      = "1"
+thiserror   = "2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = { version = "1", features = ["float_roundtrip"] }
+sha2        = "0.10"
+image       = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+tokenizers  = { version = "0.22", default-features = false, features = ["onig"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs"] }
+futures     = "0.3"
+rayon       = "1"
+webp        = "0.3"
+candle-core = "0.11.0"
+candle-nn   = "0.11.0"
+candle-rocm = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
+
+[package]
+name = "vision-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = []
@@ -20,26 +74,26 @@ metal   = ["lv-core/metal"]
 
 [dependencies]
 # Tier 1 zero-SAM3.1 stereo spatial, residency & temporal gate crates ONLY
-# (never depends on lv-doc, lv-screen, lv-agent, lv-domain, lancedb, sammie-*, reqwest, ureq)
-lv-kernels = { path = "../../crates/lv-kernels" }
-lv-sds     = { path = "../../crates/lv-sds", features = ["granite-ttm"] }
-lv-core    = { path = "../../crates/lv-core" }
-lv-spatial = { path = "../../crates/lv-spatial", features = ["granite-ttm"] }
-lv-router  = { path = "../../crates/lv-router", default-features = false, features = ["spatial-3d"] }
+# (never depends on lv-doc, lv-screen, lv-agent, lv-domain, lancedb, sammie-*, reqwest, ureq, tauri)
+lv-kernels = { workspace = true }
+lv-sds     = { workspace = true }
+lv-core    = { workspace = true }
+lv-spatial = { workspace = true }
+lv-router  = { workspace = true }
 
 # Tier 0 universal evaluation & hash-chained audit ledger
-premium-discount-eval = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-sds  = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
+premium-discount-eval = { workspace = true }
+premium-discount-sds  = { workspace = true }
 
 # Local runtime, lossless image decode, and loopback/LAN transport (0 WAN HTTP crates)
-anyhow      = "1"
-thiserror   = "2"
-candle-core = "0.11.0"
-serde      = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }
-sha2       = "0.10"
-image      = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-tokio      = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs"] }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+candle-core = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = { workspace = true }
+image       = { workspace = true }
+tokio       = { workspace = true }
 
 [patch.crates-io]
 candle-core       = { git = "https://github.com/Qntology/candle-rocm-vulkan", rev = "f73415d4d149d7949e8a6a94911af670e4e10f7f" }
@@ -54,6 +108,12 @@ incremental = false
 opt-level = 3
 [profile.dev.package.candle-nn]
 opt-level = 3
+[profile.dev.package.tokenizers]
+opt-level = 3
+[profile.dev.package.sandbox-world]
+opt-level = 3
+[profile.dev.package.sandbox-core]
+opt-level = 3
 [profile.dev.package.premium-discount-cpu-kernels]
 opt-level = 3
 [profile.dev.package.premium-discount-quant]
@@ -64,5 +124,20 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.rayon]
 opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.gemm-f16]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3
 [profile.dev.package.lv-core]
 opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

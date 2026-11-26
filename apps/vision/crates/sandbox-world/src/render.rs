@@ -1,0 +1,2167 @@
+use std::collections::HashMap;
+
+use sandbox_core::rig::{self, Palette, Solid, VisualPart};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+
+use crate::kinds::{Ground, ItemKind, NodeKind};
+use crate::light::Daylight;
+use crate::rng::hash2;
+use crate::snapshot::{drop_id, node_id, waypoint_id};
+use crate::terrain::{cell_center, CELL_M};
+use crate::world::World;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum ObjectClass {
+    Sky = 0,
+    Ground = 1,
+    Curb = 2,
+    Node = 3,
+    Drop = 4,
+    Waypoint = 5,
+    Stock = 6,
+    Structure = 7,
+    Fixture = 8,
+}
+
+impl ObjectClass {
+    fn from_u32(v: u32) -> ObjectClass {
+        match v {
+            1 => ObjectClass::Ground,
+            2 => ObjectClass::Curb,
+            3 => ObjectClass::Node,
+            4 => ObjectClass::Drop,
+            5 => ObjectClass::Waypoint,
+            6 => ObjectClass::Stock,
+            7 => ObjectClass::Structure,
+            8 => ObjectClass::Fixture,
+            _ => ObjectClass::Sky,
+        }
+    }
+}
+
+const PILE_COLUMNS: [(f32, f32); 4] = [(-0.16, -0.13), (-0.16, 0.13), (0.0, -0.17), (0.0, 0.17)];
+const PILE_LAYERS: usize = 5;
+
+pub fn pile_slots(pieces: usize) -> Vec<(i32, f32, f32, usize)> {
+    let per_cell = PILE_COLUMNS.len() * PILE_LAYERS;
+    (0..pieces.min(2 * per_cell))
+        .map(|i| {
+            let (cell, k) = (i / per_cell, i % per_cell);
+            let (col, layer) = (k % PILE_COLUMNS.len(), k / PILE_COLUMNS.len());
+            let (dx, dz) = PILE_COLUMNS[col];
+            (-(cell as i32), dx, dz, layer)
+        })
+        .collect()
+}
+
+pub fn stock_pieces(stock: &[(ItemKind, f32)]) -> Vec<(ItemKind, f32)> {
+    let mut out = Vec::new();
+    for &(k, n) in stock {
+        let mut rest = n;
+        while rest > 1e-3 {
+            out.push((k, rest.min(1.0)));
+            rest -= 1.0;
+        }
+    }
+    out
+}
+
+pub fn pack_id(class: ObjectClass, entity: u32) -> u32 {
+    ((class as u32) << 24) | (entity & 0x00FF_FFFF)
+}
+
+pub fn unpack_id(v: u32) -> (ObjectClass, u32) {
+    (ObjectClass::from_u32(v >> 24), v & 0x00FF_FFFF)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub width: usize,
+    pub height: usize,
+    pub fov_deg: f32,
+    pub pitch_deg: f32,
+    pub max_dist_m: f32,
+    pub pan_deg: f32,
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Camera { width: 384, height: 256, fov_deg: 70.0, pitch_deg: -12.0, max_dist_m: 24.0, pan_deg: 0.0 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct View {
+    pub origin: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Exposure {
+    pub rate: [f32; 3],
+    pub exposure_s: f32,
+    pub readout_s: f32,
+}
+
+impl Exposure {
+    pub fn blur_px(&self, cam: &Camera) -> f32 {
+        let f = focal_px(cam);
+        let w = self.rate[0].hypot(self.rate[1]);
+        let roll = self.rate[2].abs() * 0.5 * cam.width.max(cam.height) as f32;
+        (w * f + roll) * self.exposure_s
+    }
+}
+
+pub fn focal_px(cam: &Camera) -> f32 {
+    0.5 * cam.width.max(1) as f32 / (cam.fov_deg.to_radians() * 0.5).tan()
+}
+
+impl Camera {
+    pub fn origin(world: &World) -> [f32; 3] {
+        world.head_view(&Camera::default()).view.origin
+    }
+
+    pub fn vfov_deg(&self) -> f32 {
+        let half_w = (self.fov_deg.to_radians() * 0.5).tan();
+        (2.0 * (half_w * self.height.max(1) as f32 / self.width.max(1) as f32).atan()).to_degrees()
+    }
+
+    pub fn eye(&self, world: &World) -> crate::explore::Eye {
+        crate::explore::Eye {
+            x: world.agent.x,
+            z: world.agent.z,
+            height_m: world.agent_ground_m() + world.standing_eye_m(),
+            pitch_deg: self.pitch_deg,
+            vfov_deg: self.vfov_deg(),
+            range_m: crate::explore::SEARCH_RANGE_M.min(self.max_dist_m),
+        }
+    }
+
+    pub fn world_point(&self, agent_xz: (f32, f32), yaw_rad: f32, px: f32, py: f32, depth_m: f32) -> Option<(f32, f32)> {
+        let view = View { origin: [agent_xz.0, 0.0, agent_xz.1], yaw: yaw_rad - self.pan_deg.to_radians(), pitch: self.pitch_deg.to_radians(), roll: 0.0 };
+        self.world_point_in(&view, px, py, depth_m)
+    }
+
+    pub fn world_point_in(&self, view: &View, px: f32, py: f32, depth_m: f32) -> Option<(f32, f32)> {
+        self.world_point3_in(view, px, py, depth_m).map(|p| (p[0], p[2]))
+    }
+
+    pub fn world_point3_in(&self, view: &View, px: f32, py: f32, depth_m: f32) -> Option<[f32; 3]> {
+        if !depth_m.is_finite() || depth_m <= 0.0 {
+            return None;
+        }
+        let (w, h) = (self.width.max(1) as f32, self.height.max(1) as f32);
+        let (fwd, right, up) = basis_rpy(view.yaw, view.pitch, view.roll);
+        let half_w = (self.fov_deg.to_radians() * 0.5).tan();
+        let half_h = half_w * h / w;
+        let sx = (2.0 * px / w - 1.0) * half_w;
+        let sy = (1.0 - 2.0 * py / h) * half_h;
+        let v = [fwd[0] + right[0] * sx + up[0] * sy, fwd[1] + right[1] * sx + up[1] * sy, fwd[2] + right[2] * sx + up[2] * sy];
+        Some([view.origin[0] + depth_m * v[0], view.origin[1] + depth_m * v[1], view.origin[2] + depth_m * v[2]])
+    }
+
+    pub fn project(&self, origin: [f32; 3], yaw_rad: f32, point: [f32; 3]) -> Option<(f32, f32, f32)> {
+        self.project_in(&View { origin, yaw: yaw_rad - self.pan_deg.to_radians(), pitch: self.pitch_deg.to_radians(), roll: 0.0 }, point)
+    }
+
+    pub fn project_in(&self, view: &View, point: [f32; 3]) -> Option<(f32, f32, f32)> {
+        let (w, h) = (self.width.max(1) as f32, self.height.max(1) as f32);
+        let (fwd, right, up) = basis_rpy(view.yaw, view.pitch, view.roll);
+        let origin = view.origin;
+        let rel = [point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let depth = dot(rel, fwd);
+        if depth <= 1e-4 {
+            return None;
+        }
+        let half_w = (self.fov_deg.to_radians() * 0.5).tan();
+        let half_h = half_w * h / w;
+        let sx = dot(rel, right) / depth;
+        let sy = dot(rel, up) / depth;
+        Some(((sx / half_w + 1.0) * 0.5 * w, (1.0 - sy / half_h) * 0.5 * h, depth))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Frame {
+    pub width: usize,
+    pub height: usize,
+    pub rgb: Vec<u8>,
+    pub ids: Vec<u32>,
+    pub depth: Vec<f32>,
+    pub tick: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VisibleObject {
+    pub class: ObjectClass,
+    pub entity: String,
+    pub label: String,
+    pub label_ko: String,
+    pub pixels: u32,
+    pub bbox: [u32; 4],
+    pub depth_m: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Aabb {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Style {
+    Plain,
+    Fleck([u8; 3]),
+    Stripes,
+    Leaves,
+    Water,
+}
+
+#[derive(Clone, Copy)]
+struct Prim {
+    aabb: Aabb,
+    id: u32,
+    color: [u8; 3],
+    style: Style,
+}
+
+struct Scene<'a> {
+    world: &'a World,
+    prims: Vec<Prim>,
+    by_cell: Vec<Vec<usize>>,
+    /// Prims that reach over their cell's edge (an item lying across two cells), listed in every cell they touch; a
+    /// ray takes their hit only inside the cell it is crossing.
+    span_cell: Vec<Vec<usize>>,
+    top_m: f32,
+}
+
+const SKY_TOP: [f32; 3] = [112.0, 168.0, 232.0];
+const SKY_HORIZON: [f32; 3] = [200.0, 222.0, 240.0];
+const CURB_YELLOW: [u8; 3] = [232, 196, 48];
+
+pub fn segment_color(s: sandbox_core::Segment) -> [u8; 3] {
+    use sandbox_core::Segment;
+    match s {
+        Segment::Head => [214, 218, 226],
+        Segment::Chest => [74, 110, 168],
+        Segment::Belly => [60, 72, 96],
+        Segment::Arm => [228, 136, 52],
+        Segment::Hand => [246, 206, 84],
+        Segment::Leg => [120, 126, 138],
+        Segment::Foot => [52, 56, 64],
+    }
+}
+const CURB_DARK: [u8; 3] = [48, 48, 52];
+const STONE: [u8; 3] = [120, 120, 124];
+const MAX_OBJECT_TOP_M: f32 = 5.2;
+const WATER_DROP_M: f32 = 0.06;
+
+fn bx(cx: f32, cz: f32, y0: f32, y1: f32, hw: f32, hd: f32) -> Aabb {
+    Aabb { min: [cx - hw, y0, cz - hd], max: [cx + hw, y1, cz + hd] }
+}
+
+fn item_style(kind: ItemKind) -> Style {
+    match kind {
+        ItemKind::Log | ItemKind::Stone | ItemKind::Parcel => Style::Plain,
+        ItemKind::Coal => Style::Fleck([70, 70, 78]),
+        ItemKind::IronOre => Style::Fleck([220, 170, 140]),
+    }
+}
+
+impl<'a> Scene<'a> {
+    fn build(world: &'a World) -> Scene<'a> {
+        let t = &world.terrain;
+        let mut s = Scene { world, prims: Vec::new(), by_cell: vec![Vec::new(); t.w * t.d], span_cell: vec![Vec::new(); t.w * t.d], top_m: t.max_top_m() + MAX_OBJECT_TOP_M + 0.3 };
+
+        for n in &world.nodes {
+            let Some((cx, cz)) = t.cell_of(n.x, n.z) else { continue };
+            let (x, z) = cell_center(cx, cz);
+            let g = t.height_m(cx, cz) + t.curb_m(cx, cz);
+            let id = pack_id(ObjectClass::Node, n.id);
+            let spec = n.kind.spec();
+            for (k, &(y0, y1, half)) in n.kind.solids().iter().enumerate() {
+                let aabb = bx(x, z, g + y0, g + y1, half, half);
+                match n.kind {
+                    NodeKind::Tree if k > 0 => s.add_spanning(cx, cz, Prim { aabb, id, color: [58, 122, 52], style: Style::Leaves }),
+                    NodeKind::Tree | NodeKind::Boulder => s.add(cx, cz, Prim { aabb, id, color: spec.color, style: Style::Plain }),
+                    NodeKind::CoalOre => s.add(cx, cz, Prim { aabb, id, color: STONE, style: Style::Fleck([28, 28, 32]) }),
+                    NodeKind::IronOre => s.add(cx, cz, Prim { aabb, id, color: STONE, style: Style::Fleck([206, 150, 120]) }),
+                }
+            }
+        }
+
+        let lifted = world.lifted_drop();
+        for d in &world.drops {
+            if lifted == Some(d.id) {
+                continue;
+            }
+            let Some((cx, cz)) = t.cell_of(d.x, d.z) else { continue };
+            let g = world.drop_base_m(d);
+            let spec = d.kind.spec();
+            let size = spec.piece_size_m(d.amount);
+            // Where it lies, even across a cell's edge (the tines and the hands go to that place).
+            let prim = Prim { aabb: bx(d.x, d.z, g, g + size[1], size[0] * 0.5, size[2] * 0.5), id: pack_id(ObjectClass::Drop, d.id), color: spec.color, style: item_style(d.kind) };
+            s.add_spanning(cx, cz, prim);
+        }
+
+        for w in &world.waypoints {
+            let Some((cx, cz)) = t.cell_of(w.x, w.z) else { continue };
+            let (x, z) = cell_center(cx, cz);
+            let g = t.height_m(cx, cz) + t.curb_m(cx, cz);
+            let id = pack_id(ObjectClass::Waypoint, w.id);
+            let flag = if w.key == "warehouse" { [52, 104, 220] } else { [232, 120, 40] };
+            s.add(cx, cz, Prim { aabb: bx(x, z, g, g + 1.1, 0.04, 0.04), id, color: [210, 210, 214], style: Style::Plain });
+            s.add(cx, cz, Prim { aabb: Aabb { min: [x + 0.04, g + 0.78, z - 0.02], max: [x + 0.24, g + 1.08, z + 0.02] }, id, color: flag, style: Style::Plain });
+            let pieces = stock_pieces(&w.stock);
+            let sid = pack_id(ObjectClass::Stock, w.id);
+            let mut heights = [[0.0f32; PILE_COLUMNS.len()]; 2];
+            for ((kind, amount), (cell, dx, dz, _)) in pieces.iter().zip(pile_slots(pieces.len())) {
+                let pcx = cx as i32 + cell;
+                if !t.in_bounds(pcx, cz as i32) {
+                    continue;
+                }
+                let (px, pz) = cell_center(pcx as usize, cz);
+                let pg = t.height_m(pcx as usize, cz) + t.curb_m(pcx as usize, cz);
+                let col = PILE_COLUMNS.iter().position(|c| (c.0, c.1) == (dx, dz)).unwrap_or(0);
+                let size = kind.spec().piece_size_m(*amount);
+                let base = pg + heights[(-cell) as usize][col];
+                heights[(-cell) as usize][col] += size[1];
+                s.add(pcx as usize, cz, Prim { aabb: bx(px + dx, pz + dz, base, base + size[1], size[0] * 0.5, size[2] * 0.5), id: sid, color: kind.spec().color, style: item_style(*kind) });
+            }
+        }
+        s.add_site();
+        s
+    }
+
+    fn add_site(&mut self) {
+        for b in crate::fixture::render_boxes(&self.world.fixtures, &self.world.terrain) {
+            self.top_m = self.top_m.max(b.max[1] + 0.3);
+            self.add(b.cell.0, b.cell.1, Prim { aabb: Aabb { min: b.min, max: b.max }, id: pack_id(b.class, b.entity), color: b.color, style: Style::Plain });
+        }
+    }
+
+    fn add(&mut self, cx: usize, cz: usize, p: Prim) {
+        let i = self.world.terrain.idx(cx, cz);
+        self.by_cell[i].push(self.prims.len());
+        self.prims.push(p);
+    }
+
+    /// `add`, for a prim that may reach over the edge of its cell (`cx`, `cz`): inside it, it is an ordinary prim of
+    /// that cell; across the edge, it goes in every cell it touches (`span_cell`).
+    fn add_spanning(&mut self, cx: usize, cz: usize, p: Prim) {
+        let t = &self.world.terrain;
+        let (x0, z0) = (cx as f32 * CELL_M, cz as f32 * CELL_M);
+        let b = p.aabb;
+        if b.min[0] >= x0 && b.max[0] <= x0 + CELL_M && b.min[2] >= z0 && b.max[2] <= z0 + CELL_M {
+            self.add(cx, cz, p);
+            return;
+        }
+        let i = self.prims.len();
+        self.prims.push(p);
+        let (c0, c1) = (((b.min[0] / CELL_M).floor() as i32).max(0), ((b.max[0] / CELL_M).floor() as i32).min(t.w as i32 - 1));
+        let (r0, r1) = (((b.min[2] / CELL_M).floor() as i32).max(0), ((b.max[2] / CELL_M).floor() as i32).min(t.d as i32 - 1));
+        for cz in r0..=r1 {
+            for cx in c0..=c1 {
+                let ci = t.idx(cx as usize, cz as usize);
+                self.span_cell[ci].push(i);
+            }
+        }
+    }
+}
+
+struct Hit {
+    t: f32,
+    axis: usize,
+    sign: f32,
+    id: u32,
+    color: [u8; 3],
+    style: Style,
+}
+
+impl Hit {
+    fn normal(&self) -> [f32; 3] {
+        let mut n = [0.0; 3];
+        n[self.axis] = self.sign;
+        n
+    }
+}
+
+fn slab(o: [f32; 3], inv: [f32; 3], b: &Aabb) -> Option<(f32, usize, f32)> {
+    let mut t_near = f32::NEG_INFINITY;
+    let mut t_far = f32::INFINITY;
+    let mut axis = 0;
+    for a in 0..3 {
+        let t1 = (b.min[a] - o[a]) * inv[a];
+        let t2 = (b.max[a] - o[a]) * inv[a];
+        let (lo, hi) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        if lo > t_near {
+            t_near = lo;
+            axis = a;
+        }
+        if hi < t_far {
+            t_far = hi;
+        }
+        if t_near > t_far {
+            return None;
+        }
+    }
+    if t_near < 0.0 {
+        return None;
+    }
+    Some((t_near, axis, if inv[axis] > 0.0 { -1.0 } else { 1.0 }))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cutaway {
+    pub at: [f32; 2],
+    pub toward_cam: [f32; 2],
+    pub half_width_m: f32,
+    pub slope: f32,
+    pub base_y: f32,
+    pub low_y: f32,
+    pub roof_radius_m: f32,
+    pub roof_y: f32,
+}
+
+impl Cutaway {
+    fn cut_y(&self, b: &Aabb) -> Option<f32> {
+        let t = self.toward_cam;
+        let side = [-t[1], t[0]];
+        let (mut a0, mut a1, mut l0, mut l1) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+        for (x, z) in [(b.min[0], b.min[2]), (b.max[0], b.min[2]), (b.min[0], b.max[2]), (b.max[0], b.max[2])] {
+            let (dx, dz) = (x - self.at[0], z - self.at[1]);
+            let (a, l) = (dx * t[0] + dz * t[1], dx * side[0] + dz * side[1]);
+            (a0, a1, l0, l1) = (a0.min(a), a1.max(a), l0.min(l), l1.max(l));
+        }
+        let corridor = (a1 >= 0.0 && l1 >= -self.half_width_m && l0 <= self.half_width_m).then(|| (self.base_y + a0.max(0.0) * self.slope).max(self.low_y));
+        let gx = (b.min[0] - self.at[0]).max(self.at[0] - b.max[0]).max(0.0);
+        let gz = (b.min[2] - self.at[1]).max(self.at[1] - b.max[2]).max(0.0);
+        let roof = (gx.hypot(gz) <= self.roof_radius_m).then_some(self.roof_y);
+        match (corridor, roof) {
+            (Some(c), Some(r)) => Some(c.min(r)),
+            (c, r) => c.or(r),
+        }
+    }
+
+    fn clip(&self, b: &Aabb) -> Option<Aabb> {
+        match self.cut_y(b) {
+            None => Some(*b),
+            Some(top) => (b.min[1] < top).then(|| Aabb { min: b.min, max: [b.max[0], b.max[1].min(top), b.max[2]] }),
+        }
+    }
+}
+
+fn trace(scene: &Scene, o: [f32; 3], d: [f32; 3], max_dist: f32) -> Option<Hit> {
+    trace_cut(scene, o, d, max_dist, None)
+}
+
+fn trace_cut(scene: &Scene, o: [f32; 3], d: [f32; 3], max_dist: f32, cut: Option<&Cutaway>) -> Option<Hit> {
+    let t = &scene.world.terrain;
+    let inv = [
+        if d[0].abs() < 1e-9 { f32::INFINITY.copysign(d[0] + 1e-30) } else { 1.0 / d[0] },
+        if d[1].abs() < 1e-9 { f32::INFINITY.copysign(d[1] + 1e-30) } else { 1.0 / d[1] },
+        if d[2].abs() < 1e-9 { f32::INFINITY.copysign(d[2] + 1e-30) } else { 1.0 / d[2] },
+    ];
+    let (span_x, span_z) = (t.w as f32 * CELL_M, t.d as f32 * CELL_M);
+    let inside = o[0] >= 0.0 && o[0] < span_x && o[2] >= 0.0 && o[2] < span_z;
+    let above = o[1] > scene.top_m;
+    let (mut cx, mut cz) = if inside && !above {
+        ((o[0] / CELL_M).floor() as i32, (o[2] / CELL_M).floor() as i32)
+    } else {
+        let (mut t0, mut t1) = (0.0f32, f32::INFINITY);
+        for (a, span) in [(0usize, span_x), (2, span_z)] {
+            if d[a].abs() < 1e-9 {
+                if o[a] < 0.0 || o[a] >= span {
+                    return None;
+                }
+            } else {
+                let (u, v) = (-o[a] * inv[a], (span - o[a]) * inv[a]);
+                t0 = t0.max(u.min(v));
+                t1 = t1.min(u.max(v));
+            }
+        }
+        if above {
+            if d[1] >= 0.0 {
+                return None;
+            }
+            t0 = t0.max((o[1] - scene.top_m) / -d[1]);
+        }
+        if t0 >= t1 || t0 > max_dist {
+            return None;
+        }
+        let (px, pz) = (o[0] + d[0] * t0, o[2] + d[2] * t0);
+        (((px / CELL_M).floor() as i32).clamp(0, t.w as i32 - 1), ((pz / CELL_M).floor() as i32).clamp(0, t.d as i32 - 1))
+    };
+    let step_x: i32 = if d[0] > 0.0 { 1 } else { -1 };
+    let step_z: i32 = if d[2] > 0.0 { 1 } else { -1 };
+    let t_delta_x = if d[0].abs() < 1e-9 { f32::INFINITY } else { CELL_M / d[0].abs() };
+    let t_delta_z = if d[2].abs() < 1e-9 { f32::INFINITY } else { CELL_M / d[2].abs() };
+    let next_x = (cx + if step_x > 0 { 1 } else { 0 }) as f32 * CELL_M;
+    let next_z = (cz + if step_z > 0 { 1 } else { 0 }) as f32 * CELL_M;
+    let mut t_max_x = if d[0].abs() < 1e-9 { f32::INFINITY } else { (next_x - o[0]) / d[0] };
+    let mut t_max_z = if d[2].abs() < 1e-9 { f32::INFINITY } else { (next_z - o[2]) / d[2] };
+
+    loop {
+        if !t.in_bounds(cx, cz) {
+            return None;
+        }
+        let (ux, uz) = (cx as usize, cz as usize);
+        let ci = t.idx(ux, uz);
+        let mut best: Option<Hit> = None;
+        let exit = t_max_x.min(t_max_z) + 2e-3;
+        let mut consider_to = |b: &Aabb, id: u32, color: [u8; 3], style: Style, limit: f32| {
+            if let Some((tt, axis, sign)) = slab(o, inv, b) {
+                if tt <= limit && best.as_ref().map_or(true, |h| tt < h.t) {
+                    best = Some(Hit { t: tt, axis, sign, id, color, style });
+                }
+            }
+        };
+        let mut consider = |b: &Aabb, id: u32, color: [u8; 3], style: Style| consider_to(b, id, color, style, max_dist);
+        let (x0, z0) = (cx as f32 * CELL_M, cz as f32 * CELL_M);
+        let h = t.height_m(ux, uz);
+        let curb = t.curb_m(ux, uz);
+        let ground = t.ground_at(ux, uz);
+        let gcol = ground.color();
+        if ground.is_water() {
+            consider(&Aabb { min: [x0, -0.4, z0], max: [x0 + CELL_M, -WATER_DROP_M, z0 + CELL_M] }, pack_id(ObjectClass::Ground, ci as u32), gcol, Style::Water);
+        } else if h > 0.0 {
+            consider(&Aabb { min: [x0, 0.0, z0], max: [x0 + CELL_M, h, z0 + CELL_M] }, pack_id(ObjectClass::Ground, ci as u32), gcol, Style::Plain);
+        } else {
+            consider(&Aabb { min: [x0, -0.2, z0], max: [x0 + CELL_M, 0.0, z0 + CELL_M] }, pack_id(ObjectClass::Ground, ci as u32), gcol, Style::Plain);
+        }
+        if curb > 0.0 {
+            consider(&Aabb { min: [x0, h, z0], max: [x0 + CELL_M, h + curb, z0 + CELL_M] }, pack_id(ObjectClass::Curb, ci as u32), CURB_YELLOW, Style::Stripes);
+        }
+        for &pi in &scene.by_cell[ci] {
+            let p = &scene.prims[pi];
+            match cut {
+                None => consider(&p.aabb, p.id, p.color, p.style),
+                Some(c) => {
+                    if let Some(b) = c.clip(&p.aabb) {
+                        consider(&b, p.id, p.color, p.style);
+                    }
+                }
+            }
+        }
+        for &pi in &scene.span_cell[ci] {
+            let p = &scene.prims[pi];
+            if let Some(b) = cut.map_or(Some(p.aabb), |c| c.clip(&p.aabb)) {
+                consider_to(&b, p.id, p.color, p.style, exit.min(max_dist));
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
+
+        let t_exit = if t_max_x < t_max_z {
+            cx += step_x;
+            let e = t_max_x;
+            t_max_x += t_delta_x;
+            e
+        } else {
+            cz += step_z;
+            let e = t_max_z;
+            t_max_z += t_delta_z;
+            e
+        };
+        if t_exit > max_dist {
+            return None;
+        }
+        if o[1] + d[1] * t_exit > scene.top_m && d[1] >= 0.0 {
+            return None;
+        }
+    }
+}
+
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+}
+
+fn sky(dir_y: f32) -> [f32; 3] {
+    mix(SKY_HORIZON, SKY_TOP, dir_y.clamp(0.0, 1.0).sqrt())
+}
+
+/// Bilinear noise over a unit lattice, in -0.5…0.5.
+fn lattice_noise(seed: u64, x: f32, y: f32) -> f32 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |dx: i32, dy: i32| (hash2(seed, x0 as i32 + dx, y0 as i32 + dy) & 0xFFFF) as f32 / 65535.0 - 0.5;
+    let (a, b) = (at(0, 0) + (at(1, 0) - at(0, 0)) * fx, at(0, 1) + (at(1, 1) - at(0, 1)) * fx);
+    a + (b - a) * fy
+}
+
+/// Grain finer than the texels: the soil, bark and paint a camera resolves up close. It sits on the surface, so both
+/// eyes of a stereo pair see the same grain, and it fades out where it would fall under a pixel at this distance
+/// (a pixel of the 274 px head camera covers `t` / 274 m) and turn into noise different in each eye.
+fn grain(u: f32, v: f32, t: f32, seed: u64) -> f32 {
+    let mut sum = 0.0;
+    for (per_m, amp, salt) in [(180.0f32, 0.09f32, 0x1Du64), (64.0, 0.11, 0x51), (26.0, 0.08, 0xA7)] {
+        let px = 274.0 / (per_m * t.max(0.05));
+        let keep = ((px - 0.8) / 0.8).clamp(0.0, 1.0);
+        if keep > 0.0 {
+            sum += keep * amp * lattice_noise(seed ^ salt, u * per_m, v * per_m);
+        }
+    }
+    sum
+}
+
+fn surface(hit: &Hit, p: [f32; 3], seed: u64) -> ([f32; 3], f32) {
+    let (u, v) = match hit.axis {
+        1 => (p[0], p[2]),
+        0 => (p[1], p[2]),
+        _ => (p[0], p[1]),
+    };
+    let (tu, tv) = ((u * 16.0).floor() as i32, (v * 16.0).floor() as i32);
+    let h = hash2(seed ^ (hit.id as u64).wrapping_mul(0x9E37) ^ hit.axis as u64, tu, tv);
+    let noise = ((h & 0xFF) as f32 / 255.0 - 0.5) * 0.14 + grain(u, v, hit.t, seed ^ (hit.axis as u64) << 3);
+
+    let mut c = [hit.color[0] as f32, hit.color[1] as f32, hit.color[2] as f32];
+    match hit.style {
+        Style::Plain => {}
+        Style::Fleck(f) => {
+            if (h >> 8) % 6 == 0 {
+                c = [f[0] as f32, f[1] as f32, f[2] as f32];
+            }
+        }
+        Style::Leaves => {
+            let k = ((h >> 8) & 0xF) as f32 / 15.0;
+            c = mix(c, [30.0, 90.0, 36.0], k * 0.6);
+        }
+        Style::Stripes => {
+            let band = ((p[0] + p[1] + p[2]) * 5.0).floor() as i32;
+            if band.rem_euclid(2) == 0 {
+                c = [CURB_DARK[0] as f32, CURB_DARK[1] as f32, CURB_DARK[2] as f32];
+            }
+        }
+        Style::Water => {
+            let wave = ((p[0] * 2.1 + p[2] * 1.3).sin() * (p[2] * 2.7 - p[0] * 0.9).cos()).max(0.0);
+            c = mix(c, [150.0, 196.0, 230.0], 0.35 * wave);
+        }
+    }
+    (c, noise)
+}
+
+fn shade_hit(hit: &Hit, o: [f32; 3], d: [f32; 3], max_dist: f32, seed: u64) -> [u8; 3] {
+    let p = [o[0] + d[0] * hit.t, o[1] + d[1] * hit.t, o[2] + d[2] * hit.t];
+    let (c, noise) = surface(hit, p, seed);
+    let face = match hit.axis {
+        1 => 1.0,
+        0 => 0.82,
+        _ => 0.66,
+    };
+    let k = face * (1.0 + noise);
+    let lit = [c[0] * k, c[1] * k, c[2] * k];
+    let fog = (hit.t / max_dist).clamp(0.0, 1.0).powf(1.6);
+    let out = mix(lit, SKY_HORIZON, fog);
+    [out[0].clamp(0.0, 255.0) as u8, out[1].clamp(0.0, 255.0) as u8, out[2].clamp(0.0, 255.0) as u8]
+}
+
+const SHADOW_BIAS_M: f32 = 1e-3;
+
+struct Casters<'a> {
+    lists: [&'a [Obb]; 2],
+    centre: [f32; 3],
+    radius: f32,
+}
+
+impl<'a> Casters<'a> {
+    fn new(lists: [&'a [Obb]; 2]) -> Casters<'a> {
+        let all = || lists.iter().flat_map(|l| l.iter());
+        let n = all().count();
+        if n == 0 {
+            return Casters { lists, centre: [0.0; 3], radius: -1.0 };
+        }
+        let mut c = [0.0f32; 3];
+        for b in all() {
+            for k in 0..3 {
+                c[k] += b.center[k] / n as f32;
+            }
+        }
+        let radius = all()
+            .map(|b| {
+                let d = [b.center[0] - c[0], b.center[1] - c[1], b.center[2] - c[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() + (b.half[0] * b.half[0] + b.half[1] * b.half[1] + b.half[2] * b.half[2]).sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        Casters { lists, centre: c, radius }
+    }
+
+    fn block(&self, o: [f32; 3], d: [f32; 3]) -> bool {
+        if self.radius < 0.0 {
+            return false;
+        }
+        let v = [self.centre[0] - o[0], self.centre[1] - o[1], self.centre[2] - o[2]];
+        let along = (v[0] * d[0] + v[1] * d[1] + v[2] * d[2]).max(0.0);
+        if v[0] * v[0] + v[1] * v[1] + v[2] * v[2] - along * along > self.radius * self.radius {
+            return false;
+        }
+        self.lists.iter().any(|list| list.iter().any(|b| b.hit(o, d).is_some()))
+    }
+}
+
+fn sunlit(scene: &Scene, day: &Daylight, p: [f32; 3], n: [f32; 3], casters: &Casters) -> bool {
+    let l = day.sun_dir;
+    if !day.has_beam() || n[0] * l[0] + n[1] * l[1] + n[2] * l[2] <= 0.0 {
+        return false;
+    }
+    let o = [p[0] + n[0] * SHADOW_BIAS_M, p[1] + n[1] * SHADOW_BIAS_M, p[2] + n[2] * SHADOW_BIAS_M];
+    !casters.block(o, l) && trace(scene, o, l, f32::INFINITY).is_none()
+}
+
+fn horizon_px(day: &Daylight, d: [f32; 3]) -> [f32; 3] {
+    let len = d[0].hypot(d[2]);
+    let flat = if len > 1e-6 { [d[0] / len, 0.0, d[2] / len] } else { [1.0, 0.0, 0.0] };
+    day.sky_px(flat, SKY_HORIZON)
+}
+
+fn shade_sun(hit: &Hit, p: [f32; 3], d: [f32; 3], fog_dist: f32, seed: u64, day: &Daylight, lit: bool) -> [u8; 3] {
+    let (c, noise) = surface(hit, p, seed);
+    let g = day.face_gain(hit.normal(), lit);
+    let k = 1.0 + noise;
+    let lit = [c[0] * g[0] * k, c[1] * g[1] * k, c[2] * g[2] * k];
+    let fog = (hit.t / fog_dist).clamp(0.0, 1.0).powf(1.6);
+    let out = if fog > 0.0 { mix(lit, horizon_px(day, d), fog) } else { lit };
+    [out[0].clamp(0.0, 255.0) as u8, out[1].clamp(0.0, 255.0) as u8, out[2].clamp(0.0, 255.0) as u8]
+}
+
+pub(crate) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let fwd = [cy * cp, sp, sy * cp];
+    let right = [-sy, 0.0, cy];
+    let up = [-cy * sp, cp, -sy * sp];
+    (fwd, right, up)
+}
+
+fn basis_rpy(yaw: f32, pitch: f32, roll: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (fwd, right, up) = basis(yaw, pitch);
+    if roll == 0.0 {
+        return (fwd, right, up);
+    }
+    let (sr, cr) = roll.sin_cos();
+    let r = [right[0] * cr - up[0] * sr, right[1] * cr - up[1] * sr, right[2] * cr - up[2] * sr];
+    let u = [up[0] * cr + right[0] * sr, up[1] * cr + right[1] * sr, up[2] * cr + right[2] * sr];
+    (fwd, r, u)
+}
+
+pub fn render(world: &World, cam: &Camera) -> Frame {
+    render_shifted(world, cam, 0.0)
+}
+
+/// The right camera of the eye when the eye is a stereo pair: the same view moved `baseline_m` along the camera's
+/// right axis, with the same exposure, rolling shutter and own-body boxes, so that it and `render` are a rectified
+/// pair (the left camera is the eye itself).
+pub fn render_right(world: &World, cam: &Camera, baseline_m: f32) -> Frame {
+    render_shifted(world, cam, baseline_m)
+}
+
+fn render_shifted(world: &World, cam: &Camera, right_m: f32) -> Frame {
+    let mut hv = world.head_view(cam);
+    if right_m != 0.0 {
+        let (_, right, _) = basis_rpy(hv.view.yaw, hv.view.pitch, hv.view.roll);
+        for (o, r) in hv.view.origin.iter_mut().zip(right) {
+            *o += r * right_m;
+        }
+    }
+    if world.fork_cam && sandbox_core::act::fork::applies(&world.body) {
+        let casters = world.shadow_casters();
+        return render_rays(world, cam, &Rays::Pinhole { view: hv.view, exposure: hv.exposure }, &world.fork_front_boxes(), &casters, None);
+    }
+    if world.rider.is_some_and(|r| r.off()) {
+        // The rider on foot: the head camera sees the truck it stepped down from.
+        let casters = world.shadow_casters();
+        return render_rays(world, cam, &Rays::Pinhole { view: hv.view, exposure: hv.exposure }, &world.fork_front_boxes(), &casters, None);
+    }
+    // What the eyes look down at of the body's own: the tines and their load, or the hands and the item in them.
+    let own: Vec<Obb> = world.own_view_boxes();
+    if !own.is_empty() {
+        let casters = world.shadow_casters();
+        let mut f = render_rays(world, cam, &Rays::Pinhole { view: hv.view, exposure: hv.exposure }, &own, &casters, None);
+        motion_blur(&mut f, cam, &hv.view, &hv.exposure);
+        return f;
+    }
+    render_view(world, cam, &hv.view, &hv.exposure)
+}
+
+pub fn render_view(world: &World, cam: &Camera, view: &View, exp: &Exposure) -> Frame {
+    let casters = world.shadow_casters();
+    let mut f = render_rays(world, cam, &Rays::Pinhole { view: *view, exposure: *exp }, &[], &casters, None);
+    motion_blur(&mut f, cam, view, exp);
+    f
+}
+
+fn row_basis(view: &View, exp: &Exposure, j: usize, h: usize) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let tau = exp.readout_s * ((j as f32 + 0.5) / h.max(1) as f32 - 0.5);
+    basis_rpy(view.yaw + exp.rate[0] * tau, view.pitch + exp.rate[1] * tau, view.roll + exp.rate[2] * tau)
+}
+
+fn motion_blur(f: &mut Frame, cam: &Camera, view: &View, exp: &Exposure) {
+    if exp.exposure_s <= 0.0 || exp.blur_px(cam) < 0.35 {
+        return;
+    }
+    let (w, h) = (f.width, f.height);
+    let half_w = (cam.fov_deg.to_radians() * 0.5).tan();
+    let half_h = half_w * h as f32 / w as f32;
+    let half = 0.5 * exp.exposure_s;
+    let src = f.rgb.clone();
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let to_px = |d: [f32; 3], b: &([f32; 3], [f32; 3], [f32; 3])| -> Option<(f32, f32)> {
+        let z = dot(d, b.0);
+        if z <= 1e-4 {
+            return None;
+        }
+        Some(((dot(d, b.1) / z / half_w + 1.0) * 0.5 * w as f32, (1.0 - dot(d, b.2) / z / half_h) * 0.5 * h as f32))
+    };
+    f.rgb.par_chunks_mut(w * 3).enumerate().for_each(|(j, row)| {
+        let mid = row_basis(view, exp, j, h);
+        let turned = |s: f32| {
+            let tau = exp.readout_s * ((j as f32 + 0.5) / h as f32 - 0.5) + s;
+            basis_rpy(view.yaw + exp.rate[0] * tau, view.pitch + exp.rate[1] * tau, view.roll + exp.rate[2] * tau)
+        };
+        let (b0, b1) = (turned(-half), turned(half));
+        let sy = (1.0 - 2.0 * (j as f32 + 0.5) / h as f32) * half_h;
+        for i in 0..w {
+            let sx = (2.0 * (i as f32 + 0.5) / w as f32 - 1.0) * half_w;
+            let d = [mid.0[0] + mid.1[0] * sx + mid.2[0] * sy, mid.0[1] + mid.1[1] * sx + mid.2[1] * sy, mid.0[2] + mid.1[2] * sx + mid.2[2] * sy];
+            let (Some(p0), Some(p1)) = (to_px(d, &b0), to_px(d, &b1)) else { continue };
+            let len = (p1.0 - p0.0).hypot(p1.1 - p0.1);
+            if len < 0.5 {
+                continue;
+            }
+            let n = (len.ceil() as usize + 1).clamp(2, 32);
+            let mut acc = [0.0f32; 3];
+            for k in 0..n {
+                let u = k as f32 / (n - 1) as f32;
+                let x = (i as f32 + 0.5 - (p0.0 + (p1.0 - p0.0) * u - (i as f32 + 0.5))).floor().clamp(0.0, (w - 1) as f32) as usize;
+                let y = (j as f32 + 0.5 - (p0.1 + (p1.1 - p0.1) * u - (j as f32 + 0.5))).floor().clamp(0.0, (h - 1) as f32) as usize;
+                let o = (y * w + x) * 3;
+                for c in 0..3 {
+                    acc[c] += src[o + c] as f32;
+                }
+            }
+            for c in 0..3 {
+                row[i * 3 + c] = (acc[c] / n as f32).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    });
+}
+
+/// A solid of a robot or what it carries, oriented in the world: a box, a cylinder or capsule round `axes[2]`, or a
+/// design's triangles (`sandbox_core::rig::Solid`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Obb {
+    pub center: [f32; 3],
+    pub axes: [[f32; 3]; 3],
+    pub half: [f32; 3],
+    pub color: [u8; 3],
+    pub solid: Solid,
+}
+
+fn hit_box(o: [f32; 3], d: [f32; 3], half: [f32; 3]) -> Option<(f32, [f32; 3])> {
+    let (mut t0, mut t1, mut axis) = (f32::NEG_INFINITY, f32::INFINITY, 0usize);
+    for k in 0..3 {
+        if d[k].abs() < 1e-9 {
+            if o[k].abs() > half[k] {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((-half[k] - o[k]) / d[k], (half[k] - o[k]) / d[k]);
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        if lo > t0 {
+            t0 = lo;
+            axis = k;
+        }
+        t1 = t1.min(hi);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    if !(t1 > 0.0 && t0 > 0.0) {
+        return None;
+    }
+    let mut n = [0.0; 3];
+    n[axis] = if d[axis] > 0.0 { -1.0 } else { 1.0 };
+    Some((t0, n))
+}
+
+/// The nearer crossing of the round side (about local z, radius `r`) within `|z| <= h`, outside it.
+fn hit_side(o: [f32; 3], d: [f32; 3], r: f32, h: f32) -> Option<(f32, [f32; 3])> {
+    let a = d[0] * d[0] + d[1] * d[1];
+    if a < 1e-12 {
+        return None;
+    }
+    let b = o[0] * d[0] + o[1] * d[1];
+    let disc = b * b - a * (o[0] * o[0] + o[1] * o[1] - r * r);
+    if disc < 0.0 {
+        return None;
+    }
+    let t = (-b - disc.sqrt()) / a;
+    let z = o[2] + t * d[2];
+    (t > 0.0 && z.abs() <= h).then(|| (t, [(o[0] + t * d[0]) / r, (o[1] + t * d[1]) / r, 0.0]))
+}
+
+fn hit_cylinder(o: [f32; 3], d: [f32; 3], r: f32, h: f32) -> Option<(f32, [f32; 3])> {
+    if let Some(s) = hit_side(o, d, r, h) {
+        return Some(s);
+    }
+    if d[2].abs() < 1e-9 {
+        return None;
+    }
+    let side = if d[2] > 0.0 { -1.0 } else { 1.0 };
+    let t = (side * h - o[2]) / d[2];
+    let (x, y) = (o[0] + t * d[0], o[1] + t * d[1]);
+    (t > 0.0 && x * x + y * y <= r * r).then_some((t, [0.0, 0.0, side]))
+}
+
+fn hit_ball(o: [f32; 3], d: [f32; 3], z: f32, r: f32) -> Option<(f32, [f32; 3])> {
+    let c = [o[0], o[1], o[2] - z];
+    let b = c[0] * d[0] + c[1] * d[1] + c[2] * d[2];
+    let disc = b * b - (c[0] * c[0] + c[1] * c[1] + c[2] * c[2] - r * r);
+    if disc < 0.0 {
+        return None;
+    }
+    let t = -b - disc.sqrt();
+    (t > 0.0).then(|| (t, [(c[0] + t * d[0]) / r, (c[1] + t * d[1]) / r, (c[2] + t * d[2]) / r]))
+}
+
+fn hit_capsule(o: [f32; 3], d: [f32; 3], r: f32, h: f32) -> Option<(f32, [f32; 3])> {
+    [hit_side(o, d, r, h), hit_ball(o, d, h, r), hit_ball(o, d, -h, r)].into_iter().flatten().min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+impl Obb {
+    /// A part in the body frame, placed by `at` (a point) and `dir` (a direction).
+    pub fn placed(p: &VisualPart, at: impl Fn([f32; 3]) -> [f32; 3], dir: impl Fn([f32; 3]) -> [f32; 3]) -> Obb {
+        Obb { center: at(p.center), axes: p.axes.map(dir), half: p.half, color: p.color, solid: p.solid }
+    }
+
+    /// Where the ray first meets the solid, from outside: the distance and the normal in the solid's own axes.
+    fn hit(&self, o: [f32; 3], d: [f32; 3]) -> Option<(f32, [f32; 3])> {
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let rel = [o[0] - self.center[0], o[1] - self.center[1], o[2] - self.center[2]];
+        let (lo, ld) = (self.axes.map(|a| dot(a, rel)), self.axes.map(|a| dot(a, d)));
+        match self.solid {
+            Solid::Box => hit_box(lo, ld, self.half),
+            Solid::Cylinder => hit_cylinder(lo, ld, self.half[0], self.half[2]),
+            Solid::Capsule => hit_capsule(lo, ld, self.half[0], self.half[2]),
+            Solid::Mesh(id) => hit_box(lo, ld, self.half).and(sandbox_core::rig::mesh(id)).and_then(|m| m.hit(lo, ld)),
+        }
+    }
+
+    fn bound_r(&self) -> f32 {
+        (self.half[0] * self.half[0] + self.half[1] * self.half[1] + self.half[2] * self.half[2]).sqrt() + if self.solid == Solid::Capsule { self.half[0] } else { 0.0 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ChaseView {
+    pub origin: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl ChaseView {
+    pub fn around(world: &World, orbit_deg: f32, dist_m: f32, height_m: f32) -> ChaseView {
+        ChaseView::around_at(world, orbit_deg, dist_m, height_m, 0.75)
+    }
+
+    pub fn around_at(world: &World, orbit_deg: f32, dist_m: f32, height_m: f32, target_m: f32) -> ChaseView {
+        let a = world.agent.yaw + std::f32::consts::PI + orbit_deg.to_radians();
+        let ground = world.agent_ground_m();
+        let (cx, cz) = (world.agent.x + dist_m * a.cos(), world.agent.z + dist_m * a.sin());
+        let under = world.terrain.cell_of(cx, cz).map_or(0.0, |(x, z)| world.terrain.height_m(x, z) + world.terrain.curb_m(x, z));
+        let origin = [cx, (ground + height_m).max(under + 0.4), cz];
+        let target = [world.agent.x, ground + target_m, world.agent.z];
+        let d = [target[0] - origin[0], target[1] - origin[1], target[2] - origin[2]];
+        ChaseView { origin, yaw: d[2].atan2(d[0]), pitch: d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) }
+    }
+
+    pub fn project(&self, cam: &Camera, point: [f32; 3]) -> Option<(f32, f32, f32)> {
+        let c = Camera { pitch_deg: self.pitch.to_degrees(), ..*cam };
+        c.project(self.origin, self.yaw, point)
+    }
+}
+
+pub fn render_chase(world: &World, cam: &Camera, view: &ChaseView, robot: &[Obb]) -> Frame {
+    render_with(world, cam, view.origin, view.yaw, view.pitch, robot)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusCam {
+    Hand,
+    Side,
+    Low,
+}
+
+impl FocusCam {
+    pub const ALL: [FocusCam; 3] = [FocusCam::Hand, FocusCam::Side, FocusCam::Low];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            FocusCam::Hand => "hand",
+            FocusCam::Side => "side",
+            FocusCam::Low => "low",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<FocusCam> {
+        FocusCam::ALL.into_iter().find(|c| c.id() == id)
+    }
+
+    fn aim(self, pose: Option<&sandbox_core::dynamics::BodyPose>) -> ([f32; 3], [f32; 3]) {
+        match self {
+            FocusCam::Hand => {
+                let palm = pose.and_then(|p| p.boxes.iter().find(|b| b.name == "palm_r")).map_or([0.3, -0.18, 0.7], |b| b.center);
+                (palm, [-0.05, -0.6, 0.18])
+            }
+            FocusCam::Side => ([0.05, 0.0, 0.55], [0.15, -2.1, 0.25]),
+            FocusCam::Low => ([0.12, 0.0, 0.10], [0.35, -1.0, 0.22]),
+        }
+    }
+}
+
+/// Where the hand camera stands off the hand and what it holds, in the body frame (forward, left, up).
+pub const HAND_CAM_OFF_M: [f32; 3] = [0.36, -0.24, 0.20];
+
+pub fn render_focus(world: &World, cam: &Camera, which: FocusCam) -> Frame {
+    let pose = world.body_pose();
+    let boxes = pose.as_ref().map(|p| world.robot_boxes(p)).unwrap_or_default();
+    let (mut t, mut off) = which.aim(pose.as_ref());
+    if which == FocusCam::Hand {
+        // Close in on the right hand and what it holds, from in front, to the right and above, looking back at the far
+        // face the phalanges go round (about half a metre off).
+        if let (Some(p), Some((_, _, c))) = (pose.as_ref(), world.hand_load()) {
+            let palm = world.holding_boxes(p).into_iter().find(|b| b.name == "palm_r").map_or(t, |b| b.center);
+            t = [0.5 * (palm[0] + c[0]), 0.5 * (palm[1] + c[1]), 0.5 * (palm[2] + c[2])];
+            off = HAND_CAM_OFF_M;
+        }
+    }
+    let target = world.body_to_world(t);
+    let mut origin = world.body_to_world([t[0] + off[0], t[1] + off[1], t[2] + off[2]]);
+    let floor = world.surface_m(origin[0], origin[2]) + 0.08;
+    if origin[1] < floor {
+        origin[1] = floor;
+    }
+    let d = [target[0] - origin[0], target[1] - origin[1], target[2] - origin[2]];
+    let yaw = d[2].atan2(d[0]);
+    let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt());
+    render_with(world, cam, origin, yaw, pitch, &boxes)
+}
+
+fn render_with(world: &World, cam: &Camera, origin: [f32; 3], yaw: f32, pitch: f32, robot: &[Obb]) -> Frame {
+    render_rays(world, cam, &Rays::Pinhole { view: View { origin, yaw, pitch, roll: 0.0 }, exposure: Exposure::default() }, robot, &[], None)
+}
+
+pub const ORTHO_BACK_M: f32 = 100.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rays {
+    Pinhole { view: View, exposure: Exposure },
+    Ortho { centre: [f32; 3], yaw: f32, pitch: f32, half_h_m: f32 },
+}
+
+/// A run of a robot's solids and a ball round them: a ray that misses the ball skips the run.
+struct Bound {
+    centre: [f32; 3],
+    r2: f32,
+    parts: std::ops::Range<usize>,
+}
+
+fn bounds_of(robot: &[Obb]) -> Vec<Bound> {
+    const RUN: usize = 24;
+    let mut v = Vec::with_capacity(robot.len() / RUN + 1);
+    for (i, run) in robot.chunks(RUN).enumerate() {
+        let mut c = [0.0f32; 3];
+        for b in run {
+            for k in 0..3 {
+                c[k] += b.center[k] / run.len() as f32;
+            }
+        }
+        let r = run.iter().map(|b| ((b.center[0] - c[0]).powi(2) + (b.center[1] - c[1]).powi(2) + (b.center[2] - c[2]).powi(2)).sqrt() + b.bound_r()).fold(0.0f32, f32::max);
+        v.push(Bound { centre: c, r2: r * r, parts: i * RUN..i * RUN + run.len() });
+    }
+    v
+}
+
+impl Bound {
+    fn missed_by(&self, o: [f32; 3], d: [f32; 3]) -> bool {
+        let v = [self.centre[0] - o[0], self.centre[1] - o[1], self.centre[2] - o[2]];
+        let along = v[0] * d[0] + v[1] * d[1] + v[2] * d[2];
+        let d2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        (along < 0.0 && d2 > self.r2) || d2 - along * along > self.r2
+    }
+}
+
+struct Pass<'a> {
+    scene: &'a Scene<'a>,
+    robot: &'a [Obb],
+    bounds: Vec<Bound>,
+    casters: Casters<'a>,
+    cut: Option<&'a Cutaway>,
+    day: Option<Daylight>,
+    max_dist: f32,
+    fog_dist: f32,
+    seed: u64,
+}
+
+impl Pass<'_> {
+    fn cast(&self, o: [f32; 3], d: [f32; 3], along: f32) -> ([u8; 3], u32, f32) {
+        let world_hit = trace_cut(self.scene, o, d, self.max_dist, self.cut);
+        let body = self.bounds.iter().filter(|b| !b.missed_by(o, d)).flat_map(|b| &self.robot[b.parts.clone()]).filter_map(|b| b.hit(o, d).map(|(t, n)| (t, n, b))).min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((t, l, b)) = body.filter(|(t, _, _)| world_hit.as_ref().map_or(true, |h| *t < h.t)) {
+            let dim = 1.0 - 0.25 * (t / self.fog_dist).clamp(0.0, 1.0);
+            let k = match &self.day {
+                None => [(l[0] * l[0] + 0.86 * l[1] * l[1] + 0.72 * l[2] * l[2]) * dim; 3],
+                Some(day) => {
+                    let n = [0, 1, 2].map(|i| b.axes[0][i] * l[0] + b.axes[1][i] * l[1] + b.axes[2][i] * l[2]);
+                    let p = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+                    let g = day.face_gain(n, sunlit(self.scene, day, p, n, &self.casters));
+                    [g[0] * dim, g[1] * dim, g[2] * dim]
+                }
+            };
+            let c = [0, 1, 2].map(|c| (b.color[c] as f32 * k[c]).clamp(0.0, 255.0) as u8);
+            return (c, 0, t * along);
+        }
+        match world_hit {
+            Some(hit) => {
+                let c = match &self.day {
+                    None => shade_hit(&hit, o, d, self.fog_dist, self.seed),
+                    Some(day) => {
+                        let p = [o[0] + d[0] * hit.t, o[1] + d[1] * hit.t, o[2] + d[2] * hit.t];
+                        let lit = sunlit(self.scene, day, p, hit.normal(), &self.casters);
+                        shade_sun(&hit, p, d, self.fog_dist, self.seed, day, lit)
+                    }
+                };
+                (c, hit.id, hit.t * along)
+            }
+            None => {
+                let c = match &self.day {
+                    None => sky(d[1]),
+                    Some(day) => day.sky_px(d, sky(d[1])),
+                };
+                ([c[0] as u8, c[1] as u8, c[2] as u8], 0, f32::INFINITY)
+            }
+        }
+    }
+}
+
+pub fn render_rays(world: &World, cam: &Camera, rays: &Rays, robot: &[Obb], casters: &[Obb], cut: Option<&Cutaway>) -> Frame {
+    // Every camera sees the sub-workers' bodies and a rider on foot, as it sees the first worker's own; a rider's own
+    // eye does not see its own body.
+    let with_crew: Vec<Obb>;
+    let origin = match rays {
+        Rays::Pinhole { view, .. } => Some(view.origin),
+        Rays::Ortho { .. } => None,
+    };
+    let robot = if world.crew.is_empty() && world.rider.is_none() {
+        robot
+    } else {
+        with_crew = robot.iter().copied().chain(world.crew_boxes()).chain(world.rider_boxes(origin)).collect();
+        &with_crew
+    };
+    let scene = Scene::build(world);
+    let (w, h) = (cam.width.max(1), cam.height.max(1));
+    let half_w = (cam.fov_deg.to_radians() * 0.5).tan();
+    let half_h = half_w * h as f32 / w as f32;
+    let (max_dist, fog_dist) = match rays {
+        Rays::Pinhole { .. } => (cam.max_dist_m, cam.max_dist_m),
+        Rays::Ortho { .. } => (ORTHO_BACK_M + cam.max_dist_m, f32::INFINITY),
+    };
+    let day = world.cfg.lighting.daylight();
+    let casters = Casters::new(if day.is_some() { [robot, casters] } else { [&[], &[]] });
+    let pass = Pass { scene: &scene, robot, bounds: bounds_of(robot), casters, cut, day, max_dist, fog_dist, seed: world.cfg.seed };
+
+    let mut rgb = vec![0u8; w * h * 3];
+    let mut ids = vec![0u32; w * h];
+    let mut depth = vec![f32::INFINITY; w * h];
+
+    rgb.par_chunks_mut(w * 3)
+        .zip(ids.par_chunks_mut(w))
+        .zip(depth.par_chunks_mut(w))
+        .enumerate()
+        .for_each(|(j, ((row_rgb, row_ids), row_depth))| {
+            let mut put = |i: usize, (c, id, z): ([u8; 3], u32, f32)| {
+                row_rgb[i * 3..i * 3 + 3].copy_from_slice(&c);
+                row_ids[i] = id;
+                row_depth[i] = z;
+            };
+            match rays {
+                Rays::Pinhole { view, exposure } => {
+                    let (fwd, right, up) = row_basis(view, exposure, j, h);
+                    let sy = (1.0 - 2.0 * (j as f32 + 0.5) / h as f32) * half_h;
+                    for i in 0..w {
+                        let sx = (2.0 * (i as f32 + 0.5) / w as f32 - 1.0) * half_w;
+                        let mut d = [
+                            fwd[0] + right[0] * sx + up[0] * sy,
+                            fwd[1] + right[1] * sx + up[1] * sy,
+                            fwd[2] + right[2] * sx + up[2] * sy,
+                        ];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                        d = [d[0] / len, d[1] / len, d[2] / len];
+                        put(i, pass.cast(view.origin, d, d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2]));
+                    }
+                }
+                Rays::Ortho { centre, yaw, pitch, half_h_m } => {
+                    let (fwd, right, up) = basis(*yaw, *pitch);
+                    let half_w_m = half_h_m * w as f32 / h as f32;
+                    let sy = (1.0 - 2.0 * (j as f32 + 0.5) / h as f32) * half_h_m;
+                    for i in 0..w {
+                        let sx = (2.0 * (i as f32 + 0.5) / w as f32 - 1.0) * half_w_m;
+                        let o = [0, 1, 2].map(|k| centre[k] + right[k] * sx + up[k] * sy - fwd[k] * ORTHO_BACK_M);
+                        put(i, pass.cast(o, fwd, 1.0));
+                    }
+                }
+            }
+        });
+
+    Frame { width: w, height: h, rgb, ids, depth, tick: world.tick }
+}
+
+/// The flat background of a robot-only condition frame (`render_boxes_only`) [추정: a neutral grey a little cooler than
+/// the ground, so no rendered part shares it].
+pub const NEUTRAL_BG: [u8; 3] = [185, 188, 192];
+
+/// Boxes alone on a flat background, through the pinhole `view`: the same ray hits and the same shading as a body in
+/// `render_rays` without the sun, ids 0 where a box is hit, depth along the optical axis, `bg` and infinity elsewhere.
+/// The robot stream of a condition triplet: what moves, with nothing of the scene.
+pub fn render_boxes_only(cam: &Camera, view: &View, boxes: &[Obb], bg: [u8; 3]) -> Frame {
+    let (w, h) = (cam.width.max(1), cam.height.max(1));
+    let half_w = (cam.fov_deg.to_radians() * 0.5).tan();
+    let half_h = half_w * h as f32 / w as f32;
+    let (fwd, right, up) = basis_rpy(view.yaw, view.pitch, view.roll);
+    let mut rgb = vec![0u8; w * h * 3];
+    let ids = vec![0u32; w * h];
+    let mut depth = vec![f32::INFINITY; w * h];
+    rgb.par_chunks_mut(w * 3).zip(depth.par_chunks_mut(w)).enumerate().for_each(|(j, (row_rgb, row_depth))| {
+        let sy = (1.0 - 2.0 * (j as f32 + 0.5) / h as f32) * half_h;
+        for i in 0..w {
+            let sx = (2.0 * (i as f32 + 0.5) / w as f32 - 1.0) * half_w;
+            let d = [0, 1, 2].map(|k| fwd[k] + right[k] * sx + up[k] * sy);
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let d = d.map(|v| v / len);
+            let along = d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2];
+            let hit = boxes.iter().filter_map(|b| b.hit(view.origin, d).map(|(t, n)| (t, n, b))).min_by(|a, b| a.0.total_cmp(&b.0));
+            let (c, z) = match hit {
+                Some((t, l, b)) => {
+                    let dim = 1.0 - 0.25 * (t / cam.max_dist_m.max(1e-3)).clamp(0.0, 1.0);
+                    let k = (l[0] * l[0] + 0.86 * l[1] * l[1] + 0.72 * l[2] * l[2]) * dim;
+                    ([0, 1, 2].map(|c| (b.color[c] as f32 * k).clamp(0.0, 255.0) as u8), t * along)
+                }
+                None => (bg, f32::INFINITY),
+            };
+            row_rgb[i * 3..i * 3 + 3].copy_from_slice(&c);
+            row_depth[i] = z;
+        }
+    });
+    Frame { width: w, height: h, rgb, ids, depth, tick: 0 }
+}
+
+/// The scene with no one in it, through `view`: no robot, no sub-workers, no rider (the static background stream of a
+/// condition triplet; on a live run the first frame's scene, held for the whole episode).
+pub fn render_scene_only(world: &World, cam: &Camera, view: &View) -> Frame {
+    let mut empty = world.clone();
+    empty.crew.clear();
+    empty.rider = None;
+    render_rays(&empty, cam, &Rays::Pinhole { view: *view, exposure: Exposure::default() }, &[], &[], None)
+}
+
+pub fn visible_objects(world: &World, frame: &Frame) -> Vec<VisibleObject> {
+    struct Acc {
+        px: u32,
+        bbox: [u32; 4],
+        depth_sum: f64,
+    }
+    let mut acc: HashMap<u32, Acc> = HashMap::new();
+    for (idx, &raw) in frame.ids.iter().enumerate() {
+        let (class, _) = unpack_id(raw);
+        if !matches!(class, ObjectClass::Node | ObjectClass::Drop | ObjectClass::Waypoint) {
+            continue;
+        }
+        let (x, y) = ((idx % frame.width) as u32, (idx / frame.width) as u32);
+        let a = acc.entry(raw).or_insert(Acc { px: 0, bbox: [x, y, x, y], depth_sum: 0.0 });
+        a.px += 1;
+        a.bbox = [a.bbox[0].min(x), a.bbox[1].min(y), a.bbox[2].max(x), a.bbox[3].max(y)];
+        a.depth_sum += frame.depth[idx] as f64;
+    }
+    let mut out: Vec<VisibleObject> = acc
+        .into_iter()
+        .map(|(raw, a)| {
+            let (class, id) = unpack_id(raw);
+            let (entity, label, label_ko) = match class {
+                ObjectClass::Node => match world.node(id) {
+                    Some(n) => (node_id(id), n.kind.id().to_string(), n.kind.spec().label_ko.to_string()),
+                    None => (node_id(id), "unknown".into(), "알 수 없음".into()),
+                },
+                ObjectClass::Drop => match world.drop_item(id) {
+                    Some(d) => (drop_id(id), d.kind.id().to_string(), d.kind.spec().label_ko.to_string()),
+                    None => (drop_id(id), "unknown".into(), "알 수 없음".into()),
+                },
+                _ => match world.waypoint(id) {
+                    Some(w) => (waypoint_id(id), w.key.clone(), w.label_ko.clone()),
+                    None => (waypoint_id(id), "unknown".into(), "알 수 없음".into()),
+                },
+            };
+            VisibleObject { class, entity, label, label_ko, pixels: a.px, bbox: a.bbox, depth_m: (a.depth_sum / a.px as f64) as f32 }
+        })
+        .collect();
+    out.sort_by(|a, b| a.depth_m.total_cmp(&b.depth_m).then_with(|| a.entity.cmp(&b.entity)));
+    out
+}
+
+impl World {
+    pub fn render(&self, cam: &Camera) -> Frame {
+        render(self, cam)
+    }
+
+    /// The right camera's frame of a stereo eye (`render_right`).
+    pub fn render_right(&self, cam: &Camera, baseline_m: f32) -> Frame {
+        render_right(self, cam, baseline_m)
+    }
+
+    pub fn visible_objects(&self, frame: &Frame) -> Vec<VisibleObject> {
+        visible_objects(self, frame)
+    }
+
+    pub fn render_top(&self, size_px: usize, span_m: f32) -> Frame {
+        render_top(self, size_px, span_m)
+    }
+
+    pub fn body_to_world(&self, p: [f32; 3]) -> [f32; 3] {
+        let (s, c) = self.agent.yaw.sin_cos();
+        let g = self.agent_ground_m();
+        [self.agent.x + c * p[0] + s * p[1], g + p[2], self.agent.z + s * p[0] - c * p[1]]
+    }
+
+    pub fn body_dir_to_world(&self, v: [f32; 3]) -> [f32; 3] {
+        let (s, c) = self.agent.yaw.sin_cos();
+        [c * v[0] + s * v[1], v[2], s * v[0] - c * v[1]]
+    }
+
+    pub fn robot_boxes(&self, pose: &sandbox_core::dynamics::BodyPose) -> Vec<Obb> {
+        let mut v: Vec<Obb> = self.robot_parts(pose).iter().map(|p| Obb::placed(p, |c| self.body_to_world(c), |a| self.body_dir_to_world(a))).collect();
+        v.extend(self.hand_load_boxes());
+        v
+    }
+
+    /// The item in the hands (`hand_load`) as a box in the world: across the body, its length (`size[0]`) along the
+    /// knuckles as the grip closes on it (`sim::top_grasp`), the way the carry places it and a sub-worker draws it.
+    pub fn hand_load_boxes(&self) -> Vec<Obb> {
+        let axes = [self.body_dir_to_world([1.0, 0.0, 0.0]), self.body_dir_to_world([0.0, 1.0, 0.0]), self.body_dir_to_world([0.0, 0.0, 1.0])];
+        self.hand_load().map(|(k, size, c)| Obb { center: self.body_to_world(c), axes, half: [0.5 * size[2], 0.5 * size[0], 0.5 * size[1]], color: k.spec().color, solid: Solid::Box }).into_iter().collect()
+    }
+
+    /// What the head camera sees of its own body: the tines and their load on a lift truck the rider looks down at,
+    /// or the item in the hands — with the forearms and hands round it while a pick or a set-down has them out in
+    /// front, where a head bent to watch them sees them. Walking with a load the eyes look ahead over it, and the step
+    /// they read in the depth (`lv_spatial::stairs`) lies where the arms would be drawn: there the item rides alone,
+    /// as before.
+    pub fn own_view_boxes(&self) -> Vec<Obb> {
+        if self.rider_sees_forks() {
+            return self.fork_front_boxes();
+        }
+        let mut v = self.hand_load_boxes();
+        let busy_hands = self.act.as_ref().is_some_and(|p| matches!(p.rollout.kind, sandbox_core::act::ActKind::Grasp | sandbox_core::act::ActKind::Release));
+        if busy_hands && !sandbox_core::act::fork::applies(&self.body) && self.body.arm_count() > 0 {
+            if let Some(pose) = self.body_pose() {
+                let palette = Palette::default();
+                let arms = self.own_arm_boxes(&pose);
+                v.extend(rig::dress(&self.body, &arms, &palette).iter().map(|p| Obb::placed(p, |c| self.body_to_world(c), |a| self.body_dir_to_world(a))));
+            }
+        }
+        v
+    }
+
+    /// The first worker's outside in the body frame: dressed links on legs; on wheels and tracks the lift truck, its
+    /// rider when aboard, the mast and tines and what rides on them.
+    pub fn robot_parts(&self, pose: &sandbox_core::dynamics::BodyPose) -> Vec<VisualPart> {
+        let palette = Palette::default();
+        if !sandbox_core::act::fork::applies(&self.body) {
+            return rig::dress(&self.body, &self.holding_boxes(pose), &palette);
+        }
+        let mut v = rig::truck_parts(&self.body, &palette);
+        if !self.rider.is_some_and(|r| r.off()) {
+            v.extend(rig::rider_parts(&self.body, &self.current_kin_pose(), &palette));
+        }
+        v.extend(self.fork_front_parts());
+        v
+    }
+
+    /// The mast, carriage, tines and load, in the body frame.
+    fn fork_front_parts(&self) -> Vec<VisualPart> {
+        if !sandbox_core::act::fork::applies(&self.body) {
+            return Vec::new();
+        }
+        let mut v = rig::fork_parts(&self.body, self.fork_m_now());
+        let level = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for (k, size, c) in self.fork_load() {
+            v.push(VisualPart { solid: Solid::Box, center: c, axes: level, half: [0.5 * size[0], 0.5 * size[2], 0.5 * size[1]], color: k.spec().color });
+        }
+        v
+    }
+
+    /// Riders on foot (the first worker's and the sub-workers'), but not the one whose eye is at `origin`.
+    pub fn rider_boxes(&self, origin: Option<[f32; 3]>) -> Vec<Obb> {
+        let mine = |x: f32, z: f32| origin.is_some_and(|o| (o[0] - x).hypot(o[2] - z) < 0.3);
+        let riders = self.rider.iter().chain(self.crew.iter().filter_map(|w| w.rider.as_ref()));
+        let body = &self.body;
+        riders.filter(|r| r.off() && !mine(r.x, r.z)).flat_map(|r| r.boxes(self.surface_m(r.x, r.z), body)).collect()
+    }
+
+    /// Whether the rider of a lift truck is looking down over the dashboard at the tines (a fork act's look or
+    /// re-check, the load riding on, the lift): the head camera then sees the mast, the carriage, the tines and what
+    /// rides on them. Looking ahead the rider sees past them.
+    pub fn rider_sees_forks(&self) -> bool {
+        sandbox_core::act::fork::applies(&self.body)
+            && matches!(self.act_phase(), Some((sandbox_core::act::ActKind::Fork, "rider_look" | "rider_check" | "recheck_look" | "recheck" | "seat" | "raise")))
+    }
+
+    /// The mast, carriage, tines and load in the world, as the rider and the carriage camera see them.
+    pub fn fork_front_boxes(&self) -> Vec<Obb> {
+        self.fork_front_parts().iter().map(|p| Obb::placed(p, |c| self.body_to_world(c), |a| self.body_dir_to_world(a))).collect()
+    }
+
+    pub fn shadow_casters(&self) -> Vec<Obb> {
+        if !self.cfg.lighting.daylight().is_some_and(|d| d.has_beam()) {
+            return Vec::new();
+        }
+        self.shadow_pose().map(|p| self.tilted_robot_boxes(&p, &self.base_tilt(&p))).unwrap_or_default()
+    }
+
+    fn shadow_pose(&self) -> Option<sandbox_core::dynamics::BodyPose> {
+        let at_rest = self.act.is_none() && self.motion.is_none() && (!self.body.legged || self.agent.speed_mps <= 0.0);
+        if !at_rest {
+            return self.body_pose();
+        }
+        let stand = sandbox_core::kin::KinPose::stand(&self.body, self.carried_kg());
+        Some(sandbox_core::kin::solve(&self.body, &stand, &sandbox_core::kin::KinLoads::default()).body_pose(0.0, sandbox_core::Source::Quiet))
+    }
+}
+
+fn put(rgb: &mut [u8], w: usize, h: usize, x: i32, y: i32, c: [u8; 3]) {
+    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
+        let i = (y as usize * w + x as usize) * 3;
+        rgb[i..i + 3].copy_from_slice(&c);
+    }
+}
+
+pub fn render_top(world: &World, size_px: usize, span_m: f32) -> Frame {
+    let n = size_px.max(16);
+    top_view(world, n, n, (world.agent.x, world.agent.z), span_m / n as f32, true)
+}
+
+/// The whole map from above, letterboxed into `width` × `height`, with every robot drawn to scale. `marks` says where
+/// each robot came out on the picture (0 to 1 across and down).
+pub fn render_map(world: &World, width: usize, height: usize) -> (Frame, Vec<UnitMark>) {
+    let (w, h) = (width.max(32), height.max(32));
+    let (sx, sz) = world.terrain.size_m();
+    let m_per_px = (sx / w as f32).max(sz / h as f32);
+    let centre = (0.5 * sx, 0.5 * sz);
+    let mut f = top_view(world, w, h, centre, m_per_px, false);
+    let to_px = |x: f32, z: f32| ((x - centre.0) / m_per_px + w as f32 * 0.5, (z - centre.1) / m_per_px + h as f32 * 0.5);
+    let mut marks = Vec::new();
+    let mut plate = |rgb: &mut Vec<u8>, id: u32, x: f32, z: f32, yaw: f32, fp: &crate::clear::Footprint, c: [u8; 3]| {
+        for (p, col) in std::iter::once((fp.hull(x, z, yaw), c)).chain(fp.tines(x, z, yaw).map(|t| (t.0, [64, 66, 72]))) {
+            let reach = p.half.0.hypot(p.half.1) / m_per_px + 1.0;
+            let (cx, cy) = to_px(p.c.0, p.c.1);
+            for j in (cy - reach) as i32..=(cy + reach) as i32 {
+                for i in (cx - reach) as i32..=(cx + reach) as i32 {
+                    let (dx, dz) = ((i as f32 + 0.5 - cx) * m_per_px, (j as f32 + 0.5 - cy) * m_per_px);
+                    let (along, across) = (dx * p.u.0 + dz * p.u.1, dz * p.u.0 - dx * p.u.1);
+                    if along.abs() <= p.half.0 && across.abs() <= p.half.1 {
+                        put(rgb, w, h, i, j, col);
+                    }
+                }
+            }
+        }
+        let (px, py) = to_px(x, z);
+        marks.push(UnitMark { id, u: px / w as f32, v: py / h as f32 });
+    };
+    plate(&mut f.rgb, 1, world.agent.x, world.agent.z, world.agent.yaw, &world.footprint(), [220, 40, 40]);
+    for c in &world.crew {
+        plate(&mut f.rgb, c.id, c.x, c.z, c.yaw, &c.footprint(), if c.form == crate::crew::Form::Forklift { [232, 192, 40] } else { [52, 170, 190] });
+    }
+    (f, marks)
+}
+
+/// Where a robot came out on a picture of the map.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct UnitMark {
+    pub id: u32,
+    pub u: f32,
+    pub v: f32,
+}
+
+fn top_view(world: &World, nw: usize, nh: usize, centre: (f32, f32), m_per_px: f32, robot: bool) -> Frame {
+    let t = &world.terrain;
+    let mut rgb = vec![0u8; nw * nh * 3];
+    for j in 0..nh {
+        for i in 0..nw {
+            let x = centre.0 + (i as f32 + 0.5 - nw as f32 * 0.5) * m_per_px;
+            let z = centre.1 + (j as f32 + 0.5 - nh as f32 * 0.5) * m_per_px;
+            let c = match t.cell_of(x, z) {
+                None => [24, 24, 28],
+                Some((cx, cz)) => {
+                    let h = t.height_m(cx, cz);
+                    let cliff = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| {
+                        let (nx, nz) = (cx as i32 + dx, cz as i32 + dz);
+                        t.in_bounds(nx, nz) && h - t.height_m(nx as usize, nz as usize) >= 0.5
+                    });
+                    if t.curb_m(cx, cz) > 0.0 && t.curb_kind(cx, cz) == crate::terrain::CurbKind::Curb {
+                        CURB_YELLOW
+                    } else if t.curb_kind(cx, cz) != crate::terrain::CurbKind::Curb {
+                        let g = t.ground_at(cx, cz).color();
+                        let k = 0.8 + 0.4 * t.curb_m(cx, cz).min(0.5);
+                        [(g[0] as f32 * k).min(255.0) as u8, (g[1] as f32 * k).min(255.0) as u8, (g[2] as f32 * k).min(255.0) as u8]
+                    } else if cliff {
+                        [40, 38, 36]
+                    } else {
+                        let g = t.ground_at(cx, cz).color();
+                        let k = 1.0 - (h * 0.35).min(0.35);
+                        [(g[0] as f32 * k) as u8, (g[1] as f32 * k) as u8, (g[2] as f32 * k) as u8]
+                    }
+                }
+            };
+            put(&mut rgb, nw, nh, i as i32, j as i32, c);
+        }
+    }
+    let to_px = |x: f32, z: f32| {
+        (
+            ((x - centre.0) / m_per_px + nw as f32 * 0.5) as i32,
+            ((z - centre.1) / m_per_px + nh as f32 * 0.5) as i32,
+        )
+    };
+    let dot = |rgb: &mut Vec<u8>, x: f32, z: f32, r: i32, c: [u8; 3]| {
+        let (px, py) = to_px(x, z);
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy <= r * r {
+                    put(rgb, nw, nh, px + dx, py + dy, c);
+                }
+            }
+        }
+    };
+    for nd in &world.nodes {
+        let c = match nd.kind {
+            NodeKind::Tree => [30, 90, 36],
+            NodeKind::Boulder => [96, 96, 100],
+            NodeKind::CoalOre => [20, 20, 24],
+            NodeKind::IronOre => [190, 120, 90],
+        };
+        dot(&mut rgb, nd.x, nd.z, ((0.22 / m_per_px) as i32).max(2), c);
+    }
+    for f in world.fixtures.iter().filter(|f| f.blocks()) {
+        let c = match f.kind {
+            crate::fixture::FixtureKind::Wall { .. } => [64, 60, 58],
+            crate::fixture::FixtureKind::Shelf { .. } => [52, 92, 170],
+            _ => [86, 104, 118],
+        };
+        let r = ((0.22 / m_per_px) as i32).max(1);
+        for &(cx, cz) in &f.cells {
+            let (x, z) = cell_center(cx, cz);
+            let (px, py) = to_px(x, z);
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    put(&mut rgb, nw, nh, px + dx, py + dy, c);
+                }
+            }
+        }
+    }
+    for d in &world.drops {
+        dot(&mut rgb, d.x, d.z, ((0.1 / m_per_px) as i32).max(1), [255, 255, 255]);
+    }
+    for w in &world.waypoints {
+        let c = if w.key == "warehouse" { [52, 104, 220] } else { [232, 120, 40] };
+        dot(&mut rgb, w.x, w.z, ((0.3 / m_per_px) as i32).max(3), c);
+        let pieces = stock_pieces(&w.stock);
+        let r = ((0.06 / m_per_px) as i32).max(1);
+        for (i, (k, _)) in pieces.iter().take(24).enumerate() {
+            let (px, py) = to_px(w.x - 0.45 - (i / 6) as f32 * 0.16, w.z - 0.4 + (i % 6) as f32 * 0.16);
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    put(&mut rgb, nw, nh, px + dx, py + dy, k.spec().color);
+                }
+            }
+        }
+    }
+    for s in 0..((0.9 / m_per_px) as i32).max(4) {
+        let (px, py) = to_px(
+            world.agent.x + world.agent.yaw.cos() * s as f32 * m_per_px,
+            world.agent.z + world.agent.yaw.sin() * s as f32 * m_per_px,
+        );
+        put(&mut rgb, nw, nh, px, py, [255, 255, 255]);
+    }
+    if robot {
+        dot(&mut rgb, world.agent.x, world.agent.z, ((0.18 / m_per_px) as i32).max(3), [220, 40, 40]);
+    }
+    Frame { width: nw, height: nh, rgb, ids: vec![], depth: vec![], tick: world.tick }
+}
+
+pub fn ground_palette() -> [(Ground, [u8; 3]); 8] {
+    Ground::ALL.map(|g| (g, g.color()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nav::Goal;
+    use crate::world::{DropItem, WorldConfig};
+    use sandbox_core::{BaseKind, FingerCount, SandboxConfig};
+
+    fn world() -> World {
+        let mut hand = SandboxConfig::preset(FingerCount::Five);
+        hand.base = BaseKind::Track;
+        World::new(WorldConfig { seed: 7, cells: 64, sandbox: hand, ..WorldConfig::default() }).unwrap()
+    }
+
+    fn small() -> Camera {
+        Camera { width: 96, height: 64, ..Camera::default() }
+    }
+
+    #[test]
+    fn world_point_inverts_project() {
+        let mut w = world();
+        w.agent.yaw = 0.7;
+        let cam = Camera { width: 192, height: 128, ..Camera::default() };
+        let origin = Camera::origin(&w);
+        for &(dx, dy, dz) in &[(3.0f32, -0.4f32, 0.5f32), (5.0, -0.5, -1.2), (2.0, 0.0, 0.0), (6.0, -0.5, 2.5)] {
+            let (c, s) = (w.agent.yaw.cos(), w.agent.yaw.sin());
+            let p = [origin[0] + dx * c - dz * s, origin[1] + dy, origin[2] + dx * s + dz * c];
+            let (px, py, depth) = cam.project(origin, w.agent.yaw, p).expect("in front of the camera");
+            let (x, z) = cam.world_point((origin[0], origin[2]), w.agent.yaw, px, py, depth).unwrap();
+            assert!((x - p[0]).abs() < 1e-3 && (z - p[2]).abs() < 1e-3, "({x},{z}) vs ({},{})", p[0], p[2]);
+            let v = View { origin, yaw: w.agent.yaw, pitch: -0.3, roll: 0.12 };
+            let (px, py, depth) = cam.project_in(&v, p).expect("in front of the camera");
+            let (x, z) = cam.world_point_in(&v, px, py, depth).unwrap();
+            assert!((x - p[0]).abs() < 1e-3 && (z - p[2]).abs() < 1e-3, "rolled: ({x},{z}) vs ({},{})", p[0], p[2]);
+        }
+        assert!(cam.project(origin, w.agent.yaw, [origin[0] - 3.0 * w.agent.yaw.cos(), origin[1], origin[2] - 3.0 * w.agent.yaw.sin()]).is_none());
+        assert!(cam.world_point((0.0, 0.0), 0.0, 10.0, 10.0, f32::INFINITY).is_none());
+        assert!(cam.world_point((0.0, 0.0), 0.0, 10.0, 10.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_pixel_of_a_node_maps_back_onto_the_node() {
+        let mut w = world();
+        w.nodes.clear();
+        let (ax, az) = (w.agent.x, w.agent.z);
+        let (cx, cz) = w.terrain.cell_of(ax + 3.2, az + 0.4).unwrap();
+        let (nx, nz) = cell_center(cx, cz);
+        w.nodes.push(crate::world::Node { id: 5, kind: NodeKind::Tree, x: nx, z: nz, hp: 3.0, max_hp: 3.0 });
+        w.agent.yaw = 0.0;
+        let cam = Camera { width: 192, height: 128, ..Camera::default() };
+        let f = render(&w, &cam);
+        let view = w.head_view(&cam).view;
+        let mut checked = 0;
+        for j in 0..f.height {
+            for i in 0..f.width {
+                let (class, id) = unpack_id(f.ids[j * f.width + i]);
+                if class == ObjectClass::Node && id == 5 {
+                    let (x, z) = cam.world_point_in(&view, i as f32 + 0.5, j as f32 + 0.5, f.depth[j * f.width + i]).unwrap();
+                    assert!((x - nx).abs() <= 1.1 && (z - nz).abs() <= 1.1, "({x},{z}) not under the crown of ({nx},{nz})");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20, "the tree covers too few pixels: {checked}");
+    }
+
+    #[test]
+    fn id_packing_round_trips() {
+        let v = pack_id(ObjectClass::Drop, 0x00AB_CDEF);
+        assert_eq!(unpack_id(v), (ObjectClass::Drop, 0x00AB_CDEF));
+        assert_eq!(unpack_id(0), (ObjectClass::Sky, 0));
+    }
+
+    #[test]
+    fn rendering_is_deterministic() {
+        let w = world();
+        let a = render(&w, &small());
+        let b = render(&w, &small());
+        assert_eq!(a.rgb, b.rgb);
+        assert_eq!(a.ids, b.ids);
+    }
+
+    #[test]
+    fn frame_has_sky_above_and_ground_below() {
+        let w = world();
+        let f = render(&w, &small());
+        let top = unpack_id(f.ids[f.width / 2]).0;
+        let bottom = unpack_id(f.ids[(f.height - 1) * f.width + f.width / 2]).0;
+        assert_eq!(top, ObjectClass::Sky);
+        assert_eq!(bottom, ObjectClass::Ground);
+        assert!(f.depth[(f.height - 1) * f.width + f.width / 2].is_finite());
+        assert!(f.depth[f.width / 2].is_infinite());
+    }
+
+    #[test]
+    fn a_drop_ahead_on_the_right_appears_on_the_right_half() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        let (ax, az) = (w.agent.x, w.agent.z);
+        let (cx, cz) = w.terrain.cell_of(ax + 2.5, az + 0.9).unwrap();
+        let (x, z) = cell_center(cx, cz);
+        w.drops.push(DropItem::whole(77, ItemKind::Stone, x, z));
+        let f = render(&w, &Camera { width: 192, height: 128, ..Camera::default() });
+        let seen = visible_objects(&w, &f);
+        let o = seen.iter().find(|o| o.entity == "d77").expect("the drop is in view");
+        let cx_px = (o.bbox[0] + o.bbox[2]) as f32 * 0.5;
+        assert!(cx_px > f.width as f32 * 0.5, "right of centre, got x={cx_px}");
+        assert!(o.depth_m > 2.0 && o.depth_m < 3.2, "depth {}", o.depth_m);
+        w.drops.clear();
+        let (cx, cz) = w.terrain.cell_of(ax + 2.5, az - 0.9).unwrap();
+        let (x, z) = cell_center(cx, cz);
+        w.drops.push(DropItem::whole(78, ItemKind::Stone, x, z));
+        let f = render(&w, &Camera { width: 192, height: 128, ..Camera::default() });
+        let seen = visible_objects(&w, &f);
+        let o = seen.iter().find(|o| o.entity == "d78").expect("the drop is in view");
+        assert!(((o.bbox[0] + o.bbox[2]) as f32 * 0.5) < f.width as f32 * 0.5);
+    }
+
+    #[test]
+    fn objects_behind_the_robot_are_not_seen() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        let (cx, cz) = w.terrain.cell_of(w.agent.x - 2.0, w.agent.z).unwrap();
+        let (x, z) = cell_center(cx, cz);
+        w.drops.push(DropItem::whole(79, ItemKind::Log, x, z));
+        let f = render(&w, &small());
+        assert!(visible_objects(&w, &f).iter().all(|o| o.entity != "d79"));
+    }
+
+    #[test]
+    fn a_nearer_object_hides_a_farther_one() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        let (ax, az) = (w.agent.x, w.agent.z);
+        for (id, dx) in [(80u32, 2.6f32), (81, 4.6)] {
+            let (cx, cz) = w.terrain.cell_of(ax + dx, az).unwrap();
+            let (x, z) = cell_center(cx, cz);
+            w.nodes.push(crate::world::Node { id, kind: NodeKind::Boulder, x, z, hp: 7.5, max_hp: 7.5 });
+        }
+        let f = render(&w, &Camera { width: 160, height: 96, pitch_deg: -20.0, ..Camera::default() });
+        let seen = visible_objects(&w, &f);
+        let near = seen.iter().find(|o| o.entity == "n80").expect("near boulder");
+        let far = seen.iter().find(|o| o.entity == "n81");
+        assert!(near.pixels > 200);
+        if let Some(far) = far {
+            assert!(far.pixels < near.pixels / 2, "far {} vs near {}", far.pixels, near.pixels);
+            assert!(far.depth_m > near.depth_m);
+        }
+    }
+
+    #[test]
+    fn nearer_objects_cover_more_pixels() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        let (ax, az) = (w.agent.x, w.agent.z);
+        let mut area = |dx: f32, id: u32| {
+            w.nodes.clear();
+            let (cx, cz) = w.terrain.cell_of(ax + dx, az).unwrap();
+            let (x, z) = cell_center(cx, cz);
+            w.nodes.push(crate::world::Node { id, kind: NodeKind::CoalOre, x, z, hp: 15.0, max_hp: 15.0 });
+            let f = render(&w, &Camera { width: 192, height: 128, pitch_deg: -3.0, ..Camera::default() });
+            visible_objects(&w, &f).iter().find(|o| o.entity == node_id(id)).map_or(0, |o| o.pixels)
+        };
+        let near = area(2.5, 90);
+        let far = area(7.5, 91);
+        assert!(near > far * 3 && far > 0, "near {near}, far {far}");
+    }
+
+    #[test]
+    fn curbs_are_drawn_as_curbs_and_waypoint_flags_are_visible() {
+        let mut w = world();
+        let wall_x = (0.46 * 64.0f32).round() * CELL_M;
+        w.agent.x = wall_x - 2.0;
+        w.agent.z = 0.28 * 32.0;
+        w.agent.yaw = 0.0;
+        let f = render(&w, &small());
+        let curb_px = f.ids.iter().filter(|&&v| unpack_id(v).0 == ObjectClass::Curb).count();
+        assert!(curb_px > 50, "curb pixels {curb_px}");
+
+        let mut w = world();
+        let wh = w.waypoint_by_key("warehouse").unwrap().clone();
+        w.agent.x = wh.x - 3.0;
+        w.agent.z = wh.z;
+        w.agent.yaw = 0.0;
+        let f = render(&w, &Camera { width: 192, height: 128, pitch_deg: 0.0, ..Camera::default() });
+        let seen = visible_objects(&w, &f);
+        assert!(seen.iter().any(|o| o.class == ObjectClass::Waypoint && o.label == "warehouse"));
+    }
+
+    #[test]
+    fn mined_nodes_disappear_from_the_frame() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        let (cx, cz) = w.terrain.cell_of(w.agent.x + 2.0, w.agent.z).unwrap();
+        let (x, z) = cell_center(cx, cz);
+        w.nodes.push(crate::world::Node { id: 95, kind: NodeKind::Tree, x, z, hp: 3.0, max_hp: 3.0 });
+        let f = render(&w, &small());
+        assert!(visible_objects(&w, &f).iter().any(|o| o.entity == "n95"));
+        w.nodes.retain(|n| n.id != 95);
+        let f = render(&w, &small());
+        assert!(visible_objects(&w, &f).iter().all(|o| o.entity != "n95"));
+    }
+
+    #[test]
+    fn fog_and_texture_do_not_break_colour_identity() {
+        let mut w = world();
+        w.agent.yaw = 0.0;
+        w.nodes.clear();
+        let mut mean = |kind: NodeKind, id: u32| {
+            w.nodes.clear();
+            let (cx, cz) = w.terrain.cell_of(w.agent.x + 1.5, w.agent.z).unwrap();
+            let (x, z) = cell_center(cx, cz);
+            w.nodes.push(crate::world::Node { id, kind, x, z, hp: 1.0, max_hp: 1.0 });
+            let f = render(&w, &Camera { width: 128, height: 96, pitch_deg: -32.0, ..Camera::default() });
+            let (mut s, mut n) = ([0f64; 3], 0f64);
+            for (i, &v) in f.ids.iter().enumerate() {
+                if v == pack_id(ObjectClass::Node, id) {
+                    for c in 0..3 {
+                        s[c] += f.rgb[i * 3 + c] as f64;
+                    }
+                    n += 1.0;
+                }
+            }
+            assert!(n > 20.0);
+            [s[0] / n, s[1] / n, s[2] / n]
+        };
+        let coal = mean(NodeKind::CoalOre, 1);
+        let tree = mean(NodeKind::Tree, 2);
+        let dist = ((coal[0] - tree[0]).powi(2) + (coal[1] - tree[1]).powi(2) + (coal[2] - tree[2]).powi(2)).sqrt();
+        assert!(dist > 25.0, "coal {coal:?} tree {tree:?}");
+    }
+
+    #[test]
+    fn webp_capture_of_a_real_frame_round_trips() {
+        let w = world();
+        let f = render(&w, &Camera { width: 192, height: 128, ..Camera::default() });
+        let lossy = crate::capture::encode_webp(&f.rgb, 192, 128, 75.0).unwrap();
+        let png_like = f.rgb.len();
+        assert!(lossy.bytes.len() * 4 < png_like, "{} bytes vs {png_like} raw", lossy.bytes.len());
+        let (cw, ch, back) = crate::capture::decode_webp(&lossy.bytes).unwrap();
+        assert_eq!((cw as usize, ch as usize), (192, 128));
+        assert!(crate::capture::psnr(&f.rgb, &back) > 24.0);
+    }
+
+    #[test]
+    fn top_view_marks_the_robot_at_the_centre() {
+        let w = world();
+        let f = render_top(&w, 96, 24.0);
+        let i = (48 * 96 + 48) * 3;
+        assert_eq!(&f.rgb[i..i + 3], &[220, 40, 40]);
+        assert_eq!(f.rgb.len(), 96 * 96 * 3);
+    }
+
+    #[test]
+    fn a_delivered_pile_stands_beside_the_flag_and_is_not_a_detection() {
+        let mut w = world();
+        let camp = w.waypoint_by_key("base_camp").unwrap().clone();
+        w.agent.x = camp.x + 2.0;
+        w.agent.z = camp.z;
+        w.agent.yaw = std::f32::consts::PI;
+        let cam = Camera { width: 192, height: 128, pitch_deg: -8.0, ..Camera::default() };
+        let stock_px = |w: &World| render(w, &cam).ids.iter().filter(|&&v| unpack_id(v).0 == ObjectClass::Stock).count();
+        assert_eq!(stock_px(&w), 0, "an empty camp has no pile");
+        let wp = w.waypoints.iter_mut().find(|p| p.key == "base_camp").unwrap();
+        wp.stock = vec![(ItemKind::Log, 3.0), (ItemKind::Stone, 1.5)];
+        assert!(stock_px(&w) > 30, "the pile shows");
+        let f = render(&w, &cam);
+        assert!(visible_objects(&w, &f).iter().all(|o| o.class != ObjectClass::Stock));
+        assert_eq!(stock_pieces(&[(ItemKind::Log, 3.0), (ItemKind::Stone, 1.5)]).len(), 5);
+        assert!(pile_slots(100).len() == 40 && pile_slots(100).iter().all(|s| s.0 == 0 || s.0 == -1));
+    }
+
+    #[test]
+    fn the_sea_renders_as_water_and_hides_nothing_behind_it() {
+        let mut hand = SandboxConfig::preset(FingerCount::Five);
+        hand.base = BaseKind::Track;
+        let w = World::new(WorldConfig { seed: 4, cells: 64, sandbox: hand, terrain: crate::terrain::TerrainKind::Rugged, ..WorldConfig::default() }).unwrap();
+        let t = &w.terrain;
+        let water = (0..t.d).flat_map(|z| (0..t.w).map(move |x| (x, z))).filter(|&(x, z)| t.is_water(x, z)).count();
+        assert!(water > 0);
+        let top = render_top(&w, 128, 70.0);
+        let blue = top.rgb.chunks(3).filter(|c| c[2] as i32 > c[0] as i32 + 60 && c[2] > 140).count();
+        assert!(blue > 0, "the top view shows the sea");
+    }
+
+    fn frame_hash(f: &Frame) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        f.rgb.iter().for_each(|&b| eat(b));
+        f.ids.iter().flat_map(|v| v.to_le_bytes()).for_each(&mut eat);
+        f.depth.iter().flat_map(|v| v.to_bits().to_le_bytes()).for_each(&mut eat);
+        h
+    }
+
+    fn flat_reference_frames() -> Vec<(&'static str, Frame)> {
+        let mut out = Vec::new();
+        let w = world();
+        out.push(("rest", render(&w, &small())));
+        let mut t = world();
+        let yaw = t.agent.yaw + 1.5;
+        t.command(crate::world::Action::Turn { yaw_deg: yaw.to_degrees() }).unwrap();
+        t.tick();
+        out.push(("turn", render(&t, &Camera { width: 128, height: 96, ..Camera::default() })));
+        let mut hand = SandboxConfig::preset(FingerCount::Five);
+        hand.base = BaseKind::HumanFoot;
+        let mut legs = World::new(WorldConfig { seed: 7, cells: 64, sandbox: hand, parcels: Some(0), ..WorldConfig::default() }).unwrap();
+        let (ax, az) = (legs.agent.x, legs.agent.z);
+        let goal = (0..16)
+            .map(|k| (k as f32 * std::f32::consts::TAU / 16.0).sin_cos())
+            .map(|(s, c)| crate::world::Action::MoveTo { x: ax + 5.0 * c, z: az + 5.0 * s, reach_m: 0.3 })
+            .find(|a| legs.clone().command(a.clone()).is_ok())
+            .expect("a reachable point 5 m away");
+        legs.command(goal).unwrap();
+        for _ in 0..7 {
+            legs.tick();
+        }
+        out.push(("walk", render(&legs, &Camera { width: 128, height: 96, ..Camera::default() })));
+        let mut hand = SandboxConfig::preset(FingerCount::Five);
+        hand.base = BaseKind::Track;
+        let rugged = World::new(WorldConfig { seed: 4, cells: 64, sandbox: hand, terrain: crate::terrain::TerrainKind::Rugged, ..WorldConfig::default() }).unwrap();
+        out.push(("rugged", render(&rugged, &Camera { width: 128, height: 96, pitch_deg: -4.0, ..Camera::default() })));
+        let pose = w.body_pose().expect("a pose");
+        let boxes = w.robot_boxes(&pose);
+        let cam = Camera { width: 128, height: 96, fov_deg: 64.0, max_dist_m: 30.0, ..Camera::default() };
+        out.push(("chase", render_chase(&w, &cam, &ChaseView::around(&w, 20.0, 2.6, 1.6), &boxes)));
+        out.push(("focus", render_focus(&w, &Camera { width: 96, height: 64, fov_deg: 50.0, max_dist_m: 12.0, ..Camera::default() }, FocusCam::Hand)));
+        out.push(("top", render_top(&w, 64, 24.0)));
+        out
+    }
+
+    #[test]
+    #[ignore]
+    fn print_flat_reference_hashes() {
+        for (name, f) in flat_reference_frames() {
+            println!("(\"{name}\", {:#018x}),", frame_hash(&f));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "Windows' pixels: sin and cos differ in the last bit under another libm")]
+    fn flat_lighting_keeps_its_pixels() {
+        // v1.5: full-size trees and logs, the grain on every surface, the robot drawn from `sandbox_core::rig`.
+        // v1.7: a knuckle ball at the root of every phalanx (the rider's fingers in "chase").
+        let want: [(&str, u64); 7] = [
+            ("rest", 0x7990_df86_dfb0_1581),
+            ("turn", 0xfd98_ffbd_86cc_7c23),
+            ("walk", 0x9ac8_58ae_59c9_3021),
+            ("rugged", 0x5a2e_6f68_6ebe_e09b),
+            ("chase", 0xe01d_d72f_bef8_3c26),
+            ("focus", 0xc52e_326a_aed5_f073),
+            ("top", 0x1777_dd2f_41f0_963c),
+        ];
+        // "turn" and "walk" are poses after one tick of turning and seven of walking.
+        let frames = flat_reference_frames();
+        assert_eq!(frames.len(), want.len());
+        for ((name, f), (wname, h)) in frames.iter().zip(want) {
+            assert_eq!(*name, wname);
+            assert_eq!(frame_hash(f), h, "{name}: the flat lighting must keep its pixels");
+        }
+    }
+
+    fn luma(c: &[u8]) -> f32 {
+        0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32
+    }
+
+    #[test]
+    fn a_face_turned_to_the_sun_is_brighter_than_one_turned_away() {
+        let mut w = world();
+        w.nodes.clear();
+        w.agent.yaw = 0.0;
+        let (cx, cz) = w.terrain.cell_of(w.agent.x + 2.5, w.agent.z).unwrap();
+        let (x, z) = cell_center(cx, cz);
+        w.nodes.push(crate::world::Node { id: 9, kind: NodeKind::Boulder, x, z, hp: 7.5, max_hp: 7.5 });
+        let cam = Camera { width: 160, height: 120, pitch_deg: -8.0, ..Camera::default() };
+        let west_face = |w: &World| {
+            let f = render(w, &cam);
+            let view = w.head_view(&cam).view;
+            let (mut s, mut n) = (0.0f32, 0);
+            for (i, &id) in f.ids.iter().enumerate() {
+                if id != pack_id(ObjectClass::Node, 9) {
+                    continue;
+                }
+                let p = cam.world_point3_in(&view, (i % f.width) as f32 + 0.5, (i / f.width) as f32 + 0.5, f.depth[i]).unwrap();
+                if (p[0] - (x - 0.24)).abs() < 0.03 {
+                    s += luma(&f.rgb[i * 3..i * 3 + 3]);
+                    n += 1;
+                }
+            }
+            assert!(n > 30, "{n} west-face pixels");
+            s / n as f32
+        };
+        let flat = west_face(&w);
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 45.0, azimuth_deg: 240.0, overcast: 0.0 });
+        let lit = west_face(&w);
+        assert_eq!(render(&w, &cam).rgb, render(&w, &cam).rgb, "sun renders are deterministic");
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 45.0, azimuth_deg: 60.0, overcast: 0.0 });
+        let shade = west_face(&w);
+        assert!(lit > 1.5 * shade, "lit {lit} shade {shade} (flat {flat})");
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 45.0, azimuth_deg: 240.0, overcast: 1.0 });
+        let grey_a = west_face(&w);
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 45.0, azimuth_deg: 60.0, overcast: 1.0 });
+        assert!((grey_a - west_face(&w)).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_tree_casts_its_shadow_away_from_the_sun() {
+        let mut w = world();
+        w.nodes.clear();
+        w.agent.yaw = std::f32::consts::FRAC_PI_2;
+        let (cx, cz) = w.terrain.cell_of(w.agent.x, w.agent.z + 4.0).unwrap();
+        let (tx, tz) = cell_center(cx, cz);
+        let tree = crate::world::Node { id: 4, kind: NodeKind::Tree, x: tx, z: tz, hp: 3.0, max_hp: 3.0 };
+        w.nodes.push(tree.clone());
+        let p = [tx + 1.3, w.surface_m(tx + 1.3, tz), tz];
+        let cam = Camera { width: 160, height: 120, ..Camera::default() };
+        let at = |w: &World| {
+            let f = render(w, &cam);
+            let (px, py, _) = cam.project_in(&w.head_view(&cam).view, p).expect("in front");
+            let (px, py) = (px as usize, py as usize);
+            let mut s = 0.0;
+            for j in py - 1..=py + 1 {
+                for i in px - 1..=px + 1 {
+                    let k = j * f.width + i;
+                    assert_eq!(unpack_id(f.ids[k]).0, ObjectClass::Ground);
+                    s += luma(&f.rgb[k * 3..k * 3 + 3]);
+                }
+            }
+            s / 9.0
+        };
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 40.0, azimuth_deg: 270.0, overcast: 0.0 });
+        let shadowed = at(&w);
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 40.0, azimuth_deg: 90.0, overcast: 0.0 });
+        let sunny = at(&w);
+        assert!(shadowed < 0.6 * sunny, "shadow {shadowed} vs sun {sunny}");
+        w.set_lighting(crate::light::Lighting::Sun { elevation_deg: 40.0, azimuth_deg: 270.0, overcast: 0.0 });
+        w.nodes.clear();
+        assert!(at(&w) > 0.9 * sunny);
+    }
+
+    #[test]
+    fn a_shadow_is_as_long_as_the_sun_is_low() {
+        let mut w = world();
+        w.nodes.clear();
+        w.drops.clear();
+        w.waypoints.clear();
+        let (cx, cz) = w.terrain.cell_of(w.agent.x, w.agent.z + 4.0).unwrap();
+        for z in cz - 3..=cz + 3 {
+            for x in cx - 2..=cx + 10 {
+                w.terrain.set_height_cm(x, z, 0);
+                w.terrain.set_curb_cm(x, z, 0);
+                w.terrain.set_ground(x, z, Ground::Grass);
+            }
+        }
+        let (tx, tz) = cell_center(cx, cz);
+        let bare = w.clone();
+        w.nodes.push(crate::world::Node { id: 5, kind: NodeKind::Tree, x: tx, z: tz, hp: 3.0, max_hp: 3.0 });
+        let cam = Camera { width: 200, height: 200, max_dist_m: 30.0, ..Camera::default() };
+        let rays = Rays::Ortho { centre: [tx + 4.5, 0.0, tz], yaw: 0.0, pitch: -std::f32::consts::FRAC_PI_2, half_h_m: 5.5 };
+        for h in [30.0f32, 45.0, 60.0] {
+            let sun = crate::light::Lighting::Sun { elevation_deg: h, azimuth_deg: 270.0, overcast: 0.0 };
+            let (mut tw, mut bw) = (w.clone(), bare.clone());
+            tw.set_lighting(sun);
+            bw.set_lighting(sun);
+            let (with, without) = (render_rays(&tw, &cam, &rays, &[], &[], None), render_rays(&bw, &cam, &rays, &[], &[], None));
+            let i = cam.width / 2;
+            let tip = (0..cam.height)
+                .filter(|&j| {
+                    let k = j * cam.width + i;
+                    unpack_id(with.ids[k]).0 == ObjectClass::Ground && luma(&with.rgb[k * 3..k * 3 + 3]) < 0.75 * luma(&without.rgb[k * 3..k * 3 + 3])
+                })
+                .map(|j| 4.5 + (1.0 - 2.0 * (j as f32 + 0.5) / cam.height as f32) * 5.5)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let want = [(1.05f32, 3.25f32), (0.80, 4.05), (0.46, 4.70)].map(|(r, top)| r + top / h.to_radians().tan()).into_iter().fold(0.0, f32::max);
+            assert!((tip - want).abs() < 0.16, "h {h}: shadow ends {tip:.3} m past the trunk, geometry says {want:.3} m");
+        }
+    }
+
+    #[test]
+    fn the_resting_shadow_pose_matches_the_dynamics() {
+        let span = |pose: &sandbox_core::dynamics::BodyPose, w: &World| {
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for o in w.robot_boxes(pose).iter() {
+                if o.center[1] - w.agent_ground_m() < 0.2 {
+                    continue;
+                }
+                for i in 0..3 {
+                    let e: f32 = (0..3).map(|k| (o.axes[k][i] * o.half[k]).abs()).sum();
+                    lo[i] = lo[i].min(o.center[i] - e);
+                    hi[i] = hi[i].max(o.center[i] + e);
+                }
+            }
+            (lo, hi)
+        };
+        for base in [BaseKind::HumanFoot, BaseKind::Wheel, BaseKind::Track] {
+            let mut hand = SandboxConfig::preset(FingerCount::Five);
+            hand.base = base;
+            let w = World::new(WorldConfig { seed: 7, cells: 48, sandbox: hand, parcels: Some(0), ..WorldConfig::default() }).unwrap();
+            assert!(w.act.is_none() && w.motion.is_none(), "a new world's robot is at rest");
+            let ((a0, a1), (b0, b1)) = (span(&w.shadow_pose().unwrap(), &w), span(&w.body_pose().unwrap(), &w));
+            let worst = (0..3).map(|i| (a0[i] - b0[i]).abs().max((a1[i] - b1[i]).abs())).fold(0.0f32, f32::max);
+            println!("{base:?}: statics vs dynamics body bounds differ by at most {worst:.3} m");
+            assert!(worst < 0.1, "{base:?}: {a0:?}..{a1:?} vs {b0:?}..{b1:?}");
+        }
+    }
+
+    #[test]
+    fn the_cutaway_cuts_only_what_can_hide_the_robot() {
+        use std::f32::consts::FRAC_1_SQRT_2 as H;
+        let cut = Cutaway { at: [10.0, 10.0], toward_cam: [-H, -H], half_width_m: 0.8, slope: H, base_y: 1.0, low_y: 1.5, roof_radius_m: 0.8, roof_y: 2.6 };
+        let post = |a: f32, l: f32, y0: f32, y1: f32| bx(10.0 - a * H + l * H, 10.0 - a * H - l * H, y0, y1, 0.25, 0.25);
+        let near_face = 3.0 - 2.0 * 0.25 * H;
+        let b = cut.clip(&post(3.0, 0.0, 1.0, 3.5)).unwrap();
+        assert!((b.max[1] - (1.0 + near_face * H)).abs() < 1e-4 && b.min[1] == 1.0, "{:?}", b.max);
+        assert!((cut.clip(&post(0.5, 0.0, 1.0, 2.0)).unwrap().max[1] - 1.5).abs() < 1e-6);
+        assert_eq!(cut.clip(&post(0.4, 0.0, 1.0, 1.3)).unwrap().max[1], 1.3);
+        for (a, l) in [(-3.0, 0.0), (1.5, 3.0), (-1.5, -2.0)] {
+            let b = post(a, l, 1.0, 3.0);
+            let c = cut.clip(&b).unwrap();
+            assert!(c.min == b.min && c.max == b.max, "({a}, {l}) cut to {:?}", c.max);
+        }
+        assert!((cut.clip(&post(-0.6, 0.0, 1.0, 3.0)).unwrap().max[1] - 2.6).abs() < 1e-6);
+        assert!(cut.clip(&Aabb { min: [5.0, 3.0, 5.0], max: [15.0, 3.2, 15.0] }).is_none());
+    }
+
+    #[test]
+    fn a_ray_from_outside_the_map_enters_it() {
+        let w = world();
+        let scene = Scene::build(&w);
+        let (gx, gz) = (w.agent.x, w.agent.z);
+        let o = [-20.0, 30.0, gz];
+        let d = {
+            let v = [gx - o[0], w.agent_ground_m() - o[1], gz - o[2]];
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let hit = trace(&scene, o, d, 200.0).expect("the ray reaches the map");
+        let p = [o[0] + d[0] * hit.t, o[1] + d[1] * hit.t, o[2] + d[2] * hit.t];
+        assert!(p[0] >= 0.0 && (p[1] - w.agent_ground_m()).abs() < 0.3, "{p:?}");
+        assert!(trace(&scene, [-20.0, 30.0, -5.0], [0.0, -0.6, -0.8], 200.0).is_none());
+        assert!(trace(&scene, [gx, 40.0, gz], [0.0, 1.0, 0.0], 200.0).is_none());
+        let down = trace(&scene, [gx, 5.0, gz], [0.0, -1.0, 0.0], 50.0).unwrap();
+        assert_eq!((down.axis, down.sign), (1, 1.0));
+    }
+
+    #[test]
+    fn ground_palette_is_distinct() {
+        let p = ground_palette();
+        for i in 0..p.len() {
+            for j in i + 1..p.len() {
+                let d: i32 = (0..3).map(|k| (p[i].1[k] as i32 - p[j].1[k] as i32).abs()).sum();
+                assert!(d > 40, "{:?} vs {:?}", p[i].0, p[j].0);
+            }
+        }
+        let _ = Goal::Cell((0, 0));
+    }
+}

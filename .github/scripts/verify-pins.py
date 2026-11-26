@@ -29,6 +29,13 @@ TIER1_BANNED_CRATES = (
     "webrtc",
     "noto-core",
     "world-sim",
+    "sandbox-core",
+    "sandbox-data",
+    "sandbox-world",
+    "sandbox-search",
+    "sandbox-quest",
+    "sandbox-runtime",
+    "vision-sandbox-app",
     "premium-discount-mcp",
     "premium-discount-vision",
     "premium-discount-sensor",
@@ -38,7 +45,7 @@ TIER1_BANNED_CRATES = (
 )
 
 APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
-VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-docs", "louis")
+VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-docs", "louis", "tauri")
 
 
 def iter_cargo_manifests(base: Path) -> list[Path]:
@@ -128,7 +135,7 @@ def check_tier1_purity(lv_root: Path, errs: list[str]) -> None:
                 if line.startswith("//"):
                     continue
                 for pat, label in (
-                    (r"\buse\s+(?:reqwest|ureq|tokio|lancedb|tauri|webrtc|sammie_sam3|sammie_accel|noto_core)\b", "banned crate import"),
+                    (r"\buse\s+(?:reqwest|ureq|tokio|lancedb|tauri|webrtc|sammie_sam3|sammie_accel|noto_core|sandbox_core|sandbox_data|sandbox_world|sandbox_runtime)\b", "banned crate import"),
                     (r"\bstd::net::", "std::net in zero-net library"),
                     (r"\b(?:Sam3Keyframe|Sam3MultiplexLive|SamExecutionTier)\b", "removed SAM 3.1 symbol"),
                 ):
@@ -136,25 +143,49 @@ def check_tier1_purity(lv_root: Path, errs: list[str]) -> None:
                         errs.append(f"Tier 1 source violation in {rel}:{lineno}: {label}")
 
 
+def _scan_manifest_banned(manifest: Path, lv_root: Path, banned_list: tuple[str, ...], errs: list[str]) -> None:
+    rel = manifest.relative_to(lv_root).as_posix()
+    text = manifest.read_text(encoding="utf-8", errors="replace")
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        code = strip_comment(raw).strip()
+        if not code:
+            continue
+        for banned in banned_list:
+            if re.search(rf"(?<![\w-]){re.escape(banned)}(?![\w-])", code):
+                errs.append(f"Tier 2-B violation in {rel}:{lineno}: banned crate '{banned}'")
+
+
 def check_apps_purity(lv_root: Path, errs: list[str]) -> None:
     apps_dir = lv_root / "apps"
     if not apps_dir.exists():
         return
-    for m in sorted(apps_dir.glob("*/Cargo.toml")):
-        rel = m.relative_to(lv_root).as_posix()
-        banned_list = (
-            APPS_BANNED_WAN_CRATES + VISION_BANNED_CRATES
-            if rel == "apps/vision/Cargo.toml"
-            else APPS_BANNED_WAN_CRATES
+    louis_manifest = apps_dir / "louis" / "Cargo.toml"
+    if louis_manifest.exists():
+        _scan_manifest_banned(louis_manifest, lv_root, APPS_BANNED_WAN_CRATES, errs)
+    vision_manifest = apps_dir / "vision" / "Cargo.toml"
+    if vision_manifest.exists():
+        _scan_manifest_banned(vision_manifest, lv_root, APPS_BANNED_WAN_CRATES + VISION_BANNED_CRATES, errs)
+    for m in sorted((apps_dir / "vision" / "crates").glob("*/Cargo.toml")):
+        crate_banned = APPS_BANNED_WAN_CRATES + (
+            "lv-doc",
+            "lv-screen",
+            "lv-agent",
+            "lv-domain",
+            "louis-docs",
+            "louis",
+            "tauri",
         )
-        text = m.read_text(encoding="utf-8", errors="replace")
-        for lineno, raw in enumerate(text.splitlines(), 1):
-            code = strip_comment(raw).strip()
-            if not code:
-                continue
-            for banned in banned_list:
-                if re.search(rf"(?<![\w-]){re.escape(banned)}(?![\w-])", code):
-                    errs.append(f"Tier 2-B violation in {rel}:{lineno}: banned crate '{banned}'")
+        if m.parent.name != "sandbox-data":
+            crate_banned = crate_banned + ("lancedb",)
+        _scan_manifest_banned(m, lv_root, crate_banned, errs)
+    tauri_manifest = apps_dir / "vision" / "src-tauri" / "Cargo.toml"
+    if tauri_manifest.exists():
+        _scan_manifest_banned(
+            tauri_manifest,
+            lv_root,
+            ("sammie-sam3", "sammie-accel", "lv-doc", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis"),
+            errs,
+        )
 
 
 def check_cross_repo_pins(roots: list[Path], errs: list[str]) -> tuple[set[str], set[str]]:
