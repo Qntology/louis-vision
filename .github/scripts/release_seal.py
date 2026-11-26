@@ -42,7 +42,11 @@ BANNED_VISION = BANNED_GLOBAL + (
     "lancedb",
     "louis-docs",
     "louis",
+    "tauri",
 )
+BANNED_SANDBOX_CRATE_NON_DATA = BANNED_VISION
+BANNED_SANDBOX_DATA = tuple(x for x in BANNED_VISION if x != "lancedb")
+BANNED_SANDBOX_TAURI = ("sammie-sam3", "sammie-accel", "lv-doc", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis")
 CRATE_LINE_RE = re.compile(r"^([A-Za-z0-9_-]+)\s+v")
 
 
@@ -84,6 +88,12 @@ def check_purity_static() -> list[str]:
         (REPO_ROOT / "apps/louis/Cargo.toml", BANNED_LOUIS_MANIFEST),
         (REPO_ROOT / "apps/vision/Cargo.toml", BANNED_VISION),
     ]
+    for crate_manifest in sorted((REPO_ROOT / "apps/vision/crates").glob("*/Cargo.toml")):
+        banned_c = BANNED_SANDBOX_DATA if crate_manifest.parent.name == "sandbox-data" else BANNED_SANDBOX_CRATE_NON_DATA
+        manifest_rules.append((crate_manifest, banned_c))
+    tauri_manifest = REPO_ROOT / "apps/vision/src-tauri/Cargo.toml"
+    if tauri_manifest.exists():
+        manifest_rules.append((tauri_manifest, BANNED_SANDBOX_TAURI))
     for path, banned in manifest_rules:
         if not path.exists():
             errors.append(f"missing manifest: {path}")
@@ -166,7 +176,27 @@ def main() -> int:
         if args.release_seal:
             tree_targets.extend([
                 ("tree-tier2b-louis", ["--manifest-path", "apps/louis/Cargo.toml"], BANNED_LOUIS_DEFAULT_TREE),
-                ("tree-tier2b-vision", ["--manifest-path", "apps/vision/Cargo.toml"], BANNED_VISION),
+                ("tree-tier2b-vision", ["--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox"], BANNED_VISION),
+                (
+                    "tree-tier2b-sandbox-engine",
+                    [
+                        "--manifest-path",
+                        "apps/vision/Cargo.toml",
+                        "-e",
+                        "normal",
+                        "-p",
+                        "sandbox-core",
+                        "-p",
+                        "sandbox-world",
+                        "-p",
+                        "sandbox-search",
+                        "-p",
+                        "sandbox-quest",
+                        "-p",
+                        "sandbox-runtime",
+                    ],
+                    BANNED_VISION,
+                ),
             ])
         for tname, targs, tbanned in tree_targets:
             trec, tviol = check_cargo_tree(tname, targs, tbanned, env)
@@ -184,8 +214,15 @@ def main() -> int:
                 ("cargo-test-louis", ["cargo", "test", "--manifest-path", "apps/louis/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
                 ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--selftest"]),
                 ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--eval-packs"]),
-                ("cargo-test-vision", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
-                ("cli-vision-selftest", ["cargo", "run", "--manifest-path", "apps/vision/Cargo.toml", "--", "--selftest"]),
+                ("cargo-test-vision", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "-j", "1", "--", "--test-threads", "1"]),
+                ("cli-vision-selftest", ["cargo", "run", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "--", "--selftest"]),
+                ("cargo-test-sandbox-core-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-core", "--lib", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-source-split", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-core", "--test", "source_split", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-search-quest", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-search", "-p", "sandbox-quest", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-world-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-world", "--lib", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-data", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-data", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-runtime-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--lib", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-check-vision-sandbox-app", ["cargo", "check", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox-app", "--tests", "-j", "1"]),
             ])
         for cname, ccmd in cargo_steps:
             crec, _ = run_step(cname, ccmd, REPO_ROOT, env)

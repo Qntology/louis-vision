@@ -1,0 +1,2135 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
+
+use sandbox_core::{BaseKind, SandboxConfig};
+use sandbox_runtime::ml::{DepthErrModel, DepthStandIn, KeyTruth, LocateErrModel, LocateStandIn, MlFixCfg, MlPipeline};
+use sandbox_runtime::record::{intrinsics, odometry};
+use sandbox_runtime::{DepthEngine, EmbeddingCfg, EmbeddingPerception, LocateEngine, NoiseCfg, OraclePerception, Recognizer, Runtime, RuntimeConfig, ScanInput};
+use sandbox_search::{Lexicon, VisionPrompting};
+use sandbox_runtime::vision_compat::calib::{auroc, average_precision, fit_label};
+use sandbox_runtime::vision_compat::locate::points_with_presence;
+use sandbox_runtime::vision_compat::{
+    depth_metrics, label_heats, AlignCfg, AlignSpace, CalibTable, DepthKind, DepthMap, DepthModel, Intrinsics, LabelPrompt, LabelTexts, LocateCfg, LocateScoring, MaskTracker, Pose, RegionTracker, Rgb,
+    InputGrid, SemanticLocator, SemanticPoint, StereoSpatialTier, StereoTierTracker, TipsDepth,
+};
+use sandbox_world::render::pack_id;
+use sandbox_world::world::{DropItem, Node};
+use sandbox_world::{decode_webp, encode_webp, Camera, ItemKind, NodeKind, ObjectClass, TerrainKind, World};
+
+const LEX: &str = include_str!("../../../data/world_lexicon.json");
+
+const SINTEL_ALIGNED_ABSREL: (f32, f32) = (0.438, 0.160);
+const CITE_SINTEL: &str = "렌더 영화(Sintel) 제로샷 깊이, 이미지별 아핀 정렬 후 AbsRel: DPT-L 0.270 (Ranftl 2021) · Depth Anything 0.458 · MiDaS 3.1 0.587 (Yang 2024)";
+const DNET_GROUND_OVER_MEDIAN: f32 = 0.118 / 0.113;
+const CITE_DNET: &str = "카메라 높이(지면)로 정한 축척 대 정답 중앙값 축척: KITTI AbsRel 0.118 / 0.113 = 1.04 (Xue 2020, DNet)";
+const OFFDOMAIN_METRIC_ABSREL: f32 = 0.363;
+const CITE_OFFDOMAIN: &str = "학습 영역 밖 미터 깊이(정렬 없음): NYU 미세조정 헤드를 Hypersim에 AbsRel 0.363 · δ1 0.361 (Yang 2024)";
+const CITE_SCLIP: &str = "학습 없는 패치-텍스트 위치: CLIP 패치 원시 14.1 대 MaskCLIP 값 경로 30.3 mIoU (Wang 2024, SCLIP 8개 평균)";
+const CITE_ENSEMBLE: &str = "프롬프트 앙상블: 단일 템플릿보다 제로샷 정확도 약 +3.5점 (Radford 2021, CLIP)";
+const CITE_CALIB: &str = "제로샷 보정: 온도 보정 전 ECE 6.3–6.7% → 후 1.4–2.2% (LeVine 2023)";
+
+const TARGETS: [&str; 9] = ["tree", "boulder", "coal_ore", "iron_ore_node", "log", "stone", "coal", "iron_ore", "parcel"];
+const PRESENT_PX: u32 = 16;
+const CALIB_PRECISION: f32 = 0.9;
+const CALIB_FPR: f32 = 0.05;
+const GATE_SCORE: f32 = 0.30;
+const GATE_MARGIN: f32 = 0.04;
+const PATCH_PX: f32 = 20.0;
+
+#[derive(Clone, Debug)]
+struct Scene {
+    seed: u64,
+    terrain: TerrainKind,
+    base: BaseKind,
+    target: Option<&'static str>,
+    query: &'static str,
+    distractor: Option<&'static str>,
+    dist_m: f32,
+    tilt_deg: f32,
+    lateral_m: f32,
+}
+
+impl Scene {
+    fn fit(&self) -> bool {
+        self.seed % 2 == 1
+    }
+
+    fn id(&self) -> String {
+        format!("s{}-{:?}-{:?}-{}-{:.0}m-{:.0}deg", self.seed, self.terrain, self.base, self.target.unwrap_or("none"), self.dist_m, self.tilt_deg)
+    }
+}
+
+fn env_list<T: std::str::FromStr>(key: &str, default: &[T]) -> Vec<T>
+where
+    T: Clone,
+{
+    match std::env::var(key) {
+        Ok(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        Err(_) => default.to_vec(),
+    }
+}
+
+fn look_alike_of(label: &str) -> &'static str {
+    sandbox_runtime::perception::look_alike(label).unwrap_or("stone")
+}
+
+fn scenes() -> Vec<Scene> {
+    let seeds: Vec<u64> = env_list("MLAB_SEEDS", &[1, 2, 3, 4]);
+    let dists: Vec<f32> = env_list("MLAB_DISTS", &[2.0, 4.0, 7.0]);
+    let tilts: Vec<f32> = env_list("MLAB_TILTS", &[0.0, 30.0]);
+    let mut out = Vec::new();
+    for &seed in &seeds {
+        let base = if seed <= 2 { BaseKind::HumanFoot } else { BaseKind::Wheel };
+        for terrain in [TerrainKind::Open, TerrainKind::Rugged] {
+            for (k, &t) in TARGETS.iter().enumerate() {
+                for &d in &dists {
+                    for &tilt in &tilts {
+                        let lateral = [-0.6f32, 0.0, 0.6][(k + seed as usize) % 3];
+                        out.push(Scene { seed, terrain, base, target: Some(t), query: t, distractor: Some(look_alike_of(t)), dist_m: d, tilt_deg: tilt, lateral_m: lateral });
+                    }
+                }
+            }
+            for (k, &tilt) in tilts.iter().enumerate() {
+                for (j, q) in ["parcel", "log", "stone"].into_iter().enumerate() {
+                    let distractor = if j == 2 { None } else { Some(look_alike_of(q)) };
+                    out.push(Scene { seed, terrain, base, target: None, query: q, distractor, dist_m: 3.0 + j as f32, tilt_deg: tilt, lateral_m: 0.3 * k as f32 });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn base_world(seed: u64, terrain: TerrainKind, base: BaseKind) -> World {
+    let cfg = RuntimeConfig { seed, noise: NoiseCfg::none(), parcels: Some(0), terrain, sandbox: SandboxConfig { base, ..RuntimeConfig::default().sandbox }, ..RuntimeConfig::default() };
+    Runtime::new(cfg, LEX, None).expect("runtime").world().clone()
+}
+
+fn place(w: &mut World, label: &str, id: u32, x: f32, z: f32) -> u32 {
+    let node = |k| Node { id, kind: k, x, z, hp: 10.0, max_hp: 10.0 };
+    let item = |k| DropItem::whole(id, k, x, z);
+    match label {
+        "tree" => w.nodes.push(node(NodeKind::Tree)),
+        "boulder" => w.nodes.push(node(NodeKind::Boulder)),
+        "coal_ore" => w.nodes.push(node(NodeKind::CoalOre)),
+        "iron_ore_node" => w.nodes.push(node(NodeKind::IronOre)),
+        "log" => w.drops.push(item(ItemKind::Log)),
+        "stone" => w.drops.push(item(ItemKind::Stone)),
+        "coal" => w.drops.push(item(ItemKind::Coal)),
+        "iron_ore" => w.drops.push(item(ItemKind::IronOre)),
+        _ => w.drops.push(item(ItemKind::Parcel)),
+    }
+    let class = if ["tree", "boulder", "coal_ore", "iron_ore_node"].contains(&label) { ObjectClass::Node } else { ObjectClass::Drop };
+    pack_id(class, id)
+}
+
+struct Shot {
+    rgb: Rgb,
+    intr: Intrinsics,
+    pose: Pose,
+    truth: KeyTruth,
+    world: World,
+    frame: sandbox_world::Frame,
+    cam: Camera,
+    target_raw: Option<u32>,
+}
+
+fn shoot(bases: &mut BTreeMap<(u64, u8, u8), World>, s: &Scene) -> Shot {
+    let key = (s.seed, matches!(s.terrain, TerrainKind::Rugged) as u8, matches!(s.base, BaseKind::Wheel) as u8);
+    let mut w = bases.entry(key).or_insert_with(|| base_world(s.seed, s.terrain, s.base)).clone();
+    w.nodes.clear();
+    w.drops.clear();
+    let (x, z, yaw) = (w.agent.x, w.agent.z, w.agent.yaw);
+    let at = |d: f32, lat: f32| (x + d * yaw.cos() - lat * yaw.sin(), z + d * yaw.sin() + lat * yaw.cos());
+    let target_raw = s.target.map(|t| {
+        let (px, pz) = at(s.dist_m, s.lateral_m);
+        place(&mut w, t, 9001, px, pz)
+    });
+    if let Some(d) = s.distractor {
+        let (px, pz) = at(s.dist_m + 1.5, s.lateral_m - 1.2);
+        place(&mut w, d, 9002, px, pz);
+    }
+    let cam = Camera { pitch_deg: Camera::default().pitch_deg - s.tilt_deg, ..Camera::default() };
+    let frame = w.render(&cam);
+    let enc = encode_webp(&frame.rgb, frame.width as u32, frame.height as u32, 70.0).expect("webp");
+    let (dw, dh, data) = decode_webp(&enc.bytes).expect("webp");
+    let rgb = Rgb::new(dw, dh, data);
+    let truth = KeyTruth::capture(&w, &frame);
+    Shot { rgb, intr: intrinsics(&w, &cam), pose: odometry(&w, &cam), truth, world: w, frame, cam, target_raw }
+}
+
+#[derive(Default)]
+struct Book {
+    vals: BTreeMap<String, Vec<f32>>,
+    pairs: BTreeMap<String, (Vec<f32>, Vec<bool>)>,
+}
+
+impl Book {
+    fn add(&mut self, key: impl Into<String>, v: f32) {
+        if v.is_finite() {
+            self.vals.entry(key.into()).or_default().push(v);
+        }
+    }
+
+    fn flag(&mut self, key: impl Into<String>, b: bool) {
+        self.add(key, b as u8 as f32);
+    }
+
+    fn pair(&mut self, key: impl Into<String>, s: f32, hit: bool) {
+        let e = self.pairs.entry(key.into()).or_default();
+        e.0.push(s);
+        e.1.push(hit);
+    }
+
+    fn mean(&self, key: &str) -> Option<(f32, usize)> {
+        self.vals.get(key).filter(|v| !v.is_empty()).map(|v| (v.iter().sum::<f32>() / v.len() as f32, v.len()))
+    }
+
+    fn sd(&self, key: &str) -> Option<f32> {
+        let v = self.vals.get(key).filter(|v| v.len() > 1)?;
+        let m = v.iter().sum::<f32>() / v.len() as f32;
+        Some((v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32).sqrt())
+    }
+
+    fn median(&self, key: &str) -> Option<f32> {
+        let mut v = self.vals.get(key)?.clone();
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(f32::total_cmp);
+        Some(v[v.len() / 2])
+    }
+
+    fn line(&self, key: &str, note: &str) {
+        match self.mean(key) {
+            Some((m, n)) => println!("[MLAB] {key} {m:.3} (n {n}, 중앙값 {:.3}) — {note}", self.median(key).unwrap_or(f32::NAN)),
+            None => println!("[MLAB] {key} 없음 — {note}"),
+        }
+    }
+
+    fn rank(&self, key: &str) -> (Option<f32>, Option<f32>, usize, usize) {
+        match self.pairs.get(key) {
+            Some((s, h)) => (auroc(s, h), average_precision(s, h), h.iter().filter(|x| **x).count(), h.len()),
+            None => (None, None, 0, 0),
+        }
+    }
+}
+
+struct DepthEval {
+    absrel: f32,
+    delta1: f32,
+    rmse: f32,
+    coverage: f32,
+    bands: [Option<f32>; 5],
+    target: Option<f32>,
+}
+
+const BANDS: [(f32, f32, &str); 5] = [(0.0, 2.0, "0-2"), (2.0, 4.0, "2-4"), (4.0, 6.0, "4-6"), (6.0, 10.0, "6-10"), (10.0, 1e9, ">10")];
+
+fn depth_eval(pred: &DepthMap, truth: &KeyTruth, cap: f32, target_raw: Option<u32>) -> Option<DepthEval> {
+    let (mut ar, mut d1, mut se, mut n, mut all) = (0.0f64, 0u32, 0.0f64, 0u32, 0u32);
+    let mut band = [(0.0f64, 0u32); 5];
+    let (mut tar, mut tn) = (0.0f64, 0u32);
+    for y in 0..truth.height {
+        for x in 0..truth.width {
+            let i = (y * truth.width + x) as usize;
+            let t = truth.depth[i];
+            if !t.is_finite() || t <= 0.0 {
+                continue;
+            }
+            let p = pred.at_scaled(x as f32 + 0.5, y as f32 + 0.5, truth.width, truth.height);
+            let ok = p.is_finite() && p > 0.0;
+            if ok {
+                let e = ((p - t).abs() / t) as f64;
+                if let Some(b) = BANDS.iter().position(|(lo, hi, _)| t >= *lo && t < *hi) {
+                    band[b].0 += e;
+                    band[b].1 += 1;
+                }
+                if target_raw == Some(truth.ids[i]) {
+                    tar += e;
+                    tn += 1;
+                }
+            }
+            if t > cap {
+                continue;
+            }
+            all += 1;
+            if ok {
+                ar += ((p - t).abs() / t) as f64;
+                d1 += ((p / t).max(t / p) < 1.25) as u32;
+                se += ((p - t) as f64).powi(2);
+                n += 1;
+            }
+        }
+    }
+    (n > 0).then(|| DepthEval {
+        absrel: (ar / n as f64) as f32,
+        delta1: d1 as f32 / n as f32,
+        rmse: (se / n as f64).sqrt() as f32,
+        coverage: n as f32 / all.max(1) as f32,
+        bands: band.map(|(s, c)| (c > 0).then(|| (s / c as f64) as f32)),
+        target: (tn > 0).then(|| (tar / tn as f64) as f32),
+    })
+}
+
+fn oracle_lsq(pred: &DepthMap, truth: &KeyTruth, cap: f32) -> DepthMap {
+    let (mut sp, mut sq, mut spp, mut spq, mut n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for y in 0..truth.height {
+        for x in 0..truth.width {
+            let t = truth.depth[(y * truth.width + x) as usize];
+            let p = pred.at_scaled(x as f32 + 0.5, y as f32 + 0.5, truth.width, truth.height);
+            if t.is_finite() && t > 0.0 && t <= cap && p.is_finite() && p > 0.0 {
+                let (p, q) = (1.0 / p as f64, 1.0 / t as f64);
+                sp += p;
+                sq += q;
+                spp += p * p;
+                spq += p * q;
+                n += 1.0;
+            }
+        }
+    }
+    let den = n * spp - sp * sp;
+    let (a, b) = if den.abs() > 1e-12 { let a = (n * spq - sp * sq) / den; (a, (sq - a * sp) / n) } else { (1.0, 0.0) };
+    let mut out = pred.clone();
+    for d in out.data.iter_mut() {
+        let q = a / *d as f64 + b;
+        *d = if d.is_finite() && q > 1e-4 { (1.0 / q) as f32 } else { f32::INFINITY };
+    }
+    out
+}
+
+fn record_depth(book: &mut Book, arm: &str, pred: &DepthMap, truth: &KeyTruth, target_raw: Option<u32>) {
+    if let Some(e) = depth_eval(pred, truth, 10.0, target_raw) {
+        book.add(format!("{arm}/absrel"), e.absrel);
+        book.add(format!("{arm}/delta1"), e.delta1);
+        book.add(format!("{arm}/rmse_m"), e.rmse);
+        book.add(format!("{arm}/coverage"), e.coverage);
+        for (b, v) in BANDS.iter().zip(e.bands) {
+            if let Some(v) = v {
+                book.add(format!("{arm}/band{}", b.2), v);
+            }
+        }
+        if let Some(t) = e.target {
+            book.add(format!("{arm}/target_absrel"), t);
+        }
+    }
+}
+
+#[derive(Default)]
+struct ErrFit {
+    frames: Vec<[f64; 6]>,
+    sky: Vec<f32>,
+    known: Vec<(u32, u32)>,
+}
+
+impl ErrFit {
+    fn add_frame(&mut self, pred: &DepthMap, truth: &KeyTruth, cap: f32) {
+        let mut s = [0.0f64; 6];
+        for y in (0..truth.height).step_by(2) {
+            for x in (0..truth.width).step_by(2) {
+                let t = truth.depth[(y * truth.width + x) as usize];
+                let p = pred.at_scaled(x as f32 + 0.5, y as f32 + 0.5, truth.width, truth.height);
+                if !t.is_finite() {
+                    if p > 0.0 {
+                        self.sky.push(p);
+                    }
+                    continue;
+                }
+                if self.known.is_empty() {
+                    self.known = vec![(0, 0); 40];
+                }
+                if let Some(k) = self.known.get_mut(t as usize) {
+                    if p.is_finite() && p > 0.0 {
+                        k.0 += 1;
+                    } else {
+                        k.1 += 1;
+                    }
+                }
+                if !(p.is_finite() && p > 0.0) {
+                    continue;
+                }
+                if t <= 0.05 || t > cap {
+                    continue;
+                }
+                let (lx, ly) = ((t as f64).ln(), ((p / t) as f64).ln());
+                for (k, v) in [1.0, lx, ly, lx * lx, lx * ly, ly * ly].into_iter().enumerate() {
+                    s[k] += v;
+                }
+            }
+        }
+        if s[0] >= 50.0 {
+            self.frames.push(s);
+        }
+    }
+
+    fn fit(&self) -> Option<(f64, f64, f64, f64, f32)> {
+        let mut t = [0.0f64; 6];
+        for f in &self.frames {
+            for k in 0..6 {
+                t[k] += f[k];
+            }
+        }
+        let n = t[0];
+        let den = n * t[3] - t[1] * t[1];
+        if self.frames.len() < 2 || den.abs() < 1e-9 {
+            return None;
+        }
+        let b = (n * t[4] - t[1] * t[2]) / den;
+        let a = (t[2] - b * t[1]) / n;
+        let (mut between, mut within, mut wn) = (Vec::new(), 0.0f64, 0.0f64);
+        for f in &self.frames {
+            let (nf, mx, my) = (f[0], f[1] / f[0], f[2] / f[0]);
+            between.push(my - a - b * mx);
+            within += (f[5] - 2.0 * b * f[4] + b * b * f[3]) - nf * (my - b * mx).powi(2);
+            wn += nf;
+        }
+        let m = between.iter().sum::<f64>() / between.len() as f64;
+        let tau = (between.iter().map(|r| (r - m).powi(2)).sum::<f64>() / (between.len() - 1) as f64).sqrt();
+        let mut sky = self.sky.clone();
+        sky.sort_by(f32::total_cmp);
+        Some((a, b, tau, (within / wn.max(1.0)).max(0.0).sqrt(), sky.get(sky.len() / 2).copied().unwrap_or(f32::INFINITY)))
+    }
+
+    fn unknown_beyond(&self) -> f32 {
+        self.known.iter().enumerate().find(|(_, (k, u))| k + u >= 50 && u > k).map_or(f32::INFINITY, |(m, _)| m as f32)
+    }
+
+    fn model(&self, cap_m: f32) -> Option<DepthErrModel> {
+        let (a, b, tau, sigma, sky) = self.fit()?;
+        Some(DepthErrModel { a: a as f32, b: b as f32, frame_sd: tau as f32, patch_sd: sigma as f32, sky_m: sky, cap_m, unknown_beyond_m: self.unknown_beyond(), ..DepthErrModel::TIPS_GROUND })
+    }
+}
+
+struct GivenDepth {
+    mode: String,
+    max: Option<f32>,
+    map: Arc<Mutex<Option<DepthMap>>>,
+}
+
+impl DepthModel for GivenDepth {
+    fn mode(&self) -> &str {
+        &self.mode
+    }
+    fn max_depth_m(&self) -> Option<f32> {
+        self.max
+    }
+    fn infer(&mut self, _rgb: &Rgb) -> anyhow::Result<DepthMap> {
+        Ok(self.map.lock().unwrap().clone().expect("depth set for this frame"))
+    }
+}
+
+struct GivenPoints {
+    mode: String,
+    points: Arc<Mutex<Vec<SemanticPoint>>>,
+}
+
+impl SemanticLocator for GivenPoints {
+    fn mode(&self) -> &str {
+        &self.mode
+    }
+    fn locate(&mut self, _rgb: &Rgb, _labels: &[LabelPrompt]) -> anyhow::Result<Vec<SemanticPoint>> {
+        Ok(self.points.lock().unwrap().clone())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Src {
+    StandIn,
+    Model,
+}
+
+struct Arm {
+    name: &'static str,
+    pipe: MlPipeline,
+    depth: Src,
+    locate: Src,
+    honest: Option<(DepthErrModel, LocateErrModel)>,
+}
+
+fn arm(name: &'static str, lex: &Lexicon, depth: Src, locate: Src, tracker: Box<dyn MaskTracker>, d: &Arc<Mutex<Option<DepthMap>>>, p: &Arc<Mutex<Vec<SemanticPoint>>>, dmode: &str, lmode: &str, fix: MlFixCfg) -> Arm {
+    let mut pipe = MlPipeline::stand_in(lex, 7);
+    if depth == Src::Model {
+        pipe.depth = DepthEngine::Model(Box::new(GivenDepth { mode: dmode.into(), max: Some(10.0), map: Arc::clone(d) }));
+    }
+    if locate == Src::Model {
+        pipe.locate = LocateEngine::Model(Box::new(GivenPoints { mode: lmode.into(), points: Arc::clone(p) }));
+    }
+    pipe.tracker = tracker;
+    pipe.fix = fix;
+    Arm { name, pipe, depth, locate, honest: None }
+}
+
+fn run_arm(book: &mut Book, a: &mut Arm, shot: &Shot, scene: &Scene, height: Option<sandbox_runtime::vision_compat::align::HeightFn>) {
+    a.pipe.reset();
+    if a.depth == Src::StandIn {
+        let mut d = DepthStandIn::new(scene.seed * 1000 + scene.dist_m as u64);
+        d.err = a.honest.map(|h| h.0);
+        a.pipe.depth = DepthEngine::StandIn(d);
+    }
+    if a.locate == Src::StandIn {
+        let mut l = LocateStandIn::new(scene.seed * 1000 + scene.dist_m as u64);
+        l.err = a.honest.map(|h| h.1);
+        a.pipe.locate = LocateEngine::StandIn(l);
+    }
+    let floor_default = if a.locate == Src::StandIn && a.honest.is_none() { 0.35 } else { 0.0 };
+    let wanted = vec![scene.query.to_string()];
+    let out = a.pipe.analyse_with(&shot.rgb, None, &shot.intr, &shot.pose, Some(&shot.truth), &wanted, &|_| floor_default, None, height).expect("analyse");
+    let name = a.name;
+    let present = shot.target_raw.and_then(|raw| shot.truth.objects.iter().find(|o| pack_raw(o) == Some(raw))).map_or(0, |o| o.pixels);
+    let tracked = out.target.is_some();
+    if scene.target.is_some() && present >= PRESENT_PX {
+        book.flag(format!("{name}/track/target_found"), tracked);
+        let right = out.truth_entity.as_deref() == Some("n9001") || out.truth_entity.as_deref() == Some("d9001");
+        book.flag(format!("{name}/track/right_object"), tracked && right);
+        if let (true, Some(iou)) = (right, out.track_iou_truth) {
+            book.add(format!("{name}/track/iou_truth"), iou);
+        }
+        if let (true, Some(t), Some(r)) = (right, out.target.as_ref(), out.range_true_m) {
+            if let Some(d) = t.depth_range_m {
+                book.add(format!("{name}/range/rel_err"), (d - r).abs() / r);
+                book.add(format!("{name}/range/signed_rel"), (d - r) / r);
+                if let Some(sg) = t.range_sigma_m {
+                    book.add(format!("{name}/range/z"), (d - r).abs() / sg.max(1e-3));
+                }
+            }
+        }
+    }
+    if scene.target.is_none() {
+        book.flag(format!("{name}/track/phantom_when_absent"), tracked);
+    }
+    if let Some(f) = out.align {
+        book.add(format!("{name}/align/inlier_share"), f.inlier_share);
+        book.add(format!("{name}/align/a"), f.a);
+        book.add(format!("{name}/align/b"), f.b);
+    }
+    if a.depth == Src::Model {
+        book.flag(format!("{name}/align/fitted"), out.align.is_some());
+    }
+}
+
+fn pack_raw(o: &sandbox_world::VisibleObject) -> Option<u32> {
+    let id: u32 = o.entity.get(1..)?.parse().ok()?;
+    let class = match o.class {
+        ObjectClass::Node => ObjectClass::Node,
+        ObjectClass::Drop => ObjectClass::Drop,
+        _ => return None,
+    };
+    Some(pack_id(class, id))
+}
+
+fn presence(shot: &Shot, label: &str) -> Option<bool> {
+    let px = shot.truth.objects.iter().filter(|o| o.label == label).map(|o| o.pixels).max().unwrap_or(0);
+    if px >= PRESENT_PX {
+        Some(true)
+    } else if px == 0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn peak_in_box(shot: &Shot, p: &SemanticPoint) -> bool {
+    shot.truth.objects.iter().filter(|o| o.label == p.label && o.pixels >= PRESENT_PX).any(|o| {
+        let b = o.bbox;
+        p.px >= b[0] as f32 - PATCH_PX && p.px <= b[2] as f32 + 1.0 + PATCH_PX && p.py >= b[1] as f32 - PATCH_PX && p.py <= b[3] as f32 + 1.0 + PATCH_PX
+    })
+}
+
+fn locate_err(shot: &Shot, p: &SemanticPoint) -> Option<f32> {
+    shot.truth
+        .objects
+        .iter()
+        .filter(|o| o.label == p.label && o.pixels >= PRESENT_PX)
+        .map(|o| {
+            let (cx, cy) = ((o.bbox[0] + o.bbox[2]) as f32 * 0.5, (o.bbox[1] + o.bbox[3]) as f32 * 0.5);
+            (cx - p.px).hypot(cy - p.py)
+        })
+        .min_by(f32::total_cmp)
+}
+
+fn record_locate(book: &mut Book, variant: &str, shot: &Shot, scene: &Scene, points: &[SemanticPoint], per_frame: &mut Vec<serde_json::Value>) {
+    for label in TARGETS {
+        let Some(present) = presence(shot, label) else { continue };
+        let p = points.iter().find(|p| p.label == label);
+        let (peak, pres) = p.map_or((0.0, 0.0), |p| (p.score, p.presence));
+        let split = if scene.fit() { "fit" } else { "eval" };
+        for (stat, v) in [("peak", peak), ("presence", pres), ("peak_x_presence", peak * pres)] {
+            book.pair(format!("{variant}/{split}/{stat}/{label}"), v, present);
+            book.pair(format!("{variant}/{split}/{stat}/all"), v, present);
+        }
+        if present {
+            if let Some(p) = p {
+                book.flag(format!("{variant}/peak_in_box"), peak_in_box(shot, p));
+                if let Some(e) = locate_err(shot, p) {
+                    book.add(format!("{variant}/locate_err_px"), e);
+                }
+            }
+        }
+        let px = shot.truth.objects.iter().filter(|o| o.label == label).map(|o| o.pixels).max().unwrap_or(0);
+        per_frame.push(serde_json::json!({"variant": variant, "scene": scene.id(), "fit": scene.fit(), "label": label, "present": present, "px": px, "peak": peak, "presence": pres, "in_box": p.map(|p| peak_in_box(shot, p))}));
+    }
+}
+
+struct ScanCand {
+    label: String,
+    score: f32,
+    tp: bool,
+}
+
+#[derive(Default)]
+struct ScanRec {
+    cands: Vec<ScanCand>,
+    objects: Vec<(u32, bool)>,
+    false_pass: u32,
+    pos_err: Vec<f32>,
+    pass_true: Vec<(f32, f32)>,
+    pass_false: Vec<(f32, f32)>,
+}
+
+fn record_scan(book: &mut Book, name: &str, shot: &Shot, rec: &mut dyn Recognizer) -> ScanRec {
+    let out = rec.scan(ScanInput { world: &shot.world, frame: &shot.frame, camera: &shot.cam }).expect("scan");
+    let present: Vec<(&String, f32, f32, u32)> = shot
+        .truth
+        .positions
+        .iter()
+        .filter_map(|(e, l, x, z)| {
+            let px = shot.truth.objects.iter().filter(|o| &o.entity == e).map(|o| o.pixels).max()?;
+            (TARGETS.contains(&l.as_str()) && px >= PRESENT_PX).then_some((l, *x, *z, px))
+        })
+        .collect();
+    let near = |label: &str, w: Option<(f32, f32)>| -> Option<(usize, f32)> {
+        let (cx, cz) = w?;
+        present.iter().enumerate().filter(|(_, (l, _, _, _))| l.as_str() == label).map(|(i, (_, x, z, _))| (i, (x - cx).hypot(z - cz))).min_by(|a, b| a.1.total_cmp(&b.1)).filter(|(_, d)| *d <= 1.0)
+    };
+    let mut r = ScanRec::default();
+    let mut matched = vec![false; present.len()];
+    for c in out.candidates.iter().filter(|c| TARGETS.contains(&c.label.as_str())) {
+        let hit = near(&c.label, c.world);
+        r.cands.push(ScanCand { label: c.label.clone(), score: c.score, tp: hit.is_some() });
+        if c.score < GATE_SCORE || c.margin < GATE_MARGIN {
+            continue;
+        }
+        book.flag(format!("{name}/scan/precision"), hit.is_some());
+        match hit {
+            Some((i, d)) => {
+                book.add(format!("{name}/scan/pos_err_m"), d);
+                matched[i] = true;
+                r.pos_err.push(d);
+                r.pass_true.push((c.score, c.margin));
+            }
+            None => {
+                r.false_pass += 1;
+                r.pass_false.push((c.score, c.margin));
+            }
+        }
+    }
+    book.add(format!("{name}/scan/false_per_scan"), r.false_pass as f32);
+    for (m, p) in matched.iter().zip(&present) {
+        book.flag(format!("{name}/scan/recall"), *m);
+        r.objects.push((p.3, *m));
+    }
+    r
+}
+
+#[derive(Default)]
+struct ScanFit {
+    lnpx: Vec<f32>,
+    det: Vec<bool>,
+    scans: u32,
+    false_pass: u32,
+    pos: Vec<f32>,
+    pass_true: Vec<(f32, f32)>,
+    pass_false: Vec<(f32, f32)>,
+}
+
+impl ScanFit {
+    fn add(&mut self, r: &ScanRec) {
+        self.scans += 1;
+        self.false_pass += r.false_pass;
+        for (px, d) in &r.objects {
+            self.lnpx.push((*px.max(&1) as f32).ln());
+            self.det.push(*d);
+        }
+        self.pos.extend(&r.pos_err);
+        self.pass_true.extend(&r.pass_true);
+        self.pass_false.extend(&r.pass_false);
+    }
+
+    fn model(&self) -> Option<sandbox_runtime::perception::ScanErrModel> {
+        if self.scans == 0 || self.det.is_empty() {
+            return None;
+        }
+        let pos = self.det.iter().filter(|d| **d).count();
+        let (det_a, det_b) = match sandbox_runtime::vision_compat::calib::platt_fit(&self.lnpx, &self.det) {
+            Some(f) => f,
+            None => {
+                let p = (pos as f32 + 0.5) / (self.det.len() as f32 + 1.0);
+                (0.0, (p / (1.0 - p)).ln())
+            }
+        };
+        let ms = |v: &[f32], dflt: (f32, f32)| -> (f32, f32) {
+            if v.is_empty() {
+                return dflt;
+            }
+            let m = v.iter().sum::<f32>() / v.len() as f32;
+            let sd = if v.len() > 1 { (v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32).sqrt() } else { 0.0 };
+            (m, sd)
+        };
+        let st: Vec<f32> = self.pass_true.iter().map(|x| x.0).collect();
+        let sf: Vec<f32> = self.pass_false.iter().map(|x| x.0).collect();
+        let mg: Vec<f32> = self.pass_true.iter().chain(&self.pass_false).map(|x| x.1).collect();
+        let pos_sd_m = if self.pos.is_empty() { 0.0 } else { (self.pos.iter().map(|d| d * d).sum::<f32>() / (2.0 * self.pos.len() as f32)).sqrt() };
+        Some(sandbox_runtime::perception::ScanErrModel {
+            det_a,
+            det_b,
+            false_per_scan: self.false_pass as f32 / self.scans as f32,
+            pos_sd_m,
+            score_true: ms(&st, (GATE_SCORE, 0.0)),
+            score_false: ms(&sf, (GATE_SCORE, 0.0)),
+            margin: ms(&mg, (GATE_MARGIN, 0.0)),
+            score_floor: GATE_SCORE,
+            margin_floor: GATE_MARGIN,
+        })
+    }
+}
+
+fn fit_scan_calibration(cands: &[ScanCand]) -> CalibTable {
+    let mut t = CalibTable { mode: sandbox_runtime::embedding::SCAN_CALIB_MODE.into(), statistic: "tile_score".into(), note: "ml_ab.rs 맞춤 시드: 후보가 1 m 안의 같은 라벨 물체인 확률의 Platt 맞춤".into(), ..CalibTable::default() };
+    let logit = |p: f32| (p / (1.0 - p)).ln();
+    let mut add = |key: &str, s: Vec<f32>, h: Vec<bool>| {
+        let pos = h.iter().filter(|x| **x).count();
+        if h.len() < 10 {
+            return;
+        }
+        let rate = (pos as f32 + 0.5) / (h.len() as f32 + 1.0);
+        let flat = (0.0f32, logit(rate));
+        let fit = if pos >= 5 { sandbox_runtime::vision_compat::calib::platt_fit(&s, &h).filter(|f| f.0 > 0.0) } else { None };
+        if let Some((a, b)) = fit.or(Some(flat)) {
+            let threshold = if a > 0.0 { (logit(GATE_SCORE) - b) / a } else { f32::MAX };
+            t.labels.insert(key.into(), sandbox_runtime::vision_compat::LabelCalib { threshold, platt: Some((a, b)), positives: pos as u32, negatives: (h.len() - pos) as u32, precision: None, recall: None });
+        }
+    };
+    add("*", cands.iter().map(|c| c.score).collect(), cands.iter().map(|c| c.tp).collect());
+    for l in TARGETS {
+        let (s, h): (Vec<f32>, Vec<bool>) = cands.iter().filter(|c| c.label == l).map(|c| (c.score, c.tp)).unzip();
+        add(l, s, h);
+    }
+    t
+}
+
+fn locate_errmodel(per_frame: &[serde_json::Value], variant: &str, table: &CalibTable) -> Option<LocateErrModel> {
+    let (mut lnpx, mut hits) = (Vec::new(), Vec::new());
+    let (mut miss_pass, mut absent_pass) = (Book::default(), Book::default());
+    let (mut pass, mut block) = (Book::default(), Book::default());
+    for r in per_frame.iter().filter(|r| r["variant"] == variant && r["fit"] == true) {
+        let label = r["label"].as_str()?;
+        let Some(c) = table.labels.get(label) else { continue };
+        let (peak, pres) = (r["peak"].as_f64()? as f32, r["presence"].as_f64()? as f32);
+        let stat = match table.statistic.as_str() {
+            "presence" => pres,
+            "peak_x_presence" => peak * pres,
+            _ => peak,
+        };
+        let passed = stat >= c.threshold;
+        if let Some(p) = c.probability(stat) {
+            if passed { pass.add("p", p) } else { block.add("p", p) }
+        }
+        if r["present"] == true {
+            let on = passed && r["in_box"].as_bool().unwrap_or(false);
+            lnpx.push((r["px"].as_u64()?.max(1) as f32).ln());
+            hits.push(on);
+            if !on {
+                miss_pass.flag("p", passed);
+            }
+        } else {
+            absent_pass.flag("p", passed);
+        }
+    }
+    let pos = hits.iter().filter(|h| **h).count();
+    let (hit_a, hit_b) = match sandbox_runtime::vision_compat::calib::platt_fit(&lnpx, &hits) {
+        Some(f) => f,
+        None if hits.is_empty() => return None,
+        None => {
+            let p = (pos as f32 + 0.5) / (hits.len() as f32 + 1.0);
+            (0.0, (p / (1.0 - p)).ln())
+        }
+    };
+    let ms = |b: &Book, dflt: (f32, f32)| b.mean("p").map_or(dflt, |(m, _)| (m, b.sd("p").unwrap_or(0.0)));
+    let at: Vec<f32> = table.labels.values().filter(|c| c.threshold.is_finite() && c.threshold < f32::MAX).filter_map(|c| c.probability(c.threshold)).collect();
+    let gate_p = if at.is_empty() { 0.5 } else { at.iter().sum::<f32>() / at.len() as f32 };
+    Some(LocateErrModel {
+        hit_a,
+        hit_b,
+        pass_miss: miss_pass.mean("p").map_or(0.0, |x| x.0),
+        pass_absent: absent_pass.mean("p").map_or(0.0, |x| x.0),
+        score_pass: ms(&pass, (gate_p, 0.0)),
+        score_block: ms(&block, (0.0, 0.0)),
+        gate_p,
+    })
+}
+
+fn device() -> candle_core::Device {
+    sandbox_runtime::ml_bridge::preferred().backend.device(0).expect("device")
+}
+
+fn bank_dir() -> PathBuf {
+    match std::env::var("RUNTIME_DIR") {
+        Ok(d) => PathBuf::from(d).join("bank"),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/runtime/bank"),
+    }
+}
+
+fn out_dir() -> Option<PathBuf> {
+    std::env::var("MLAB_OUT").ok().map(PathBuf::from)
+}
+
+fn print_rank(book: &Book, variant: &str, stat: &str) {
+    for split in ["fit", "eval"] {
+        let (au, ap, pos, n) = book.rank(&format!("{variant}/{split}/{stat}/all"));
+        println!("[MLAB] {variant}/{split}/{stat} AUROC {} · AP {} (양성 {pos}/{n}) — 라벨 합산", au.map_or("-".into(), |v| format!("{v:.3}")), ap.map_or("-".into(), |v| format!("{v:.3}")));
+    }
+    let per: Vec<String> = TARGETS
+        .iter()
+        .filter_map(|l| {
+            let (au, _, pos, _) = book.rank(&format!("{variant}/eval/{stat}/{l}"));
+            au.map(|a| format!("{l} {a:.2}({pos})"))
+        })
+        .collect();
+    println!("[MLAB] {variant}/eval/{stat} 라벨별 AUROC: {}", per.join(" · "));
+}
+
+struct Sig(Arc<RwLock<sandbox_runtime::ml_bridge::Siglip2>>);
+
+impl sandbox_runtime::ml_bridge::ImageEmbedder for Sig {
+    fn embedding_dim(&self) -> usize {
+        self.0.read().unwrap().embedding_dim()
+    }
+    fn embed_images_batch(&self, images: &[image::DynamicImage]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.0.read().unwrap().embed_images(images, 0)
+    }
+}
+
+impl sandbox_runtime::ml_bridge::TextEmbedder for Sig {
+    fn embedding_dim(&self) -> usize {
+        self.0.read().unwrap().embedding_dim()
+    }
+    fn fingerprint(&self) -> u64 {
+        self.0.read().unwrap().fingerprint()
+    }
+    fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.0.read().unwrap().embed_texts(&refs)
+    }
+}
+
+#[derive(Default)]
+struct Timers(BTreeMap<&'static str, f64>);
+
+impl Timers {
+    fn time<T>(&mut self, k: &'static str, f: impl FnOnce() -> T) -> T {
+        let t = std::time::Instant::now();
+        let out = f();
+        *self.0.entry(k).or_default() += t.elapsed().as_secs_f64();
+        out
+    }
+}
+
+#[test]
+#[ignore]
+fn ml_ab_benchmark() {
+    let t0 = std::time::Instant::now();
+    let dev = device();
+    let lex = Lexicon::from_json(LEX).unwrap();
+    let prompting = VisionPrompting::from_lexicon_json(LEX).unwrap();
+    let siglip = sandbox_runtime::ml_bridge::Siglip2::load(&PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR")), &dev).expect("SigLIP2");
+    let mut tips = TipsDepth::load(&PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR")), &dev).expect("TIPS");
+    let (scale, bias) = siglip.logit_scale_bias();
+    // A quantized SigLIP2 runs its locator under `<settings>+q-<plan>` (`SiglipLocator`): the fitted table carries the
+    // same mode, so the runtime finds it only for the model it was fitted on.
+    let msuf = siglip.mode_suffix();
+    println!(
+        "[MLAB] 장치 {} · SigLIP2 exp(t) {scale:.1}, b {bias:.2} (짝 확률 0.5인 코사인 {:.3}) · 양자화 SigLIP2 {:?} · TIPS {:?}",
+        sandbox_runtime::ml_bridge::device_label(&dev),
+        -bias / scale,
+        siglip.quant_plan().tag,
+        tips.quant_plan().tag
+    );
+    let mut scenes = scenes();
+    scenes.sort_by_key(|s| !s.fit());
+    let n_fit = scenes.iter().filter(|s| s.fit()).count();
+    println!("[MLAB] 장면 {}개 (맞춤 {n_fit}, 평가 {}) · 시드 {:?}", scenes.len(), scenes.len() - n_fit, env_list::<u64>("MLAB_SEEDS", &[1, 2, 3, 4]));
+    let labels: Vec<LabelPrompt> = MlPipeline::stand_in(&lex, 7).labels().to_vec();
+
+    let variants: Vec<(&str, LocateCfg)> = vec![
+        ("loc/old_pairprob", LocateCfg::default()),
+        ("loc/new_pairprob", LocateCfg::default()),
+        ("loc/new_pairprob_tpl", LocateCfg { templates: prompting.templates.clone(), ..LocateCfg::default() }),
+        ("loc/new_contrast", LocateCfg { scoring: LocateScoring::Contrast, background: prompting.background.clone(), ..LocateCfg::default() }),
+        ("loc/new_contrast_tpl", LocateCfg { scoring: LocateScoring::Contrast, background: prompting.background.clone(), templates: prompting.templates.clone(), ..LocateCfg::default() }),
+        ("loc/new_contrast_nobg", LocateCfg { scoring: LocateScoring::Contrast, ..LocateCfg::default() }),
+        ("loc/new_z", LocateCfg { scoring: LocateScoring::ZScore, ..LocateCfg::default() }),
+    ];
+    let siglip = Arc::new(siglip);
+    let texts: Vec<LabelTexts> = {
+        let mut loc = sandbox_runtime::vision_compat::SiglipLocator::with_cfg(Arc::clone(&siglip), LocateCfg::default());
+        variants.iter().map(|(_, c)| loc.label_texts(&labels, c).unwrap()).collect()
+    };
+    let sig = Arc::new(Sig(Arc::new(RwLock::new(Arc::try_unwrap(siglip).ok().expect("the locator is gone")))));
+    let set_port = |sig: &Sig, tips: &mut TipsDepth, v1: bool| {
+        sig.0.write().unwrap().set_position_antialias(v1);
+        tips.set_readout_gelu_tanh(v1);
+    };
+    let bank = bank_dir();
+    let phrases = sandbox_runtime::BankedPhrases::new(Arc::clone(&sig), Some(&bank));
+    let calibrate: Arc<dyn Fn(f32) -> f32 + Send + Sync> = Arc::new(move |c| 1.0 / (1.0 + (-(scale * c + bias)).exp()));
+    let image: Arc<dyn sandbox_runtime::ml_bridge::ImageEmbedder + Send + Sync> = sig.clone();
+    let mut scan = EmbeddingPerception::new_with(&lex, &phrases, Arc::clone(&image), Arc::clone(&calibrate), "gpu", EmbeddingCfg::default(), None).unwrap();
+    let mut scan_tpl = EmbeddingPerception::new_with(&lex, &phrases, Arc::clone(&image), Arc::clone(&calibrate), "gpu", EmbeddingCfg::default(), Some(&prompting)).unwrap();
+    let mut scan_cal = EmbeddingPerception::new_with(&lex, &phrases, Arc::clone(&image), Arc::clone(&calibrate), "gpu", EmbeddingCfg::default(), None).unwrap();
+    let mut oracle = OraclePerception::new(&lex, NoiseCfg::demo(), 6);
+
+    let d_cell: Arc<Mutex<Option<DepthMap>>> = Arc::new(Mutex::new(None));
+    let p_cell: Arc<Mutex<Vec<SemanticPoint>>> = Arc::new(Mutex::new(Vec::new()));
+    let legacy = MlFixCfg::legacy();
+    let mut arms = vec![
+        arm("A0", &lex, Src::StandIn, Src::StandIn, Box::new(RegionTracker::default()), &d_cell, &p_cell, "", "", legacy.clone()),
+        arm("A1", &lex, Src::Model, Src::StandIn, Box::new(RegionTracker::default()), &d_cell, &p_cell, "tipsv2-b14-dpt", "", legacy.clone()),
+        arm("A2", &lex, Src::StandIn, Src::Model, Box::new(RegionTracker::default()), &d_cell, &p_cell, "", "siglip2-dense", legacy.clone()),
+        arm("A3", &lex, Src::StandIn, Src::StandIn, Box::new(StereoTierTracker::new(StereoSpatialTier::StereoMetricGrasp)), &d_cell, &p_cell, "", "", legacy.clone()),
+        arm("A4", &lex, Src::Model, Src::Model, Box::new(StereoTierTracker::new(StereoSpatialTier::StereoMetricGrasp)), &d_cell, &p_cell, "tipsv2-b14-dpt", "siglip2-dense", legacy.clone()),
+    ];
+    let mut a4n = arm("A4new", &lex, Src::Model, Src::Model, Box::new(StereoTierTracker::new(StereoSpatialTier::StereoMetricGrasp)), &d_cell, &p_cell, "tipsv2-b14-dpt", "siglip2-dense", legacy.clone());
+    let shipped: Option<Vec<CalibTable>> = {
+        let t = CalibTable::parse(sandbox_runtime::ml::ML_CALIB_JSON).unwrap_or_default();
+        let dense = t.iter().any(|x| x.mode.starts_with("siglip2-dense"));
+        let scan_t = t.iter().any(|x| x.mode == sandbox_runtime::embedding::SCAN_CALIB_MODE);
+        (dense && scan_t && std::env::var("MLAB_REFIT").is_err()).then_some(t)
+    };
+    let mut a5: Option<(Arm, Arm, usize)> = None;
+    let mut tables: Vec<CalibTable> = Vec::new();
+    if let Some(t) = &shipped {
+        let dense = t.iter().find(|x| x.mode.starts_with("siglip2-dense")).unwrap().clone();
+        let scan_t = t.iter().find(|x| x.mode == sandbox_runtime::embedding::SCAN_CALIB_MODE).unwrap().clone();
+        let vk = (1..variants.len()).find(|k| format!("{}{msuf}", variants[*k].1.mode()) == dense.mode).unwrap_or_else(|| panic!("no locator variant of this model scores like the shipped table {}", dense.mode));
+        println!("[MLAB] 실린 보정 사용: 위치 {} · {} / 스캔 라벨 {}개", dense.mode, dense.statistic, scan_t.labels.len());
+        scan_cal.set_calibration(Some(scan_t.clone()));
+        tables = vec![dense, scan_t];
+        a5 = Some(a5_arms(&lex, &prompting, &tables[0], vk, &d_cell, &p_cell));
+    }
+    let mut scan_honest_fit = ScanFit::default();
+    let mut honest_scan: Option<OraclePerception> = None;
+
+    let mut book = Book::default();
+    let mut timers = Timers::default();
+    let mut per_frame: Vec<serde_json::Value> = Vec::new();
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let mut scan_fit: Vec<ScanCand> = Vec::new();
+    let mut errfit = ErrFit::default();
+    let mut errfit_ground = ErrFit::default();
+    let mut honest: Vec<Arm> = Vec::new();
+    for (i, s) in scenes.iter().enumerate() {
+        if i == n_fit {
+            if a5.is_none() {
+                let mut best: Option<(f32, usize, &str)> = None;
+                for (k, (name, _)) in variants.iter().enumerate().skip(1) {
+                    for stat in ["peak", "presence", "peak_x_presence"] {
+                        if let (_, Some(ap), _, _) = book.rank(&format!("{name}/fit/{stat}/all")) {
+                            if best.map_or(true, |b| ap > b.0) {
+                                best = Some((ap, k, stat));
+                            }
+                        }
+                    }
+                }
+                let (best_ap, vk, vstat) = best.expect("a locator statistic");
+                let (vname, vcfg) = variants[vk].clone();
+                println!("[MLAB] 게이트 통계: {vname} · {vstat} (맞춤 시드 AP {best_ap:.3})");
+                let mut table = CalibTable { mode: format!("{}{msuf}", vcfg.mode()), statistic: vstat.into(), note: format!("ml_ab.rs 맞춤 시드, 정밀도 {CALIB_PRECISION} (없으면 FPR {CALIB_FPR})"), ..CalibTable::default() };
+                for l in TARGETS {
+                    if let Some((sc, h)) = book.pairs.get(&format!("{vname}/fit/{vstat}/{l}")) {
+                        if let Some(c) = fit_label(sc, h, CALIB_PRECISION, CALIB_FPR) {
+                            table.labels.insert(l.to_string(), c);
+                        }
+                    }
+                }
+                let scan_table = fit_scan_calibration(&scan_fit);
+                println!("[MLAB] 스캔 보정: 맞춤 후보 {}개 (참 {}), 라벨 {}개", scan_fit.len(), scan_fit.iter().filter(|c| c.tp).count(), scan_table.labels.len());
+                scan_cal.set_calibration(Some(scan_table.clone()));
+                tables = vec![table, scan_table];
+                a5 = Some(a5_arms(&lex, &prompting, &tables[0], vk, &d_cell, &p_cell));
+            }
+            let vk = a5.as_ref().map(|a| a.2).unwrap();
+            let dmodel = errfit_ground.model(f32::INFINITY);
+            let lmodel = locate_errmodel(&per_frame, variants[vk].0, &tables[0]);
+            println!("[MLAB] 정직한 대역 (맞춤 시드): 깊이 {}", dmodel.map_or("없음".into(), |m| depth_model_rs(&m)));
+            println!("[MLAB] 정직한 대역 (맞춤 시드): 위치 {lmodel:?}");
+            if let (Some(dm), Some(lm)) = (dmodel, lmodel) {
+                for (name, tracker) in [("A0h", Box::new(RegionTracker::default()) as Box<dyn MaskTracker>), ("A0hsam", Box::new(StereoTierTracker::new(StereoSpatialTier::StereoMetricGrasp)))] {
+                    let mut h = arm(name, &lex, Src::StandIn, Src::StandIn, tracker, &d_cell, &p_cell, "", "", legacy.clone());
+                    h.honest = Some((dm, lm));
+                    honest.push(h);
+                }
+            }
+            if shipped.is_some() {
+                let sm = scan_honest_fit.model();
+                println!("[MLAB] 정직한 대역 (맞춤 시드): 스캔 {sm:?}");
+                honest_scan = sm.map(|m| {
+                    let mut o = OraclePerception::new(&lex, NoiseCfg::none(), 1);
+                    o.set_honest(Some(m));
+                    o
+                });
+            }
+        }
+        let shot = timers.time("render", || shoot(&mut bases, s));
+        set_port(&*sig, &mut tips, false);
+        let (raw, spread) = timers.time("tips", || tips.predict_batch_spread(&[&shot.rgb]).unwrap().pop().unwrap());
+        timers.time("metrics", || {
+            record_depth(&mut book, "depth/tips_raw", &raw, &shot.truth, shot.target_raw);
+            if let Some(m) = depth_metrics(&raw, &shot.truth.depth_map(), 10.0, false) {
+                book.add("depth/tips_raw/median_scale", m.median_scale);
+                let mut d = raw.clone();
+                d.data.iter_mut().for_each(|x| *x *= m.median_scale);
+                record_depth(&mut book, "depth/tips_median", &d, &shot.truth, shot.target_raw);
+            }
+            record_depth(&mut book, "depth/tips_oracle_lsq", &oracle_lsq(&raw, &shot.truth, 10.0), &shot.truth, shot.target_raw);
+            let si = DepthStandIn::new(s.seed * 1000 + s.dist_m as u64).run(&shot.truth);
+            record_depth(&mut book, "depth/standin", &si, &shot.truth, shot.target_raw);
+            for y in (0..shot.truth.height).step_by(4) {
+                for x in (0..shot.truth.width).step_by(4) {
+                    let t = shot.truth.depth[(y * shot.truth.width + x) as usize];
+                    let p = raw.at_scaled(x as f32 + 0.5, y as f32 + 0.5, shot.truth.width, shot.truth.height);
+                    let sd = spread.at_scaled(x as f32 + 0.5, y as f32 + 0.5, shot.truth.width, shot.truth.height);
+                    if t.is_finite() && t <= 10.0 && p > 0.0 {
+                        book.pair("depth/tips_spread_flags_err", sd / p, (p - t).abs() / t > 0.25);
+                    }
+                }
+            }
+        });
+        let dense_old = timers.time("siglip_dense", || sig.0.read().unwrap().embed_dense_batch(&[shot.rgb.to_dynamic()]).unwrap().pop().unwrap());
+        let pts_old = points_with_presence(shot.rgb.width, shot.rgb.height, label_heats(&dense_old, &texts[0], &variants[0].1, scale, bias));
+        record_locate(&mut book, "loc/old_pairprob", &shot, s, &pts_old, &mut per_frame);
+        let pts_si = LocateStandIn::new(s.seed * 1000 + s.dist_m as u64).run(&shot.truth, &labels);
+        record_locate(&mut book, "loc/standin", &shot, s, &pts_si, &mut per_frame);
+        *d_cell.lock().unwrap() = Some(raw.clone());
+        *p_cell.lock().unwrap() = pts_old.clone();
+        for a in arms.iter_mut() {
+            let k: &'static str = if a.name == "A3" || a.name == "A4" { "arm_sam" } else { "arm_region" };
+            timers.time(k, || run_arm(&mut book, a, &shot, s, None));
+        }
+        timers.time("scan_oracle", || record_scan(&mut book, "A0", &shot, &mut oracle));
+        timers.time("scan_siglip", || record_scan(&mut book, "A4", &shot, &mut scan));
+        timers.time("scan_siglip", || record_scan(&mut book, "A4tpl", &shot, &mut scan_tpl));
+
+        set_port(&*sig, &mut tips, true);
+        let raw1 = timers.time("tips", || tips.predict(&shot.rgb).unwrap());
+        let ground0 = shot.world.surface_m(shot.pose.x, shot.pose.z);
+        let w = &shot.world;
+        let dem = move |x: f32, z: f32| w.surface_m(x, z) - ground0;
+        timers.time("metrics", || {
+            record_depth(&mut book, "depth/tips_v1_raw", &raw1, &shot.truth, shot.target_raw);
+            record_depth(&mut book, "depth/tips_v1_oracle_lsq", &oracle_lsq(&raw1, &shot.truth, 10.0), &shot.truth, shot.target_raw);
+            if let Some(m) = depth_metrics(&raw1, &shot.truth.depth_map(), 10.0, false) {
+                book.add("depth/tips_v1_raw/median_scale", m.median_scale);
+            }
+            errfit.add_frame(&raw1, &shot.truth, 10.0);
+        });
+        let lossless = Rgb::new(shot.frame.width as u32, shot.frame.height as u32, shot.frame.rgb.clone());
+        let raw_ll = timers.time("tips", || tips.predict(&lossless).unwrap());
+        timers.time("metrics", || {
+            record_depth(&mut book, "depth/tips_v1_lossless", &raw_ll, &shot.truth, shot.target_raw);
+            record_depth(&mut book, "depth/tips_v1_lossless_oracle_lsq", &oracle_lsq(&raw_ll, &shot.truth, 10.0), &shot.truth, shot.target_raw);
+        });
+        tips.input_grid = InputGrid::Fixed { cols: 32, rows: 32 };
+        let sq = timers.time("tips", || tips.predict(&shot.rgb).unwrap());
+        tips.input_grid = InputGrid::default();
+        timers.time("metrics", || {
+            record_depth(&mut book, "depth/tips_v1_sq448", &sq, &shot.truth, shot.target_raw);
+            record_depth(&mut book, "depth/tips_v1_sq448_oracle_lsq", &oracle_lsq(&sq, &shot.truth, 10.0), &shot.truth, shot.target_raw);
+            if let Some(m) = depth_metrics(&sq, &shot.truth.depth_map(), 10.0, false) {
+                book.add("depth/tips_v1_sq448/median_scale", m.median_scale);
+            }
+            let mut d = sq.clone();
+            sandbox_runtime::vision_compat::ground_align(&mut d, &shot.intr, &shot.pose, Some(&dem as sandbox_runtime::vision_compat::align::HeightFn), Some(10.0), &AlignCfg::default());
+            record_depth(&mut book, "depth/tips_v1_sq448_ground_map", &d, &shot.truth, shot.target_raw);
+        });
+        for (name, h, cfg) in [
+            ("depth/tips_v1_ground_flat", None, AlignCfg::default()),
+            ("depth/tips_v1_ground_map", Some(&dem as sandbox_runtime::vision_compat::align::HeightFn), AlignCfg::default()),
+            ("depth/tips_v1_ground_scale", Some(&dem as sandbox_runtime::vision_compat::align::HeightFn), AlignCfg { space: AlignSpace::Scale, ..AlignCfg::default() }),
+            ("depth/tips_v1_ground_map_noclip", Some(&dem as sandbox_runtime::vision_compat::align::HeightFn), AlignCfg { clip_to_support: false, ..AlignCfg::default() }),
+        ] {
+            let mut d = raw1.clone();
+            let fit = timers.time("align", || sandbox_runtime::vision_compat::ground_align(&mut d, &shot.intr, &shot.pose, h, Some(10.0), &cfg));
+            book.flag(format!("{name}/fitted"), fit.is_some());
+            record_depth(&mut book, name, &d, &shot.truth, shot.target_raw);
+            if name == "depth/tips_v1_ground_map" && s.fit() {
+                errfit_ground.add_frame(&d, &shot.truth, 10.0);
+            }
+            if let Some(f) = fit {
+                book.add(format!("{name}/fit_a"), f.a);
+                book.add(format!("{name}/fit_b"), f.b);
+                book.add(format!("{name}/inlier_share"), f.inlier_share);
+                book.add(format!("{name}/median_rel_err"), f.median_rel_err);
+            }
+        }
+        let dense = timers.time("siglip_dense", || sig.0.read().unwrap().embed_dense_batch(&[shot.rgb.to_dynamic()]).unwrap().pop().unwrap());
+        let pts_new: Vec<Vec<SemanticPoint>> = variants
+            .iter()
+            .zip(&texts)
+            .skip(1)
+            .map(|((name, cfg), tx)| {
+                let pts = points_with_presence(shot.rgb.width, shot.rgb.height, label_heats(&dense, tx, cfg, scale, bias));
+                record_locate(&mut book, name, &shot, s, &pts, &mut per_frame);
+                pts
+            })
+            .collect();
+        let dense_ll = timers.time("siglip_dense", || sig.0.read().unwrap().embed_dense_batch(&[lossless.to_dynamic()]).unwrap().pop().unwrap());
+        let pts_ll = points_with_presence(lossless.width, lossless.height, label_heats(&dense_ll, &texts[3], &variants[3].1, scale, bias));
+        record_locate(&mut book, "loc/new_contrast_lossless", &shot, s, &pts_ll, &mut per_frame);
+        let raw_scan = timers.time("scan_siglip", || record_scan(&mut book, "A5raw", &shot, &mut scan));
+        if s.fit() {
+            scan_fit.extend(raw_scan.cands);
+        } else {
+            for c in &raw_scan.cands {
+                book.pair("A5raw/scan/eval_score", c.score, c.tp);
+            }
+        }
+        if scan_cal.calibration().is_some() {
+            let name = if s.fit() { "A5cal_fit" } else { "A5cal" };
+            let cal = timers.time("scan_siglip", || record_scan(&mut book, name, &shot, &mut scan_cal));
+            if !s.fit() {
+                for c in &cal.cands {
+                    book.pair("A5cal/scan/platt", c.score, c.tp);
+                }
+            }
+            if s.fit() == shipped.is_some() {
+                scan_honest_fit.add(&cal);
+            }
+        }
+        if !s.fit() {
+            if let Some((x, y, vk)) = a5.as_mut() {
+                let pts = &pts_new[*vk - 1];
+                let t = &tables[0];
+                for p in pts.iter().filter(|p| TARGETS.contains(&p.label.as_str())) {
+                    let (Some(c), Some(present)) = (t.labels.get(&p.label), presence(&shot, &p.label)) else { continue };
+                    let stat = match t.statistic.as_str() {
+                        "presence" => p.presence,
+                        "peak_x_presence" => p.score * p.presence,
+                        _ => p.score,
+                    };
+                    let pass = stat >= c.threshold;
+                    if pass {
+                        book.flag("A5gate/eval/precision", present);
+                    }
+                    if present {
+                        book.flag("A5gate/eval/recall", pass);
+                    }
+                    if let Some(pr) = c.probability(stat) {
+                        book.pair("A5gate/eval/platt", pr, present);
+                    }
+                }
+                *d_cell.lock().unwrap() = Some(raw1.clone());
+                *p_cell.lock().unwrap() = pts.clone();
+                timers.time("arm_sam", || run_arm(&mut book, x, &shot, s, Some(&dem)));
+                timers.time("arm_region", || run_arm(&mut book, y, &shot, s, Some(&dem)));
+            }
+            *p_cell.lock().unwrap() = pts_new[0].clone();
+            *d_cell.lock().unwrap() = Some(raw1.clone());
+            timers.time("arm_sam", || run_arm(&mut book, &mut a4n, &shot, s, None));
+            for h in honest.iter_mut() {
+                timers.time("arm_honest", || run_arm(&mut book, h, &shot, s, None));
+                if h.name == "A0h" {
+                    let mut d = DepthStandIn::new(s.seed * 1000 + s.dist_m as u64);
+                    d.err = h.honest.map(|x| x.0);
+                    record_depth(&mut book, "depth/standin_honest", &d.run(&shot.truth), &shot.truth, shot.target_raw);
+                }
+            }
+            if let Some(o) = honest_scan.as_mut() {
+                timers.time("scan_oracle", || record_scan(&mut book, "A0h", &shot, o));
+            }
+        }
+        if i % 25 == 0 {
+            println!("[MLAB] {}/{} ({:.0} s)", i + 1, scenes.len(), t0.elapsed().as_secs_f32());
+        }
+    }
+    if let Some(dir) = out_dir() {
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("ml_calib.json"), serde_json::to_string_pretty(&tables).unwrap()).unwrap();
+        let lines: Vec<String> = per_frame.iter().map(|v| v.to_string()).collect();
+        std::fs::write(dir.join("mlab_frames.jsonl"), lines.join("\n")).unwrap();
+    }
+
+    let times: Vec<String> = timers.0.iter().map(|(k, v)| format!("{k} {v:.0} s")).collect();
+    println!("[MLAB] 시간: {}", times.join(" · "));
+    println!("[MLAB] ===== 깊이 (진실 10 m 이하 화소; NYU 상한과 같은 범위) =====");
+    for d in [
+        "depth/standin",
+        "depth/tips_raw",
+        "depth/tips_median",
+        "depth/tips_oracle_lsq",
+        "depth/tips_v1_raw",
+        "depth/tips_v1_oracle_lsq",
+        "depth/tips_v1_ground_flat",
+        "depth/tips_v1_ground_map",
+        "depth/tips_v1_ground_scale",
+        "depth/tips_v1_ground_map_noclip",
+        "depth/tips_v1_sq448",
+        "depth/tips_v1_sq448_oracle_lsq",
+        "depth/tips_v1_sq448_ground_map",
+        "depth/tips_v1_lossless",
+        "depth/tips_v1_lossless_oracle_lsq",
+        "depth/standin_honest",
+    ] {
+        for m in ["absrel", "delta1", "rmse_m", "coverage", "target_absrel"] {
+            book.line(&format!("{d}/{m}"), "");
+        }
+        let bands: Vec<String> = BANDS.iter().filter_map(|b| book.mean(&format!("{d}/band{}", b.2)).map(|(v, n)| format!("{} m {v:.2} ({n})", b.2))).collect();
+        println!("[MLAB] {d}/bands AbsRel {}", bands.join(" · "));
+    }
+    book.line("depth/tips_raw/median_scale", "참/예측 중앙값: 1보다 크면 모델이 가깝게 봄");
+    book.line("depth/tips_v1_raw/median_scale", "");
+    book.line("depth/tips_v1_sq448/median_scale", "정사각 448 입력");
+    for (name, f, cap) in [("depth/errmodel_raw", &errfit, 10.0f32), ("depth/errmodel_ground", &errfit_ground, f32::INFINITY)] {
+        if let Some((a, b, tau, sigma, sky)) = f.fit() {
+            println!("[MLAB] {name} ln(예측/참) = {a:.4} + {b:.4}·ln(참) · 프레임 sd {tau:.4} · 화소 sd {sigma:.4} · 하늘 답 중앙값 {sky:.2} m (프레임 {})", f.frames.len());
+            if let Some(m) = f.model(cap) {
+                println!("[MLAB] {name} = {}", depth_model_rs(&m));
+            }
+        }
+    }
+    for k in ["depth/tips_v1_ground_flat/fitted", "depth/tips_v1_ground_map/fitted", "depth/tips_v1_ground_map/fit_a", "depth/tips_v1_ground_map/fit_b", "depth/tips_v1_ground_map/inlier_share", "depth/tips_v1_ground_map/median_rel_err", "depth/tips_v1_ground_scale/fit_a"] {
+        book.line(k, "");
+    }
+    let (au, _, pos, n) = book.rank("depth/tips_spread_flags_err");
+    println!("[MLAB] depth/tips_spread_flags_err AUROC {} (오차>25% 화소 {pos}/{n}) — 빈 분포 폭/깊이가 큰 오차를 가려내는가", au.map_or("-".into(), |v| format!("{v:.3}")));
+    println!("[MLAB] ===== 의미 위치 (존재 AUROC/AP, 상자 안 피크) =====");
+    for v in ["loc/standin", "loc/old_pairprob", "loc/new_pairprob", "loc/new_pairprob_tpl", "loc/new_contrast", "loc/new_contrast_tpl", "loc/new_contrast_nobg", "loc/new_z", "loc/new_contrast_lossless"] {
+        for stat in ["peak", "presence"] {
+            print_rank(&book, v, stat);
+        }
+        book.line(&format!("{v}/peak_in_box"), "보이는 라벨의 피크가 참 상자(한 패치 확장) 안");
+        book.line(&format!("{v}/locate_err_px"), "");
+    }
+    book.line("A5gate/eval/precision", "보정 게이트를 통과한 점의 정밀도 (평가 시드)");
+    book.line("A5gate/eval/recall", "보이는 라벨 중 게이트 통과");
+    if let Some((s, h)) = book.pairs.get("A5gate/eval/platt") {
+        println!("[MLAB] A5gate/eval/ece {:.3} (n {}) — {CITE_CALIB}", sandbox_runtime::vision_compat::calib::ece(s, h, sandbox_runtime::vision_compat::calib::ECE_BINS).unwrap_or(f32::NAN), s.len());
+    }
+    println!("[MLAB] ===== 추적과 거리 (사슬 전체, 같은 키프레임) =====");
+    for a in ["A0", "A1", "A2", "A3", "A4", "A4new", "A5", "A5region", "A0h", "A0hsam"] {
+        for m in ["track/target_found", "track/right_object", "track/iou_truth", "track/phantom_when_absent", "range/rel_err", "range/signed_rel", "range/z", "align/fitted"] {
+            book.line(&format!("{a}/{m}"), "");
+        }
+    }
+    println!("[MLAB] ===== 타일 스캔 (게이트 점수 {GATE_SCORE} · 여유 {GATE_MARGIN}, 1 m 안) =====");
+    for a in ["A0", "A4", "A4tpl", "A5raw", "A5cal_fit", "A5cal", "A0h"] {
+        for m in ["scan/precision", "scan/recall", "scan/pos_err_m", "scan/false_per_scan"] {
+            book.line(&format!("{a}/{m}"), if a == "A0" { "대역(정답 버퍼 + 주입 오류)" } else if a == "A0h" { "정직한 대역" } else { "" });
+        }
+    }
+    if shipped.is_none() {
+        println!("[MLAB] scan/errmodel (평가 시드, 표본 안) {:?}", scan_honest_fit.model());
+    }
+    for k in ["A5raw/scan/eval_score", "A5cal/scan/platt"] {
+        if let Some((s, h)) = book.pairs.get(k) {
+            let probs: Vec<f32> = s.iter().map(|x| x.clamp(0.0, 1.0)).collect();
+            println!("[MLAB] {k} AUROC {} · ECE {:.3} (후보 {}, 참 {})", auroc(s, h).map_or("-".into(), |v| format!("{v:.3}")), sandbox_runtime::vision_compat::calib::ece(&probs, h, sandbox_runtime::vision_compat::calib::ECE_BINS).unwrap_or(f32::NAN), s.len(), h.iter().filter(|x| **x).count());
+        }
+    }
+
+    println!("[MLAB] ===== 기준 대비 =====");
+    if let Some((v, _)) = book.mean("depth/tips_v1_oracle_lsq/absrel") {
+        let z = (v - SINTEL_ALIGNED_ABSREL.0) / SINTEL_ALIGNED_ABSREL.1;
+        println!("[MLAB] M1/aligned_absrel {v:.3} (Like {{ reference: {:.3}, tolerance: {:.3} }}) · 점수 {:.0} — {CITE_SINTEL}", SINTEL_ALIGNED_ABSREL.0, SINTEL_ALIGNED_ABSREL.1, (100.0 - 10.0 * z.abs()).max(0.0));
+    }
+    if let (Some((g, _)), Some((o, _))) = (book.mean("depth/tips_v1_ground_map/absrel"), book.mean("depth/tips_v1_oracle_lsq/absrel")) {
+        let r = g / o.max(1e-6);
+        println!("[MLAB] M2/ground_over_oracle_absrel {r:.3} (NoWorse {{ reference: {DNET_GROUND_OVER_MEDIAN:.3}, tolerance: 0.1 }}) · 점수 {:.0} — {CITE_DNET}", (100.0 - 10.0 * ((r - DNET_GROUND_OVER_MEDIAN) / 0.1).max(0.0)).max(0.0));
+    }
+    if let Some((v, _)) = book.mean("depth/tips_raw/absrel") {
+        println!("[MLAB] M3/raw_metric_absrel {v:.3} (Raw, 기준 {OFFDOMAIN_METRIC_ABSREL}) — {CITE_OFFDOMAIN}");
+    }
+    println!("[MLAB] M4 기록 — {CITE_SCLIP}; {CITE_ENSEMBLE}");
+    println!("[MLAB-SUM] {}개 장면 · {:.0} s", scenes.len(), t0.elapsed().as_secs_f32());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn a5_arms(lex: &Lexicon, prompting: &VisionPrompting, table: &CalibTable, vk: usize, d: &Arc<Mutex<Option<DepthMap>>>, p: &Arc<Mutex<Vec<SemanticPoint>>>) -> (Arm, Arm, usize) {
+    let vcfg = LocateCfg::from_mode(&table.mode, &prompting.background, &prompting.templates).expect("a dense locator mode");
+    let mut fix = MlFixCfg::v1(prompting);
+    fix.locate = vcfg.clone();
+    // The arms' locator runs under the table's mode (the model's quantization suffix included), as the runtime's would.
+    let mut x = arm("A5", lex, Src::Model, Src::Model, Box::new(StereoTierTracker::new(StereoSpatialTier::StereoMetricGrasp)), d, p, "tipsv2-b14-dpt", &table.mode, fix.clone());
+    x.pipe.calib = vec![table.clone()];
+    let mut y = arm("A5region", lex, Src::Model, Src::Model, Box::new(RegionTracker::default()), d, p, "tipsv2-b14-dpt", &table.mode, fix);
+    y.pipe.calib = vec![table.clone()];
+    (x, y, vk)
+}
+
+fn depth_model_rs(m: &DepthErrModel) -> String {
+    let f = |v: f32| if v.is_finite() { format!("{v:.4}") } else { "f32::INFINITY".into() };
+    format!("DepthErrModel {{ a: {}, b: {}, frame_sd: {}, patch_sd: {}, sky_m: {}, cap_m: {}, unknown_beyond_m: {}, blur_px: {} }}", f(m.a), f(m.b), f(m.frame_sd), f(m.patch_sd), f(m.sky_m), f(m.cap_m), f(m.unknown_beyond_m), m.blur_px)
+}
+
+fn run_quest(rt: &mut Runtime, cmd: &str, seed: u64, base: BaseKind) -> serde_json::Value {
+    rt.test_start(cmd, seed, sandbox_core::BodyPlan::standard(), Some(base)).expect("test starts");
+    let mut guard = 0;
+    while rt.test_session().map(|t| t.phase) != Some(sandbox_runtime::TestPhase::Done) {
+        rt.test_advance(400).expect("test advances");
+        guard += 1;
+        assert!(guard < 4000, "the test does not end");
+    }
+    rt.api_test_status().unwrap()
+}
+
+#[test]
+#[ignore]
+fn ml_ab_quests() {
+    let t0 = std::time::Instant::now();
+    let dev = device();
+    let cmds: Vec<String> = std::env::var("MLAB_QUESTS").unwrap_or_else(|_| "원목 1개를 창고로 가져와;택배 상자 1개를 창고로 가져와".into()).split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let seeds: Vec<u64> = env_list("MLAB_QUEST_SEEDS", &[7]);
+    let sig_dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let tips_dir = PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR"));
+    let bank = bank_dir();
+    let mut rows: BTreeMap<&str, Vec<serde_json::Value>> = BTreeMap::new();
+    // `MLAB_QUEST_ARMS=real_v1.3`: only some arms. Each arm also reports where its keyframes spent their time.
+    let want: Vec<String> = std::env::var("MLAB_QUEST_ARMS").map(|v| v.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+    let mut stage: BTreeMap<&str, BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
+    for arm in ["standin", "honest", "real_v0.9", "real_v1.0", "real_v1.3", "real_v1.3_region", "real_v1.3_region_clamp"] {
+        if !want.is_empty() && !want.iter().any(|w| w == arm) {
+            continue;
+        }
+        let siglip = arm.starts_with("real").then(|| {
+            let mut s = sandbox_runtime::ml_bridge::Siglip2::load(&sig_dir, &dev).expect("SigLIP2");
+            s.set_position_antialias(arm != "real_v0.9");
+            Arc::new(s)
+        });
+        for cmd in &cmds {
+            for &seed in &seeds {
+                let cfg = RuntimeConfig { seed, noise: NoiseCfg::none(), ..RuntimeConfig::default() };
+                let mut rt = Runtime::new(cfg, LEX, None).expect("runtime");
+                match arm {
+                    "honest" => rt.use_honest_stand_ins(),
+                    "real_v0.9" | "real_v1.0" | "real_v1.3" | "real_v1.3_region" | "real_v1.3_region_clamp" => {
+                        match arm {
+                            "real_v0.9" => rt.ml_pipeline_mut().fix = MlFixCfg::legacy(),
+                            "real_v1.0" => rt.ml_pipeline_mut().fix.pyramid = None,
+                            _ => {}
+                        }
+                        rt.use_tips(&tips_dir, &dev).expect("TIPS");
+                        // The region arms track without SAM: region growing, alone or kept to the item's size.
+                        match arm {
+                            "real_v1.3_region" => rt.use_region_tracker(),
+                            "real_v1.3_region_clamp" => rt.use_region_tracker_clamped(),
+                            _ => rt.use_stereo_metric_grasp(),
+                        }
+                        rt.use_siglip(Arc::clone(siglip.as_ref().unwrap()), Some(&bank)).expect("SigLIP2");
+                    }
+                    _ => {}
+                }
+                let t = std::time::Instant::now();
+                let st = run_quest(&mut rt, cmd, seed, BaseKind::HumanFoot);
+                if let Some(d) = out_dir() {
+                    std::fs::create_dir_all(&d).unwrap();
+                    let k = cmds.iter().position(|c| c == cmd).unwrap_or(0);
+                    std::fs::write(d.join(format!("quest_{arm}_{k}_{seed}.json")), serde_json::to_string_pretty(&st).unwrap()).unwrap();
+                }
+                let dec = st["decide"]["keyframes"].as_array().cloned().unwrap_or_default();
+                let mut kinds: BTreeMap<String, u32> = BTreeMap::new();
+                for k in &dec {
+                    if let Some(x) = k["decision"]["kind"].as_str() {
+                        *kinds.entry(x.to_string()).or_default() += 1;
+                    }
+                }
+                let tracked = dec.iter().filter(|k| !k["ml"]["target"].is_null()).count();
+                let book = stage.entry(arm).or_default();
+                for k in &dec {
+                    let Some(ms) = k["ml"]["stage_ms"].as_object() else { continue };
+                    let mut total = 0.0;
+                    for (name, v) in ms {
+                        let v = v.as_f64().unwrap_or(0.0);
+                        total += v;
+                        let key: &str = match name.as_str() {
+                            "depth" => "depth",
+                            "align" => "align",
+                            "locate" => "locate",
+                            "pyramid" => "pyramid",
+                            _ => "track",
+                        };
+                        book.entry(key).or_default().push(v);
+                    }
+                    book.entry("total").or_default().push(total);
+                    book.entry(if k["ml"]["target"].is_null() { "total_untracked" } else { "total_tracked" }).or_default().push(total);
+                }
+                let q = &st["ml_quest"];
+                let row = serde_json::json!({
+                    "cmd": cmd, "seed": seed,
+                    "off_mask": dec.iter().filter(|k| k["ml"]["flags"].as_array().is_some_and(|f| f.iter().any(|x| x == "peak_off_mask"))).count(),
+                    "semantic_mismatch": dec.iter().filter(|k| k["decision"]["label"].as_str().is_some_and(|l| l.contains("semantic_mismatch"))).count(),
+                    "game": st["game_quest"]["state"], "ml": q["state"], "failure": q["failure"]["code"],
+                    "time_s": q["result"]["time_s"], "wasted": q["result"]["wasted_actions"], "precision": q["result"]["precision"],
+                    "keyframes": dec.len(), "tracked": tracked, "decisions": kinds, "modes": st["modes"], "wall_s": t.elapsed().as_secs_f32(),
+                });
+                println!("[MLAB-Q] {arm} {row}");
+                rows.entry(arm).or_default().push(row);
+            }
+        }
+    }
+    for (arm, r) in &rows {
+        let ok = r.iter().filter(|x| x["ml"] == "done").count();
+        let game = r.iter().filter(|x| x["game"] == "done").count();
+        let wasted: u64 = r.iter().filter_map(|x| x["wasted"].as_u64()).sum();
+        let time: Vec<f64> = r.iter().filter(|x| x["ml"] == "done").filter_map(|x| x["time_s"].as_f64()).collect();
+        let mean_t = if time.is_empty() { f64::NAN } else { time.iter().sum::<f64>() / time.len() as f64 };
+        println!("[MLAB-Q-SUM] {arm}: ML 패스 성공 {ok}/{} · 게임 패스 {game}/{} · 헛수고 {wasted} · 성공한 퀘스트 평균 {mean_t:.0} s", r.len(), r.len());
+    }
+    for (arm, b) in &stage {
+        let m = |k: &str| b.get(k).filter(|v| !v.is_empty()).map_or("-".to_string(), |v| format!("{:.0}", v.iter().sum::<f64>() / v.len() as f64));
+        let n = |k: &str| b.get(k).map_or(0, |v| v.len());
+        println!(
+            "[MLAB-Q-MS] {arm}: 키프레임 {} (표적 추적 중 {}) · 평균 ms — 깊이 {} · 지면 정렬 {} · 의미 위치 {} · 피라미드 {} · 추적 {} · 합 {} (추적 중 {} · 아닐 때 {})",
+            n("total"), n("total_tracked"), m("depth"), m("align"), m("locate"), m("pyramid"), m("track"), m("total"), m("total_tracked"), m("total_untracked")
+        );
+    }
+    println!("[MLAB-SUM] 퀘스트 {:.0} s", t0.elapsed().as_secs_f32());
+}
+
+fn write_f32(path: PathBuf, v: &[f32]) {
+    let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+    std::fs::write(&path, bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+}
+
+#[test]
+#[ignore]
+fn ml_port_dump() {
+    let dir = out_dir().expect("MLAB_OUT").join("parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dev = device();
+    let sig_dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let mut siglip = sandbox_runtime::ml_bridge::Siglip2::load(&sig_dir, &dev).expect("SigLIP2");
+    let mut tips = TipsDepth::load(&PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR")), &dev).expect("TIPS");
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let scene = |target: &'static str, dist_m: f32, tilt_deg: f32| Scene {
+        seed: 1,
+        terrain: TerrainKind::Open,
+        base: BaseKind::HumanFoot,
+        target: Some(target),
+        query: target,
+        distractor: Some(look_alike_of(target)),
+        dist_m,
+        tilt_deg,
+        lateral_m: 0.0,
+    };
+    let scenes = [scene("parcel", 3.0, 30.0), scene("log", 2.0, 0.0), scene("tree", 6.0, 0.0)];
+    let cfg = siglip.config().clone();
+    let mut manifest = Vec::new();
+    for (k, s) in scenes.iter().enumerate() {
+        let shot = shoot(&mut bases, s);
+        let src = image::RgbImage::from_raw(shot.rgb.width, shot.rgb.height, shot.rgb.data.clone()).unwrap();
+        let (cols, rows) = tips.input_grid.grid_for(shot.rgb.width, shot.rgb.height);
+        let p = tips.config().patch_size as u32;
+        let t_img = image::imageops::resize(&src, cols as u32 * p, rows as u32 * p, image::imageops::FilterType::Triangle);
+        t_img.save(dir.join(format!("kf{k}_tips.png"))).unwrap();
+        let t_rgb = Rgb::new(t_img.width(), t_img.height(), t_img.clone().into_raw());
+        for (tag, tanh) in [("tanh", true), ("erf", false)] {
+            tips.set_readout_gelu_tanh(tanh);
+            write_f32(dir.join(format!("kf{k}_tips_{tag}.f32")), &tips.predict(&t_rgb).unwrap().data);
+        }
+        let (gh, gw) = sandbox_runtime::ml_bridge::preprocess::naflex_grid(shot.rgb.width, shot.rgb.height, cfg.patch_size, cfg.max_patches);
+        let s_img = shot.rgb.to_dynamic().resize_exact((gw * cfg.patch_size) as u32, (gh * cfg.patch_size) as u32, image::imageops::FilterType::Triangle).to_rgb8();
+        s_img.save(dir.join(format!("kf{k}_siglip.png"))).unwrap();
+        for (tag, aa) in [("aa", true), ("bilinear", false)] {
+            siglip.set_position_antialias(aa);
+            write_f32(dir.join(format!("kf{k}_siglip_{tag}.f32")), &siglip.embed_image(&image::DynamicImage::ImageRgb8(s_img.clone())).unwrap());
+        }
+        manifest.push(serde_json::json!({"k": k, "scene": s.id(), "tips": [t_img.width(), t_img.height()], "siglip_grid": [gh, gw]}));
+    }
+    siglip.set_position_antialias(true);
+    let prompts = ["a cardboard parcel", "a photo of a cardboard parcel.", "a wooden log", "a grey boulder", "green grass", "a rendering of a stone.", "a tree in a video game."];
+    let tok = sandbox_runtime::ml_bridge::tokenizer::TextTokenizer::from_file(&sig_dir.join("tokenizer.json"), cfg.text_pad_id, cfg.text_max_len).unwrap();
+    let (ids, mask) = tok.encode(&prompts).unwrap();
+    let vecs = siglip.embed_texts(&prompts).unwrap();
+    write_f32(dir.join("text_rust.f32"), &vecs.concat());
+    let (scale, bias) = siglip.logit_scale_bias();
+    let meta = serde_json::json!({
+        "frames": manifest,
+        "prompts": prompts,
+        "ids": ids.chunks(cfg.text_max_len).map(|c| c.to_vec()).collect::<Vec<_>>(),
+        "mask_sum": mask.chunks(cfg.text_max_len).map(|c| c.iter().sum::<f32>()).collect::<Vec<_>>(),
+        "logit_scale": scale,
+        "logit_bias": bias,
+        "dim": siglip.embedding_dim(),
+        "tips_max_depth": tips.config().max_depth,
+    });
+    std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    println!("[MLAB] 비교 입력 {}", dir.display());
+}
+
+/// The pyramid plans the screen compares (`MLQ_PLANS`, `|`-separated `VISION_SANDBOX_QUANT` specs): the F32 load again (it
+/// must give the reference's numbers), the instruction's pyramid, everything at Q8_0, then one group at a time at its
+/// pyramid tier so that each group's cost shows on its own.
+fn screen_plans() -> Vec<String> {
+    match std::env::var("MLQ_PLANS") {
+        Ok(v) => v.split('|').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        Err(_) => [
+            "f32",
+            "pyramid",
+            "q8",
+            "f32;sv.head=q8_0",
+            "f32;sv.attn.edge=q8_0",
+            "f32;sv.mlp.edge=q8_0",
+            "f32;sv.attn.mid=q6k",
+            "f32;sv.fc2.mid=q6k",
+            "f32;sv.fc1.mid=q4k",
+            "f32;st=q8_0",
+            "f32;st.attn.mid=q6k,st.fc2.mid=q6k,st.fc1.mid=q4k",
+            "f32;tv.readout=q8_0",
+            "f32;tv.attn.edge=q8_0",
+            "f32;tv.mlp.edge=q8_0",
+            "f32;tv.attn.mid=q6k",
+            "f32;tv.fc2.mid=q6k",
+            "f32;tv.fc1.mid=q4k",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+    }
+}
+
+struct LocOut {
+    dense: Vec<Vec<f32>>,
+    pooled: Vec<f32>,
+    points: Vec<SemanticPoint>,
+    ms: f64,
+}
+
+struct DepOut {
+    raw: DepthMap,
+    spread: DepthMap,
+    ms: f64,
+}
+
+fn cos(a: &[f32], b: &[f32]) -> f32 {
+    let (mut ab, mut aa, mut bb) = (0f64, 0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        ab += (*x as f64) * (*y as f64);
+        aa += (*x as f64).powi(2);
+        bb += (*y as f64).powi(2);
+    }
+    (ab / (aa.sqrt() * bb.sqrt()).max(1e-30)) as f32
+}
+
+fn quantile(mut v: Vec<f32>, q: f32) -> Option<f32> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f32::total_cmp);
+    Some(v[((v.len() - 1) as f32 * q).round() as usize])
+}
+
+/// Per-plan fidelity of the quantized models on the harness's keyframes, against the truth and against the F32 model:
+/// L1 presence AUROC / AP and peaks in the true box, the dense vectors and the peak cell next to the F32 ones; L2 AbsRel
+/// and δ1 (raw and flat-ground aligned, truth ≤ 10 m), the spread flagging > 25 % errors, the depth next to the F32
+/// depth; the time of a pass and the bytes of the linear weights. The F32 models are loaded once; a plan's models are
+/// quantized from the F32 files when they load, one plan at a time.
+///
+///   MLAB_SEEDS=2,4 MLAB_DISTS=2,4,7 MLAB_TILTS=0 SIGLIP2_DIR=... TIPS_DIR=... cargo test --test ml_ab -- --ignored --nocapture ml_quant_screen
+#[test]
+#[ignore]
+fn ml_quant_screen() {
+    use sandbox_runtime::ml_bridge::{LoadOpts, QuantPlan, Siglip2, VocabPolicy};
+    use sandbox_runtime::ml_bridge::preprocess::DenseGrid;
+
+    let t0 = std::time::Instant::now();
+    let dev = device();
+    let lex = Lexicon::from_json(LEX).unwrap();
+    let prompting = VisionPrompting::from_lexicon_json(LEX).unwrap();
+    let labels: Vec<LabelPrompt> = MlPipeline::stand_in(&lex, 7).labels().to_vec();
+    let sig_dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let tips_dir = PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR"));
+    let cfg = LocateCfg { scoring: LocateScoring::Contrast, background: prompting.background.clone(), grid: DenseGrid::pyramid(), ..LocateCfg::default() };
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let scenes = scenes();
+    let shots: Vec<(Scene, Shot)> = scenes.iter().map(|s| (s.clone(), shoot(&mut bases, s))).collect();
+    drop(bases);
+    println!("[MLQ] 장치 {} · 키프레임 {}개 · 렌더 {:.0} s", sandbox_runtime::ml_bridge::device_label(&dev), shots.len(), t0.elapsed().as_secs_f32());
+
+    // `MLQ_FUSED=1`: the plans' vision towers run their Q, K and V as one GEMM (the reference keeps three).
+    let fused = std::env::var("MLQ_FUSED").is_ok_and(|v| v.trim() == "1");
+    let load_sig = |plan: &QuantPlan, fused_qkv: bool| -> Arc<Siglip2> {
+        let t = std::time::Instant::now();
+        let m = Siglip2::load_with(&sig_dir, &dev, &LoadOpts { quant: plan.clone(), vocab: VocabPolicy::Active, fused_qkv }).expect("SigLIP2");
+        println!("[MLQ]   SigLIP2 {:?}{}: {} · 올리기 {:.1} s", plan.tag, if fused_qkv { " fused QKV" } else { "" }, m.quant_stats().summary(), t.elapsed().as_secs_f32());
+        Arc::new(m)
+    };
+    let load_tips = |plan: &QuantPlan| -> TipsDepth {
+        let t = std::time::Instant::now();
+        let mut m = TipsDepth::load_quant(&tips_dir, &dev, sandbox_runtime::vision_compat::SceneHeads::NONE, plan).expect("TIPS");
+        m.set_readout_gelu_tanh(true);
+        println!("[MLQ]   TIPS {:?} ({}): {} · 올리기 {:.1} s", plan.tag, sandbox_runtime::vision_compat::DepthModel::mode(&m), m.quant_stats().summary(), t.elapsed().as_secs_f32());
+        m
+    };
+    let run_loc = |m: &Arc<Siglip2>| -> Vec<LocOut> {
+        let texts = sandbox_runtime::vision_compat::SiglipLocator::with_cfg(Arc::clone(m), cfg.clone()).label_texts(&labels, &cfg).unwrap();
+        let (scale, bias) = m.logit_scale_bias();
+        shots
+            .iter()
+            .map(|(_, shot)| {
+                let t = std::time::Instant::now();
+                let d = m.embed_dense_batch_grid(&[shot.rgb.to_dynamic()], cfg.grid).unwrap().pop().unwrap();
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                let points = points_with_presence(shot.rgb.width, shot.rgb.height, label_heats(&d, &texts, &cfg, scale, bias));
+                LocOut { dense: d.vectors, pooled: d.pooled, points, ms }
+            })
+            .collect()
+    };
+    let run_tips = |m: &TipsDepth| -> Vec<DepOut> {
+        shots
+            .iter()
+            .map(|(_, shot)| {
+                let t = std::time::Instant::now();
+                let (raw, spread) = m.predict_batch_spread(&[&shot.rgb]).unwrap().pop().unwrap();
+                DepOut { raw, spread, ms: t.elapsed().as_secs_f64() * 1e3 }
+            })
+            .collect()
+    };
+    // `MLAB_OUT`: one JSON line per plan and keyframe (label scores and hits, depth errors), for paired bootstrap
+    // intervals of the differences (scripts outside the harness).
+    let out = out_dir();
+    if let Some(d) = &out {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let rows: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let score = |name: &str, loc: Option<&[LocOut]>, dep: Option<&[DepOut]>, rl: &[LocOut], rd: &[DepOut]| {
+        let mut b = Book::default();
+        for (k, (scene, shot)) in shots.iter().enumerate() {
+            let mut row = serde_json::json!({"plan": name, "scene": scene.id(), "fit": scene.fit()});
+            if let Some(loc) = loc {
+                let labels: Vec<serde_json::Value> = TARGETS
+                    .iter()
+                    .filter_map(|l| {
+                        let present = presence(shot, l)?;
+                        let p = loc[k].points.iter().find(|p| p.label == *l);
+                        Some(serde_json::json!([l, present, p.map_or(0.0, |p| p.score), p.map_or(0.0, |p| p.presence), p.map(|p| peak_in_box(shot, p))]))
+                    })
+                    .collect();
+                row["labels"] = labels.into();
+            }
+            if let Some(dep) = dep {
+                let e = depth_eval(&dep[k].raw, &shot.truth, 10.0, shot.target_raw);
+                let mut g = dep[k].raw.clone();
+                let ge = sandbox_runtime::vision_compat::ground_align(&mut g, &shot.intr, &shot.pose, None, Some(10.0), &AlignCfg::default()).and_then(|_| depth_eval(&g, &shot.truth, 10.0, shot.target_raw));
+                row["depth"] = serde_json::json!([e.as_ref().map(|e| e.absrel), e.as_ref().map(|e| e.delta1), ge.as_ref().map(|e| e.absrel), ge.as_ref().map(|e| e.delta1)]);
+            }
+            rows.lock().unwrap().push(row.to_string());
+            if let Some(loc) = loc {
+                let (o, r) = (&loc[k], &rl[k]);
+                b.add("ms_dense", o.ms as f32);
+                let cs: Vec<f32> = o.dense.iter().zip(&r.dense).map(|(a, c)| cos(a, c)).collect();
+                b.add("dense_cos", cs.iter().sum::<f32>() / cs.len().max(1) as f32);
+                b.add("dense_cos_min", cs.iter().copied().fold(1.0, f32::min));
+                b.add("pooled_cos", cos(&o.pooled, &r.pooled));
+                for label in TARGETS {
+                    let Some(present) = presence(shot, label) else { continue };
+                    let p = o.points.iter().find(|p| p.label == label);
+                    let q = r.points.iter().find(|p| p.label == label);
+                    let (peak, pres) = p.map_or((0.0, 0.0), |p| (p.score, p.presence));
+                    b.pair("peak", peak, present);
+                    b.pair("presence", pres, present);
+                    b.pair(if shots[k].0.fit() { "peak_fit" } else { "peak_eval" }, peak, present);
+                    if let (Some(p), Some(q)) = (p, q) {
+                        b.flag("same_peak_cell", p.heat.argmax().map(|x| (x.0, x.1)) == q.heat.argmax().map(|x| (x.0, x.1)));
+                        b.add("abs_dpresence", (p.presence - q.presence).abs());
+                        b.add("abs_dpeak", (p.score - q.score).abs());
+                    }
+                    if present {
+                        if let Some(p) = p {
+                            b.flag("peak_in_box", peak_in_box(shot, p));
+                        }
+                    }
+                }
+            }
+            if let Some(dep) = dep {
+                let (o, r) = (&dep[k], &rd[k]);
+                b.add("ms_tips", o.ms as f32);
+                if let Some(e) = depth_eval(&o.raw, &shot.truth, 10.0, shot.target_raw) {
+                    b.add("absrel", e.absrel);
+                    b.add("delta1", e.delta1);
+                    if let Some(t) = e.target {
+                        b.add("target_absrel", t);
+                    }
+                }
+                let mut g = o.raw.clone();
+                if sandbox_runtime::vision_compat::ground_align(&mut g, &shot.intr, &shot.pose, None, Some(10.0), &AlignCfg::default()).is_some() {
+                    if let Some(e) = depth_eval(&g, &shot.truth, 10.0, shot.target_raw) {
+                        b.add("ground_absrel", e.absrel);
+                        b.add("ground_delta1", e.delta1);
+                    }
+                }
+                let mut dev_px = Vec::new();
+                for y in (0..shot.truth.height).step_by(4) {
+                    for x in (0..shot.truth.width).step_by(4) {
+                        let t = shot.truth.depth[(y * shot.truth.width + x) as usize];
+                        let p = o.raw.at_scaled(x as f32 + 0.5, y as f32 + 0.5, shot.truth.width, shot.truth.height);
+                        let sd = o.spread.at_scaled(x as f32 + 0.5, y as f32 + 0.5, shot.truth.width, shot.truth.height);
+                        let rp = r.raw.at_scaled(x as f32 + 0.5, y as f32 + 0.5, shot.truth.width, shot.truth.height);
+                        if t.is_finite() && t <= 10.0 && p > 0.0 && rp > 0.0 {
+                            b.pair("spread_flags_err", sd / p, (p - t).abs() / t > 0.25);
+                            dev_px.push((p - rp).abs() / rp);
+                        }
+                    }
+                }
+                if let Some(m) = quantile(dev_px.clone(), 0.5) {
+                    b.add("dev_med", m);
+                }
+                if let Some(m) = quantile(dev_px, 0.95) {
+                    b.add("dev_p95", m);
+                }
+            }
+        }
+        let f = |k: &str| b.mean(k).map_or("-".into(), |(v, _)| format!("{v:.4}"));
+        let (pa, pp, pos, n) = b.rank("peak");
+        let (ra, rp, _, _) = b.rank("presence");
+        let (sa, _, _, _) = b.rank("spread_flags_err");
+        // The calibrated gate's ECE: a Platt fit of the peak on the fit seeds, its probabilities on the eval seeds (15 bins).
+        let ece = match (b.pairs.get("peak_fit"), b.pairs.get("peak_eval")) {
+            (Some((fs, fh)), Some((es, eh))) => sandbox_runtime::vision_compat::calib::platt_fit(fs, fh).and_then(|(a, c)| {
+                let probs: Vec<f32> = es.iter().map(|s| 1.0 / (1.0 + (-(a * s + c)).exp())).collect();
+                sandbox_runtime::vision_compat::calib::ece(&probs, eh, sandbox_runtime::vision_compat::calib::ECE_BINS)
+            }),
+            _ => None,
+        };
+        let o3 = |x: Option<f32>| x.map_or("-".into(), |v| format!("{v:.4}"));
+        println!(
+            "[MLQ] {name} | L1 peak AUROC {} AP {} · presence AUROC {} AP {} (양성 {pos}/{n}) · 보정 ECE {} · 상자 안 피크 {} | F32 대비 dense cos {} (최소 {}) · pooled cos {} · 같은 피크 칸 {} · |Δpresence| {} · |Δpeak| {} | L2 AbsRel {} δ1 {} 목표 {} · 평면 정렬 AbsRel {} δ1 {} · spread AUROC {} | F32 대비 깊이 편차 중앙 {} · p95 {} | ms dense {} · tips {}",
+            o3(pa), o3(pp), o3(ra), o3(rp), o3(ece), f("peak_in_box"), f("dense_cos"), f("dense_cos_min"), f("pooled_cos"), f("same_peak_cell"), f("abs_dpresence"), f("abs_dpeak"),
+            f("absrel"), f("delta1"), f("target_absrel"), f("ground_absrel"), f("ground_delta1"), o3(sa), f("dev_med"), f("dev_p95"), f("ms_dense"), f("ms_tips"),
+        );
+    };
+
+    // `MLQ_MODELS=sig` or `tips` screens one model (TIPS runs its DPT convolutions on the host here, ~half a minute a
+    // frame, so its plans are screened on fewer frames).
+    let models = std::env::var("MLQ_MODELS").unwrap_or_default();
+    let (want_sig, want_tips) = (models != "tips", models != "sig");
+    let f32_plan = QuantPlan::f32();
+    let ref_loc = if want_sig {
+        let sig_ref = load_sig(&f32_plan, false);
+        let out = run_loc(&sig_ref);
+        let vs = sig_ref.vocab_stats();
+        println!("[MLQ] 텍스트 토큰 표 (장면의 라벨 문구만): 장치에 {} / {} 행 ({:.2} MB, 쓰는 중에 더한 행 {})", vs.rows_on_device, vs.vocab, vs.device_bytes as f64 / 1e6, vs.added_on_demand);
+        let dict = sandbox_runtime::ml_bridge::Dictionary::from_json(include_str!("../../../data/logistics_dictionary.json")).unwrap();
+        let texts = sandbox_runtime::vocab_texts(LEX, Some(&dict)).unwrap();
+        let (added, unk) = sig_ref.prime_vocab(&texts.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        let vs = sig_ref.vocab_stats();
+        println!("[MLQ] 사전 · 템플릿 · 어미 문장 {}개로 미리 올림: +{added}행 → 장치에 {} 행 ({:.2} MB, 전체 표 {:.1} MB) · <unk> {unk}개", texts.len(), vs.rows_on_device, vs.device_bytes as f64 / 1e6, vs.vocab as f64 * 768.0 * 4.0 / 1e6);
+        out
+    } else {
+        Vec::new()
+    };
+    let ref_dep = if want_tips { run_tips(&load_tips(&f32_plan)) } else { Vec::new() };
+    score("ref (F32)", want_sig.then_some(&ref_loc[..]), want_tips.then_some(&ref_dep[..]), &ref_loc, &ref_dep);
+    for spec in screen_plans() {
+        let plan = QuantPlan::parse(&spec).unwrap_or_else(|e| panic!("{spec}: {e}"));
+        let sig = want_sig && (plan.is_f32() || plan.touches("sv") || plan.touches("st"));
+        let tips = want_tips && (plan.is_f32() || plan.touches("tv"));
+        if !sig && !tips {
+            continue;
+        }
+        let loc = sig.then(|| run_loc(&load_sig(&plan, fused)));
+        let dep = tips.then(|| run_tips(&load_tips(&plan)));
+        score(&format!("{spec} [{}]", plan.tag), loc.as_deref(), dep.as_deref(), &ref_loc, &ref_dep);
+    }
+    if let Some(d) = &out {
+        let name = format!("mlq_{}.jsonl", if models.is_empty() { "all" } else { &models });
+        std::fs::write(d.join(&name), rows.lock().unwrap().join("\n")).unwrap();
+        println!("[MLQ] 장면별 기록 {}", d.join(name).display());
+    }
+    println!("[MLQ-SUM] {:.0} s", t0.elapsed().as_secs_f32());
+}
+
+/// The perforated L1 pass (`sandbox_runtime::vision_compat::perforate`) against the full dense pass on the harness's keyframes, with the
+/// model as the app loads it (`LoadOpts::for_device`; `VISION_SANDBOX_QUANT` to change): peak and presence AP, the calibrated
+/// gate's ECE (Platt on the fit seeds, 15 bins on the eval seeds), peaks in the true box and their distance to the
+/// object, far small objects (stone, coal, iron ore, parcel at 7 m) on their own, the peak cell and heat next to the
+/// full pass's, the tokens the encoder ran and the time of a pass.
+///
+///   MLP_ARMS=checker,fovea,checker-x,fovea-x  MLAB_OUT=<dir> (one JSON line per arm and keyframe, `mlp.jsonl`)
+#[test]
+#[ignore]
+fn ml_perforated() {
+    use sandbox_runtime::ml_bridge::preprocess::DenseGrid;
+    use sandbox_runtime::vision_compat::perforate::{perforated_heats, PerfPattern, PerforatedCfg};
+    use sandbox_runtime::vision_compat::ExpandCfg;
+
+    let t0 = std::time::Instant::now();
+    let dev = device();
+    let lex = Lexicon::from_json(LEX).unwrap();
+    let prompting = VisionPrompting::from_lexicon_json(LEX).unwrap();
+    let labels: Vec<LabelPrompt> = MlPipeline::stand_in(&lex, 7).labels().to_vec();
+    let sig_dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let model = Arc::new(sandbox_runtime::ml_bridge::Siglip2::load_with(&sig_dir, &dev, &sandbox_runtime::ml_bridge::LoadOpts::for_device(&dev).unwrap()).expect("SigLIP2"));
+    let cfg = LocateCfg { scoring: LocateScoring::Contrast, background: prompting.background.clone(), grid: DenseGrid::pyramid(), ..LocateCfg::default() };
+    let texts = sandbox_runtime::vision_compat::SiglipLocator::with_cfg(Arc::clone(&model), cfg.clone()).label_texts(&labels, &cfg).unwrap();
+    let (scale, bias) = model.logit_scale_bias();
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let shots: Vec<(Scene, Shot)> = scenes().iter().map(|s| (s.clone(), shoot(&mut bases, s))).collect();
+    drop(bases);
+    println!("[MLP] 장치 {} · SigLIP2 {} · 키프레임 {}개 · 렌더 {:.0} s", sandbox_runtime::ml_bridge::device_label(&dev), model.quant_plan().tag, shots.len(), t0.elapsed().as_secs_f32());
+
+    let arm_cfg = |name: &str| -> Option<PerforatedCfg> {
+        let x = |pattern| PerforatedCfg { pattern, expand: Some(ExpandCfg::default()) };
+        match name {
+            "checker" => Some(PerforatedCfg { pattern: PerfPattern::Checker, expand: None }),
+            "fovea" => Some(PerforatedCfg { pattern: PerfPattern::Fovea, expand: None }),
+            "checker-x" => Some(x(PerfPattern::Checker)),
+            "fovea-x" => Some(x(PerfPattern::Fovea)),
+            "fovea-x1" => Some(PerforatedCfg { pattern: PerfPattern::Fovea, expand: Some(ExpandCfg { rounds: 1, ..ExpandCfg::default() }) }),
+            "fovea-x-wide" => Some(PerforatedCfg { pattern: PerfPattern::Fovea, expand: Some(ExpandCfg { seed_min: 0.08, seeds_per_label: 3, ..ExpandCfg::default() }) }),
+            other => panic!("unknown arm {other}"),
+        }
+    };
+    let arms: Vec<String> = std::env::var("MLP_ARMS")
+        .unwrap_or_else(|_| "checker,fovea,checker-x,fovea-x,fovea-x1,fovea-x-wide".into())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    struct Out {
+        points: Vec<SemanticPoint>,
+        ms: f64,
+        first: usize,
+        tokens: usize,
+        evaluated: usize,
+        cells: usize,
+        seeds: usize,
+    }
+    let run = |perf: Option<PerforatedCfg>| -> Vec<Out> {
+        shots
+            .iter()
+            .map(|(_, shot)| {
+                let image = shot.rgb.to_dynamic();
+                let t = std::time::Instant::now();
+                let (heats, rep) = match &perf {
+                    None => {
+                        let d = model.embed_dense_batch_grid(&[image], cfg.grid).unwrap().pop().unwrap();
+                        let n = d.grid_h * d.grid_w;
+                        (label_heats(&d, &texts, &cfg, scale, bias), sandbox_runtime::vision_compat::PerfReport { cells: n, first: n, seeds: 0, opened: 0, tokens_run: n })
+                    }
+                    Some(p) => perforated_heats(&model, &image, &texts, &cfg, p, Some(&shot.intr), scale, bias).unwrap(),
+                };
+                let points = points_with_presence(shot.rgb.width, shot.rgb.height, heats);
+                Out { points, ms: t.elapsed().as_secs_f64() * 1e3, first: rep.first, tokens: rep.tokens_run, evaluated: rep.first + rep.opened, cells: rep.cells, seeds: rep.seeds }
+            })
+            .collect()
+    };
+    // The first frames warm the device up; time the full pass again after the arms so both sides see a warm device.
+    let _ = run(None);
+    let full = run(None);
+    let far_small = |scene: &Scene, label: &str| scene.dist_m >= 7.0 && ["stone", "coal", "iron_ore", "parcel"].contains(&label);
+    let rows: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let score = |name: &str, o: &[Out]| {
+        let mut b = Book::default();
+        for (k, (scene, shot)) in shots.iter().enumerate() {
+            let mut labels_row = Vec::new();
+            b.add("ms", o[k].ms as f32);
+            b.add("first_frac", o[k].first as f32 / o[k].cells as f32);
+            b.add("evaluated_frac", o[k].evaluated as f32 / o[k].cells as f32);
+            b.add("tokens_frac", o[k].tokens as f32 / o[k].cells as f32);
+            b.add("seeds", o[k].seeds as f32);
+            for label in TARGETS {
+                let Some(present) = presence(shot, label) else { continue };
+                let p = o[k].points.iter().find(|p| p.label == label);
+                let q = full[k].points.iter().find(|p| p.label == label);
+                let (peak, pres) = p.map_or((0.0, 0.0), |p| (p.score, p.presence));
+                b.pair("peak", peak, present);
+                b.pair("presence", pres, present);
+                b.pair(if scene.fit() { "peak_fit" } else { "peak_eval" }, peak, present);
+                if far_small(scene, label) {
+                    b.pair("far_small_peak", peak, present);
+                }
+                if let (Some(p), Some(q)) = (p, q) {
+                    b.flag("same_peak_cell", p.heat.argmax().map(|x| (x.0, x.1)) == q.heat.argmax().map(|x| (x.0, x.1)));
+                    b.add("abs_dpeak", (p.score - q.score).abs());
+                    b.add("abs_dpresence", (p.presence - q.presence).abs());
+                }
+                let in_box = p.map(|p| peak_in_box(shot, p));
+                if present {
+                    if let Some(p) = p {
+                        b.flag("peak_in_box", peak_in_box(shot, p));
+                        if far_small(scene, label) {
+                            b.flag("far_small_in_box", peak_in_box(shot, p));
+                        }
+                        if let Some(e) = locate_err(shot, p) {
+                            b.add("locate_err_px", e);
+                        }
+                    }
+                }
+                labels_row.push(serde_json::json!([label, present, peak, pres, in_box]));
+            }
+            rows.lock().unwrap().push(serde_json::json!({"plan": name, "scene": scene.id(), "fit": scene.fit(), "labels": labels_row}).to_string());
+        }
+        let f = |k: &str| b.mean(k).map_or("-".into(), |(v, _)| format!("{v:.4}"));
+        let o3 = |x: Option<f32>| x.map_or("-".into(), |v| format!("{v:.4}"));
+        let (pa, pp, pos, n) = b.rank("peak");
+        let (_, rp, _, _) = b.rank("presence");
+        let (_, fp, fpos, fnn) = b.rank("far_small_peak");
+        let ece = match (b.pairs.get("peak_fit"), b.pairs.get("peak_eval")) {
+            (Some((fs, fh)), Some((es, eh))) => sandbox_runtime::vision_compat::calib::platt_fit(fs, fh).and_then(|(a, c)| {
+                let probs: Vec<f32> = es.iter().map(|s| 1.0 / (1.0 + (-(a * s + c)).exp())).collect();
+                sandbox_runtime::vision_compat::calib::ece(&probs, eh, sandbox_runtime::vision_compat::calib::ECE_BINS)
+            }),
+            _ => None,
+        };
+        println!(
+            "[MLP] {name} | 첫 패스 칸 {} · 평가한 칸 {} · 인코더 토큰 {} · 시드 {} | peak AUROC {} AP {} · presence AP {} (양성 {pos}/{n}) · 보정 ECE {} · 상자 안 피크 {} · 위치 오차 {} px | 먼 작은 물체 AP {} (양성 {fpos}/{fnn}) · 상자 안 {} | 전체 패스 대비 같은 피크 칸 {} · |Δpeak| {} · |Δpresence| {} | ms {} (중앙 {})",
+            f("first_frac"), f("evaluated_frac"), f("tokens_frac"), f("seeds"), o3(pa), o3(pp), o3(rp), o3(ece), f("peak_in_box"), f("locate_err_px"), o3(fp), f("far_small_in_box"),
+            f("same_peak_cell"), f("abs_dpeak"), f("abs_dpresence"), f("ms"), b.median("ms").map_or("-".into(), |v| format!("{v:.1}")),
+        );
+    };
+    score("full", &full);
+    for name in &arms {
+        let o = run(arm_cfg(name));
+        score(name, &o);
+    }
+    let again = run(None);
+    score("full (again)", &again);
+    if let Some(d) = out_dir() {
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("mlp.jsonl"), rows.lock().unwrap().join("\n")).unwrap();
+        println!("[MLP] 장면별 기록 {}", d.join("mlp.jsonl").display());
+    }
+    println!("[MLP-SUM] {:.0} s", t0.elapsed().as_secs_f32());
+}
+
+/// Where a keyframe's analysis spends its time with the models the app loads (`MlFixCfg::v1`, the device's default
+/// quantization): the robot walks up to a log and to a parcel from 6.4 m in 0.4 m steps, and each keyframe goes
+/// through the whole analysis (depth, ground fit, semantic layer, pyramid gates, mask tracker). Stage times per
+/// keyframe, split by whether the target was tracked.
+///
+///   cargo test --test ml_ab -- --ignored --nocapture ml_stage_times
+#[test]
+#[ignore]
+fn ml_stage_times() {
+    let dev = device();
+    let sig_dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let tips_dir = PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR"));
+    let siglip = Arc::new(sandbox_runtime::ml_bridge::Siglip2::load(&sig_dir, &dev).expect("SigLIP2"));
+    let steps: usize = env_list("MLST_STEPS", &[12usize])[0];
+    // `MLST_TRACKERS=stereo_fast,stereo_grasp,region,region_clamp`: the mask tracker each pass runs with.
+    let trackers: Vec<String> = std::env::var("MLST_TRACKERS").unwrap_or_else(|_| "region,region_clamp".into()).split(',').map(|x| x.trim().to_string()).collect();
+    for tracker in &trackers {
+    let mut book: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for label in ["log", "parcel"] {
+        let mut rt = Runtime::new(RuntimeConfig { seed: 7, noise: NoiseCfg::none(), ..RuntimeConfig::default() }, LEX, None).expect("runtime");
+        rt.use_tips(&tips_dir, &dev).expect("TIPS");
+        match tracker.as_str() {
+            "stereo_fast" => rt.use_stereo_fast_tick(),
+            "sam" | "stereo_grasp" => rt.use_stereo_metric_grasp(),
+            "region" => rt.use_region_tracker(),
+            _ => rt.use_region_tracker_clamped(),
+        }
+        rt.use_siglip(Arc::clone(&siglip), Some(&bank_dir())).expect("SigLIP2");
+        let mut w = base_world(7, TerrainKind::Open, BaseKind::HumanFoot);
+        w.nodes.clear();
+        w.drops.clear();
+        let (x0, z0, yaw) = (w.agent.x, w.agent.z, w.agent.yaw);
+        place(&mut w, label, 9001, x0 + 6.8 * yaw.cos(), z0 + 6.8 * yaw.sin());
+        let cam = Camera::default();
+        let wanted = vec![label.to_string()];
+        for k in 0..steps {
+            w.agent.x = x0 + 0.4 * k as f32 * yaw.cos();
+            w.agent.z = z0 + 0.4 * k as f32 * yaw.sin();
+            let frame = w.render(&cam);
+            let rgb = Rgb::new(frame.width as u32, frame.height as u32, frame.rgb.clone());
+            let truth = KeyTruth::capture(&w, &frame);
+            let t = std::time::Instant::now();
+            let out = rt.ml_pipeline_mut().analyse(&rgb, &intrinsics(&w, &cam), &odometry(&w, &cam), Some(&truth), &wanted, &|_| 0.0, None).expect("analyse");
+            let wall = t.elapsed().as_secs_f64() * 1e3;
+            let ms = out.stage_ms;
+            let tracked = out.target.is_some();
+            println!(
+                "[MLST] {tracker} {label} {k:2} ({:.1} m) {} | 깊이 {:.0} · 지면 정렬 {:.0} · 의미 위치 {:.0} · 피라미드 {:.0} · 추적 {:.0} · 전체 {:.0} ms",
+                6.8 - 0.4 * k as f32,
+                if tracked { "추적" } else { "  - " },
+                ms.depth, ms.align, ms.locate, ms.pyramid, ms.track, wall
+            );
+            let side = if tracked { "tracked" } else { "untracked" };
+            for (name, v) in [("depth", ms.depth), ("align", ms.align), ("locate", ms.locate), ("pyramid", ms.pyramid), ("track", ms.track)] {
+                book.entry(format!("{side}/{name}")).or_default().push(v as f64);
+            }
+            book.entry(format!("{side}/wall")).or_default().push(wall);
+        }
+    }
+    for side in ["untracked", "tracked"] {
+        let m = |k: &str| book.get(&format!("{side}/{k}")).filter(|v| !v.is_empty()).map_or("-".to_string(), |v| format!("{:.0}", v.iter().sum::<f64>() / v.len() as f64));
+        let n = book.get(&format!("{side}/wall")).map_or(0, |v| v.len());
+        println!("[MLST-SUM] {tracker} {side} {n} 키프레임 · 평균 ms — 깊이 {} · 지면 정렬 {} · 의미 위치 {} · 피라미드 {} · 추적 {} · 전체 {}", m("depth"), m("align"), m("locate"), m("pyramid"), m("track"), m("wall"));
+    }
+    }
+}
+
+/// The mask and depth models on the GPU device against the CPU, one keyframe: MobileSAM's image encoder (its
+/// depthwise convolutions are grouped convolutions, which candle splits into one convolution per channel group and the
+/// fork's ROCm backend runs each on the host) and TIPSv2's prediction with all its heads.
+///
+///   cargo test --test ml_ab -- --ignored --nocapture ml_device_split
+#[test]
+#[ignore]
+fn ml_device_split() {
+    let dev = device();
+    let tips_dir = PathBuf::from(std::env::var("TIPS_DIR").expect("TIPS_DIR"));
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let scene = scenes().into_iter().find(|s| s.target == Some("log") && s.dist_m == 4.0).unwrap();
+    let shot = shoot(&mut bases, &scene);
+    for (name, d) in [("gpu", dev.clone()), ("cpu", candle_core::Device::Cpu)] {
+        let mut tips = TipsDepth::load_with(&tips_dir, &d, sandbox_runtime::vision_compat::SceneHeads::ALL).expect("TIPS");
+        tips.set_pyramid(Some(&sandbox_runtime::vision_compat::PyramidCfg::default()));
+        let mut ms = Vec::new();
+        for _ in 0..2 {
+            let t = std::time::Instant::now();
+            let _ = tips.infer_scene(&shot.rgb, sandbox_runtime::vision_compat::SceneHeads::ALL).expect("tips");
+            ms.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        println!("[MLDEV] TIPSv2 깊이 · 분할 · 법선 {name}: {:.0} · {:.0} ms", ms[0], ms[1]);
+    }
+}
+
+/// The tile scan with every tile cropped and encoded (the default) against coarse tiles pooled from one dense pass
+/// (`EmbeddingCfg::dense`: the L1 pass gives the L0 tiles; with `crop_finest` the finest level is still cropped): the
+/// candidates' AUROC (score against a same-label object within 1 m), the gate's precision, recall, false passes per
+/// scan and position error, and the time of a scan. Raw tile scores on both sides (each would get its own calibration).
+#[test]
+#[ignore]
+fn ml_scan_dense() {
+    use sandbox_runtime::embedding::DenseTileCfg;
+    let t0 = std::time::Instant::now();
+    let dev = device();
+    let lex = Lexicon::from_json(LEX).unwrap();
+    let sig = Arc::new(sandbox_runtime::ml_bridge::Siglip2::load(&PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR")), &dev).expect("SigLIP2"));
+    let phrases = sandbox_runtime::BankedPhrases::new(Arc::clone(&sig), None);
+    let image: Arc<dyn sandbox_runtime::ml_bridge::ImageEmbedder + Send + Sync> = sig.clone();
+    let m = Arc::clone(&sig);
+    let calibrate: Arc<dyn Fn(f32) -> f32 + Send + Sync> = Arc::new(move |c| m.pair_probability(c));
+    let arm = |dense: DenseTileCfg| EmbeddingPerception::new_with(&lex, &phrases, Arc::clone(&image), Arc::clone(&calibrate), "gpu", EmbeddingCfg { dense, ..EmbeddingCfg::default() }, None).unwrap();
+    let mut arms = [
+        ("crop", arm(DenseTileCfg { enabled: false, crop_finest: true })),
+        ("dense+crop_finest", arm(DenseTileCfg { enabled: true, crop_finest: true })),
+        ("dense_all", arm(DenseTileCfg { enabled: true, crop_finest: false })),
+    ];
+    let mut bases: BTreeMap<(u64, u8, u8), World> = BTreeMap::new();
+    let mut book = Book::default();
+    let mut times: BTreeMap<&str, f64> = BTreeMap::new();
+    let scenes = scenes();
+    for s in &scenes {
+        let shot = shoot(&mut bases, s);
+        for (name, rec) in arms.iter_mut() {
+            let name: &str = name;
+            let t = std::time::Instant::now();
+            let r = record_scan(&mut book, name, &shot, rec);
+            *times.entry(name).or_default() += t.elapsed().as_secs_f64();
+            for c in &r.cands {
+                book.pair(format!("{name}/cand"), c.score, c.tp);
+            }
+        }
+    }
+    for (name, _) in &arms {
+        let (au, ap, pos, n) = book.rank(&format!("{name}/cand"));
+        let f = |k: &str| book.mean(&format!("{name}/scan/{k}")).map_or("-".into(), |(v, n)| format!("{v:.3} (n {n})"));
+        println!(
+            "[MLS] {name}: 후보 AUROC {} AP {} (참 {pos}/{n}) · 게이트 정밀도 {} · 재현율 {} · 스캔당 틀린 통과 {} · 위치 오차 {} m · 스캔 {:.0} ms",
+            au.map_or("-".into(), |v| format!("{v:.3}")),
+            ap.map_or("-".into(), |v| format!("{v:.3}")),
+            f("precision"),
+            f("recall"),
+            f("false_per_scan"),
+            f("pos_err_m"),
+            times[name] * 1e3 / scenes.len().max(1) as f64
+        );
+    }
+    println!("[MLS-SUM] 장면 {}개 · {:.0} s", scenes.len(), t0.elapsed().as_secs_f32());
+}
+
+/// The active token table against the whole one on the real checkpoint: every priming text (lexicon, templates,
+/// dictionary, endings) and a few free-form commands embed to the same bits, the tokenizer gives no `<unk>`, and the
+/// device holds a sliver of the table.
+#[test]
+#[ignore]
+fn ml_vocab_check() {
+    use sandbox_runtime::ml_bridge::{LoadOpts, QuantPlan, Siglip2, VocabPolicy};
+    let dev = device();
+    let dir = PathBuf::from(std::env::var("SIGLIP2_DIR").expect("SIGLIP2_DIR"));
+    let dict = sandbox_runtime::ml_bridge::Dictionary::from_json(include_str!("../../../data/logistics_dictionary.json")).unwrap();
+    let mut texts = sandbox_runtime::vocab_texts(LEX, Some(&dict)).unwrap();
+    let primed = texts.len();
+    let commands = ["원목 3개를 창고로 가져와 주세요", "택배 상자를 베이스캠프에 내려놔", "bring two logs to the warehouse", "철광석을 찾아서 캐 와줘", "빨간 지게차 옆 팔레트로 가"];
+    let load = |vocab| Siglip2::load_with(&dir, &dev, &LoadOpts { quant: QuantPlan::f32(), vocab, fused_qkv: false }).expect("SigLIP2");
+    let active = load(VocabPolicy::Active);
+    let (added, unk) = active.prime_vocab(&texts.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+    let before = active.vocab_stats();
+    texts.extend(commands.iter().map(|s| s.to_string()));
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let t = std::time::Instant::now();
+    let a = active.embed_texts(&refs).unwrap();
+    let ta = t.elapsed().as_secs_f32();
+    let after = active.vocab_stats();
+    assert_eq!(active.fingerprint(), load(VocabPolicy::Active).fingerprint());
+    let full = load(VocabPolicy::Full);
+    assert_eq!(active.fingerprint(), full.fingerprint(), "the phrase bank does not see the table's policy");
+    let t = std::time::Instant::now();
+    let f = full.embed_texts(&refs).unwrap();
+    let tf = t.elapsed().as_secs_f32();
+    let same = a.iter().zip(&f).filter(|(x, y)| x == y).count();
+    let fs = full.vocab_stats();
+    println!(
+        "[MLV] 미리 올린 문장 {primed}개: +{added}행 · <unk> {unk}개 · 장치에 {} / {} 행 ({:.2} MB, 전체 표 {:.1} MB) · 명령 5개 뒤 {} 행 (쓰는 중에 더한 행 {}) · 같은 비트의 벡터 {same}/{} · 임베딩 {ta:.1} s (전체 표 {tf:.1} s)",
+        before.rows_on_device, before.vocab, before.device_bytes as f64 / 1e6, fs.device_bytes as f64 / 1e6, after.rows_on_device, after.added_on_demand, texts.len()
+    );
+    assert_eq!(unk, 0, "the full tokenizer leaves nothing unknown");
+    assert_eq!(same, texts.len(), "the active rows are the full table's rows");
+}
+
+#[test]
+fn the_engine_never_names_an_ml_benchmark_source() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let engine = [
+        "crates/sandbox-runtime/src/vision_compat/mod.rs",
+        "crates/sandbox-runtime/src/vision_compat/locate.rs",
+        "crates/sandbox-runtime/src/vision_compat/tips.rs",
+        "crates/sandbox-runtime/src/vision_compat/decide.rs",
+        "crates/sandbox-runtime/src/vision_compat/stairs.rs",
+        "crates/sandbox-runtime/src/stereo.rs",
+        "crates/sandbox-runtime/src/ml_bridge/vision.rs",
+        "crates/sandbox-search/src/vision.rs",
+        "crates/sandbox-runtime/src/ml.rs",
+        "crates/sandbox-runtime/src/mlsds.rs",
+        "crates/sandbox-runtime/src/embedding.rs",
+        "crates/sandbox-runtime/src/precision.rs",
+        "crates/sandbox-runtime/src/perception.rs",
+        "crates/sandbox-runtime/src/runtime.rs",
+        "crates/sandbox-runtime/src/ml_bridge/model.rs",
+        "data/world_lexicon.json",
+        "data/ml_calib.json",
+    ];
+    let banned = ["Sintel", "Depth Anything", "Yang et al", "DNet", "Xue", "SCLIP", "Wang, Mei", "LeVine", "Hypersim", "ZoeDepth", "Marigold", "PointCLIP", "CoOp", "Bochkovskiy", "KITTI", "Radford", "Cao et al"];
+    for f in engine {
+        let text = std::fs::read_to_string(format!("{root}/{f}")).unwrap_or_else(|e| panic!("{f}: {e}"));
+        for b in banned {
+            assert!(!text.contains(b), "{f} names the benchmark source {b}");
+        }
+    }
+}
+
+#[test]
+fn the_shipped_calibration_parses_and_names_known_labels() {
+    let t = CalibTable::parse(sandbox_runtime::ml::ML_CALIB_JSON).expect("data/ml_calib.json");
+    for table in &t {
+        assert!(table.mode.starts_with("siglip2-dense") || table.mode == sandbox_runtime::embedding::SCAN_CALIB_MODE, "{}", table.mode);
+        for (l, c) in &table.labels {
+            assert!(TARGETS.contains(&l.as_str()) || l == "*", "{l}");
+            assert!(c.threshold.is_finite() || c.platt.is_some());
+        }
+    }
+    let _ = DepthKind::Metric;
+}

@@ -43,8 +43,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc & Tauri system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler \
+            pkg-config libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
       - name: Tier 2 Holdout Release Seal
         run: python3 .github/scripts/release_seal.py --release-seal --split holdout --output gate_report.json
       - uses: actions/upload-artifact@v4

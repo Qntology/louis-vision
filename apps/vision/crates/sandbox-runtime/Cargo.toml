@@ -1,0 +1,43 @@
+[package]
+name = "sandbox-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runs the simulated robot: recognise, gate with SDS and time series, carry out quests, log everything. No UI dependency."
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+image = { workspace = true }
+base64 = "0.22"
+half = "2.4"
+sha2 = "0.10"
+rayon = { workspace = true }
+tokenizers = { workspace = true }
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+sandbox-core = { path = "../sandbox-core" }
+sandbox-search = { path = "../sandbox-search" }
+sandbox-quest = { path = "../sandbox-quest" }
+sandbox-world = { path = "../sandbox-world" }
+lv-kernels = { workspace = true }
+lv-sds = { workspace = true }
+lv-core = { workspace = true }
+lv-spatial = { workspace = true }
+premium-discount-cpu-kernels = { workspace = true }
+premium-discount-eval = { workspace = true }
+premium-discount-quant = { workspace = true }
+premium-discount-sds = { workspace = true }
+
+[dev-dependencies]
+candle-nn = { workspace = true }
+sandbox-data = { path = "../sandbox-data" }
+tokio = { workspace = true }
+
+[features]
+default = []
+cuda = ["lv-core/cuda", "lv-spatial/cuda", "candle-core/cuda", "candle-nn/cuda"]
+metal = ["lv-core/metal", "lv-spatial/metal", "candle-core/metal", "candle-nn/metal"]
+vulkan = ["lv-core/vulkan", "lv-spatial/vulkan", "candle-core/vulkan", "candle-nn/vulkan"]
+rocm = ["lv-core/rocm", "lv-spatial/rocm", "candle-core/rocm", "candle-nn/rocm"]
