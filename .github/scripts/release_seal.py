@@ -244,6 +244,7 @@ def main() -> int:
     if not args.skip_cargo and exit_code == 0:
         cargo_steps = [
             ("cargo-test-tier1", ["cargo", "test", "--workspace", "-j", "1", "--", "--test-threads", "1"]),
+            ("cargo-test-lv-planar-screen", ["cargo", "test", "-p", "lv-planar", "--features", "domain,screen", "-j", "1", "--", "--test-threads", "1"]),
         ]
         if args.release_seal:
             cargo_steps.extend([

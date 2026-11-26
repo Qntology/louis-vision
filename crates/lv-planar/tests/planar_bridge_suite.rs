@@ -1,6 +1,7 @@
 //! Gate P2 integration tests for `lv-planar` (closed-form H, lv-doc bridge, ApproachForRead, 3D quad zeroize).
 
 use std::collections::HashMap;
+#[cfg(feature = "screen")]
 use std::sync::atomic::AtomicU64;
 
 use lv_doc::vision::lattice_verify::{LatticeVerifyDecision, ShadowToken};
@@ -11,7 +12,10 @@ use lv_planar::{
     doc_bridge::{prepare_rectified_document, repair_surface_identifier, verify_rectified_ledger_shadow},
     gate::{evaluate_readability, ReadabilityGateCfg, ReadabilityVerdict},
     homography::{compute_planar_homography, unwarp_planar_patch},
-    screen_bridge::{inspect_and_guard_3d_screen, PlanarScreenGuardCfg, PlanarScreenOutcome, ScreenRedactReason},
+};
+#[cfg(feature = "screen")]
+use lv_planar::screen_bridge::{
+    inspect_and_guard_3d_screen, PlanarScreenGuardCfg, PlanarScreenOutcome, ScreenRedactReason,
 };
 use lv_spatial::camera::{Intrinsics, Pose};
 use lv_spatial::egoexo::ViewObs;
@@ -86,25 +90,30 @@ fn gate_p2_homography_doc_bridge_and_fail_closed_screen_zeroize() {
     assert!(matches!(evaluate_readability(&far_plaque, &intr, &pose, &ReadabilityGateCfg::default()), ReadabilityVerdict::NeedReposition(_)));
 
     // 3D screen fail-closed without tower zeroes perspective quad completely
+    #[allow(unused_mut)]
     let mut rgb = Rgb::new(640, 480, vec![123u8; 640 * 480 * 3]);
     let screen_patch = make_patch([0.0, 1.5, 0.85], 4.0, SurfaceClassHint::DisplayScreen, PhysicalFormFactor::Display16x9);
     let h_scr = compute_planar_homography(&screen_patch, &intr, &pose, 4.0, 2.0, 2016).unwrap();
+    #[allow(unused_mut)]
     let mut rect = unwarp_planar_patch(&rgb, h_scr);
     let doc_prep = prepare_rectified_document(&rect, Baseline::Best, None).unwrap();
     let _ = doc_prep.has_protected_titleblock;
     let _ = VIRTUAL_GRIDLINE_LUMA;
 
-    let epoch = AtomicU64::new(0);
-    let res = inspect_and_guard_3d_screen(&mut rgb, &mut rect, &screen_patch, None, &epoch, 0, &PlanarScreenGuardCfg::default()).unwrap();
-    match res {
-        PlanarScreenOutcome::PrivacyRedacted { zeroized_pixels, reason: ScreenRedactReason::FailClosedNoTower, .. } => {
-            assert!(zeroized_pixels > 1000);
+    #[cfg(feature = "screen")]
+    {
+        let epoch = AtomicU64::new(0);
+        let res = inspect_and_guard_3d_screen(&mut rgb, &mut rect, &screen_patch, None, &epoch, 0, &PlanarScreenGuardCfg::default()).unwrap();
+        match res {
+            PlanarScreenOutcome::PrivacyRedacted { zeroized_pixels, reason: ScreenRedactReason::FailClosedNoTower, .. } => {
+                assert!(zeroized_pixels > 1000);
+            }
+            other => panic!("expected fail-closed redaction, got {other:?}"),
         }
-        other => panic!("expected fail-closed redaction, got {other:?}"),
+        // Exterior corner pixel untouched
+        assert_eq!(rgb.px(0, 0), [123, 123, 123]);
+        // Interior center pixel zeroed
+        assert_eq!(rgb.px(320, 240), [0, 0, 0]);
     }
-    // Exterior corner pixel untouched
-    assert_eq!(rgb.px(0, 0), [123, 123, 123]);
-    // Interior center pixel zeroed
-    assert_eq!(rgb.px(320, 240), [0, 0, 0]);
     let _ = HashMap::<String, f32>::new();
 }
