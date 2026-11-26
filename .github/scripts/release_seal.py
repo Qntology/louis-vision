@@ -44,9 +44,23 @@ BANNED_VISION = BANNED_GLOBAL + (
     "louis",
     "tauri",
 )
+BANNED_VISION_PLANAR_MANIFEST = BANNED_GLOBAL + (
+    "lv-screen",
+    "lv-agent",
+    "lancedb",
+    "louis-docs",
+    "louis",
+    "tauri",
+    "cfb",
+    "calamine",
+    "pdf-extract",
+    "scraper",
+    "html-pug",
+    "hwp-writer",
+)
 BANNED_SANDBOX_CRATE_NON_DATA = BANNED_VISION
 BANNED_SANDBOX_DATA = tuple(x for x in BANNED_VISION if x != "lancedb")
-BANNED_SANDBOX_TAURI = ("sammie-sam3", "sammie-accel", "lv-doc", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis")
+BANNED_SANDBOX_TAURI = ("sammie-sam3", "sammie-accel", "lv-doc", "lv-planar", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis")
 CRATE_LINE_RE = re.compile(r"^([A-Za-z0-9_-]+)\s+v")
 
 
@@ -86,22 +100,44 @@ def check_purity_static() -> list[str]:
     manifest_rules = [
         (REPO_ROOT / "Cargo.toml", BANNED_GLOBAL),
         (REPO_ROOT / "apps/louis/Cargo.toml", BANNED_LOUIS_MANIFEST),
-        (REPO_ROOT / "apps/vision/Cargo.toml", BANNED_VISION),
+        (REPO_ROOT / "apps/vision/Cargo.toml", BANNED_VISION_PLANAR_MANIFEST),
     ]
     for crate_manifest in sorted((REPO_ROOT / "apps/vision/crates").glob("*/Cargo.toml")):
-        banned_c = BANNED_SANDBOX_DATA if crate_manifest.parent.name == "sandbox-data" else BANNED_SANDBOX_CRATE_NON_DATA
+        if crate_manifest.parent.name == "sandbox-data":
+            banned_c = BANNED_SANDBOX_DATA
+        elif crate_manifest.parent.name == "sandbox-runtime":
+            banned_c = BANNED_VISION_PLANAR_MANIFEST
+        else:
+            banned_c = BANNED_SANDBOX_CRATE_NON_DATA
         manifest_rules.append((crate_manifest, banned_c))
     tauri_manifest = REPO_ROOT / "apps/vision/src-tauri/Cargo.toml"
     if tauri_manifest.exists():
         manifest_rules.append((tauri_manifest, BANNED_SANDBOX_TAURI))
+    planar_lv_doc_manifests = {
+        REPO_ROOT / "apps/vision/Cargo.toml",
+        REPO_ROOT / "apps/vision/crates/sandbox-runtime/Cargo.toml",
+    }
     for path, banned in manifest_rules:
         if not path.exists():
             errors.append(f"missing manifest: {path}")
             continue
+        rel = path.relative_to(REPO_ROOT)
         text = path.read_text(encoding="utf-8")
         for b in banned:
             if re.search(rf"(?m)^\s*{re.escape(b)}\s*=", text):
-                errors.append(f"banned dependency '{b}' declared in {path.relative_to(REPO_ROOT)}")
+                errors.append(f"banned dependency '{b}' declared in {rel}")
+        if path in planar_lv_doc_manifests:
+            for lineno, raw in enumerate(text.splitlines(), 1):
+                code = raw.split("#", 1)[0].strip()
+                if not code:
+                    continue
+                if re.match(r"^lv-doc\s*=", code):
+                    if "default-features = false" not in code or "docs-io" in code:
+                        errors.append(
+                            f"lv-doc in {rel}:{lineno} must declare default-features = false without docs-io"
+                        )
+                elif "lv-doc/docs-io" in code:
+                    errors.append(f"banned feature 'lv-doc/docs-io' enabled in {rel}:{lineno}")
 
     hud = REPO_ROOT / "apps/vision/web-console/index.html"
     if hud.exists():
@@ -212,8 +248,8 @@ def main() -> int:
         if args.release_seal:
             cargo_steps.extend([
                 ("cargo-test-louis", ["cargo", "test", "--manifest-path", "apps/louis/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
-                ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--selftest"]),
-                ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--eval-packs"]),
+                ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--selftest"]),
+                ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--eval-packs"]),
                 ("cargo-test-vision", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "-j", "1", "--", "--test-threads", "1"]),
                 ("cli-vision-selftest", ["cargo", "run", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "--", "--selftest"]),
                 ("cargo-test-sandbox-core-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-core", "--lib", "-j", "1", "--", "--test-threads", "1"]),

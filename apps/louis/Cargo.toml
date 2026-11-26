@@ -9,6 +9,7 @@ default-members = ["."]
 name = "louis-docs"
 version = "0.1.0"
 edition = "2021"
+default-run = "louis-docs"
 license = "Apache-2.0"
 repository = "https://github.com/Qntology/louis-vision"
 
