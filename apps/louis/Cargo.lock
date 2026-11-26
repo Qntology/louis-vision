@@ -4783,7 +4783,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "louis-office"
+name = "louis"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -90,12 +90,12 @@ pub struct IngestResult {
     pub max_lock_hold_us: u128,
 }
 
-pub struct StagedOfficePipeline {
+pub struct StagedLouisPipeline {
     engine: Mutex<StagedEngine<IndexState>>,
     router: ResidencyRouter,
 }
 
-impl StagedOfficePipeline {
+impl StagedLouisPipeline {
     pub fn new(vram_budget_bytes: u64) -> Self {
         let shared = Residency::shared(
             Device::Cpu,
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn watcher_prefilter_staged_lock_hold_and_readonly_routing() {
-        let tmp = std::env::temp_dir().join(format!("louis-office-watch-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("louis-watch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(h2, 0);
 
         // Staged ingest parses .hwpx outside lock with sub-2ms mutex hold.
-        let pipe = StagedOfficePipeline::new(4096);
+        let pipe = StagedLouisPipeline::new(4096);
         pipe.pin_slot(ModelId::Siglip2, Group::Vision, 512).unwrap();
         let ingested = pipe.ingest_document("notice.hwpx", "hwpx", &hwpx).unwrap();
         assert!(ingested.block_count >= 2);

@@ -131,13 +131,13 @@ impl StageLiveEngine {
     }
 
     fn acquire_pinned_vision(&self) -> Result<()> {
-        let phase = Phase::new("xr_live", [Group::Vision]);
+        let phase = Phase::new("vision", [Group::Vision]);
         let _handles = self.router.acquire(
             CacheAccessMode::ReadOnly,
             ModelId::Siglip2,
             &phase,
             None,
-            |_| unreachable!("Pinned XR live ReadOnly slot must never reload weights"),
+            |_| unreachable!("Pinned vision ReadOnly slot must never reload weights"),
         )?;
         Ok(())
     }

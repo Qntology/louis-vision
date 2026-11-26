@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       release_seal:
-        description: "Run Tier 2 release seal across apps/office and apps/xr-live"
+        description: "Run Tier 2 release seal across apps/louis and apps/vision"
         default: "true"
 
 concurrency:

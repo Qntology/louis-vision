@@ -32,15 +32,15 @@ SIBLING_REPOS = (
 )
 
 BANNED_GLOBAL = ("sammie-sam3", "sammie-accel", "reqwest", "ureq")
-BANNED_OFFICE_MANIFEST = BANNED_GLOBAL
-BANNED_OFFICE_DEFAULT_TREE = BANNED_GLOBAL + ("lancedb",)
-BANNED_XR_LIVE = BANNED_GLOBAL + (
+BANNED_LOUIS_MANIFEST = BANNED_GLOBAL
+BANNED_LOUIS_DEFAULT_TREE = BANNED_GLOBAL + ("lancedb",)
+BANNED_VISION = BANNED_GLOBAL + (
     "lv-doc",
     "lv-screen",
     "lv-agent",
     "lv-domain",
     "lancedb",
-    "louis-office",
+    "louis",
 )
 CRATE_LINE_RE = re.compile(r"^([A-Za-z0-9_-]+)\s+v")
 
@@ -80,8 +80,8 @@ def check_purity_static() -> list[str]:
     errors: list[str] = []
     manifest_rules = [
         (REPO_ROOT / "Cargo.toml", BANNED_GLOBAL),
-        (REPO_ROOT / "apps/office/Cargo.toml", BANNED_OFFICE_MANIFEST),
-        (REPO_ROOT / "apps/xr-live/Cargo.toml", BANNED_XR_LIVE),
+        (REPO_ROOT / "apps/louis/Cargo.toml", BANNED_LOUIS_MANIFEST),
+        (REPO_ROOT / "apps/vision/Cargo.toml", BANNED_VISION),
     ]
     for path, banned in manifest_rules:
         if not path.exists():
@@ -92,13 +92,13 @@ def check_purity_static() -> list[str]:
             if re.search(rf"(?m)^\s*{re.escape(b)}\s*=", text):
                 errors.append(f"banned dependency '{b}' declared in {path.relative_to(REPO_ROOT)}")
 
-    hud = REPO_ROOT / "apps/xr-live/web-console/index.html"
+    hud = REPO_ROOT / "apps/vision/web-console/index.html"
     if hud.exists():
         html = hud.read_text(encoding="utf-8")
         if re.search(r"https?://", html, re.IGNORECASE):
-            errors.append("external HTTP/HTTPS URL found in apps/xr-live/web-console/index.html")
+            errors.append("external HTTP/HTTPS URL found in apps/vision/web-console/index.html")
     else:
-        errors.append("missing apps/xr-live/web-console/index.html")
+        errors.append("missing apps/vision/web-console/index.html")
     return errors
 
 
@@ -164,8 +164,8 @@ def main() -> int:
         tree_targets = [("tree-tier1-workspace", ["--workspace"], BANNED_GLOBAL)]
         if args.release_seal:
             tree_targets.extend([
-                ("tree-tier2b-office", ["--manifest-path", "apps/office/Cargo.toml"], BANNED_OFFICE_DEFAULT_TREE),
-                ("tree-tier2b-xr-live", ["--manifest-path", "apps/xr-live/Cargo.toml"], BANNED_XR_LIVE),
+                ("tree-tier2b-louis", ["--manifest-path", "apps/louis/Cargo.toml"], BANNED_LOUIS_DEFAULT_TREE),
+                ("tree-tier2b-vision", ["--manifest-path", "apps/vision/Cargo.toml"], BANNED_VISION),
             ])
         for tname, targs, tbanned in tree_targets:
             trec, tviol = check_cargo_tree(tname, targs, tbanned, env)
@@ -180,11 +180,11 @@ def main() -> int:
         ]
         if args.release_seal:
             cargo_steps.extend([
-                ("cargo-test-office", ["cargo", "test", "--manifest-path", "apps/office/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
-                ("cli-office-selftest", ["cargo", "run", "--manifest-path", "apps/office/Cargo.toml", "--", "--selftest"]),
-                ("cli-office-eval-packs", ["cargo", "run", "--manifest-path", "apps/office/Cargo.toml", "--", "--eval-packs"]),
-                ("cargo-test-xr-live", ["cargo", "test", "--manifest-path", "apps/xr-live/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
-                ("cli-xr-live-selftest", ["cargo", "run", "--manifest-path", "apps/xr-live/Cargo.toml", "--", "--selftest"]),
+                ("cargo-test-louis", ["cargo", "test", "--manifest-path", "apps/louis/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
+                ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--selftest"]),
+                ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--", "--eval-packs"]),
+                ("cargo-test-vision", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
+                ("cli-vision-selftest", ["cargo", "run", "--manifest-path", "apps/vision/Cargo.toml", "--", "--selftest"]),
             ])
         for cname, ccmd in cargo_steps:
             crec, _ = run_step(cname, ccmd, REPO_ROOT, env)

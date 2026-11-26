@@ -26,12 +26,12 @@ pub fn ensure_local_lan_addr(addr: SocketAddr) -> Result<SocketAddr> {
     Ok(addr)
 }
 
-pub struct OfficeVaultSession {
+pub struct LouisVaultSession {
     controller: VaultController,
     audit: AuditLog,
 }
 
-impl OfficeVaultSession {
+impl LouisVaultSession {
     pub fn new(role: DeviceRole, audit_dir: Option<&Path>) -> Result<Self> {
         let audit = match audit_dir {
             Some(dir) => {
@@ -39,7 +39,7 @@ impl OfficeVaultSession {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
-                AuditLog::open(dir, &format!("louis_office_{ts}"), 512)?
+                AuditLog::open(dir, &format!("louis_{ts}"), 512)?
             }
             None => AuditLog::memory(512),
         };
@@ -167,7 +167,7 @@ mod tests {
         assert!(ensure_local_lan_addr(wan).is_err());
 
         // Sealed startup + CounterKiosk hard lock.
-        let mut kiosk = OfficeVaultSession::new(DeviceRole::CounterKiosk, None).unwrap();
+        let mut kiosk = LouisVaultSession::new(DeviceRole::CounterKiosk, None).unwrap();
         assert_eq!(kiosk.state(), VaultState::Sealed);
         assert_eq!(
             kiosk.unlock(DeviceRole::CounterKiosk, ProtectedKey::generate()),
@@ -176,9 +176,9 @@ mod tests {
         assert_eq!(kiosk.state(), VaultState::Sealed);
 
         // Localhost X25519 LAN handshake unlocks PersonalPhone & encrypts department ledger.
-        let tmp = std::env::temp_dir().join(format!("louis-office-vault-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("louis-vault-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let mut session = OfficeVaultSession::new(DeviceRole::PersonalPhone, Some(&tmp)).unwrap();
+        let mut session = LouisVaultSession::new(DeviceRole::PersonalPhone, Some(&tmp)).unwrap();
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         session.pair_over_local_tcp(addr, DeviceRole::PersonalPhone, b"dept-ledger").unwrap();
         assert_eq!(session.state(), VaultState::Unlocked);
@@ -192,9 +192,9 @@ mod tests {
         session.expire_grace_and_zeroize();
         assert_eq!(session.state(), VaultState::Sealed);
 
-        let (words, backup_key) = OfficeVaultSession::generate_backup_phrase();
+        let (words, backup_key) = LouisVaultSession::generate_backup_phrase();
         assert_eq!(words.len(), 12);
-        let mut recovered = OfficeVaultSession::new(DeviceRole::PersonalPhone, None).unwrap();
+        let mut recovered = LouisVaultSession::new(DeviceRole::PersonalPhone, None).unwrap();
         recovered.recover_with_phrase(&words).unwrap();
         let sealed2 = recovered.seal_record(b"a", b"ok").unwrap();
         assert_eq!(backup_key.open(b"a", &sealed2).unwrap(), b"ok");

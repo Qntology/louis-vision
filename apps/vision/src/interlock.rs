@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn three_step_interlock_triggers_halt_and_verifies_hash_chain() {
-        let dir = std::env::temp_dir().join(format!("louis_stage_interlock_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vision_interlock_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let hazards = vec![StageHazardObb {
             name: "pyro_pit".into(),

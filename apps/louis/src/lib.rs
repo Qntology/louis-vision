@@ -1,4 +1,4 @@
-//! Tier 2-B1 air-gapped office automation application (`louis-office`).
+//! Tier 2-B1 air-gapped office automation application (`louis`).
 
 pub mod overlay;
 pub mod vault_lan;
@@ -12,8 +12,8 @@ use lv_router::vault::{DeviceRole, ProtectedKey, VaultError};
 use lv_screen::REPRIME_THRESHOLD_MILLI;
 use overlay::OverlayController;
 use premium_discount_nav::{PrivacyShield, SurfaceSignature};
-use vault_lan::{ensure_local_lan_addr, OfficeVaultSession};
-use watcher::StagedOfficePipeline;
+use vault_lan::{ensure_local_lan_addr, LouisVaultSession};
+use watcher::StagedLouisPipeline;
 use workflow::evaluate_all_packs;
 
 /// Executes an end-to-end offline self-test verifying overlay redaction/zeroize,
@@ -37,17 +37,17 @@ pub fn run_selftest(mode: EngineMode) -> Result<String> {
     let wan: std::net::SocketAddr = "1.1.1.1:9999".parse()?;
     anyhow::ensure!(ensure_local_lan_addr(wan).is_err());
 
-    let mut kiosk = OfficeVaultSession::new(DeviceRole::CounterKiosk, None)?;
+    let mut kiosk = LouisVaultSession::new(DeviceRole::CounterKiosk, None)?;
     anyhow::ensure!(kiosk.unlock(DeviceRole::CounterKiosk, ProtectedKey::generate()) == Err(VaultError::KioskForbidden));
 
-    let mut phone = OfficeVaultSession::new(DeviceRole::PersonalPhone, None)?;
+    let mut phone = LouisVaultSession::new(DeviceRole::PersonalPhone, None)?;
     phone.pair_over_local_tcp("127.0.0.1:0".parse()?, DeviceRole::PersonalPhone, b"selftest")?;
     let blob = phone.seal_record(b"k", b"v")?;
     anyhow::ensure!(phone.open_record(b"k", &blob)? == b"v");
     phone.disconnect_grace_blur();
     phone.expire_grace_and_zeroize();
 
-    let pipe = StagedOfficePipeline::new(4096);
+    let pipe = StagedLouisPipeline::new(4096);
     pipe.pin_slot(ModelId::Siglip2, Group::Vision, 512)?;
     anyhow::ensure!(pipe.lookup_readonly(ModelId::Siglip2, &Phase::new("ov", [Group::Vision]))? == 1);
 
@@ -55,7 +55,7 @@ pub fn run_selftest(mode: EngineMode) -> Result<String> {
     anyhow::ensure!(suite.total_packs == 7 && suite.passed_packs == 7 && suite.gate_ab.passed);
 
     Ok(format!(
-        "[LOUIS-OFFICE] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} ex_style=0x{:08X} affinity=0x{:02X}",
+        "[LOUIS] selftest PASS mode={:?} packs={}/{} mean_cer={:.4} ex_style=0x{:08X} affinity=0x{:02X}",
         suite.mode,
         suite.passed_packs,
         suite.total_packs,

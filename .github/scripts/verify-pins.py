@@ -38,7 +38,7 @@ TIER1_BANNED_CRATES = (
 )
 
 APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
-XR_LIVE_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-office")
+VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis")
 
 
 def iter_cargo_manifests(base: Path) -> list[Path]:
@@ -143,8 +143,8 @@ def check_apps_purity(lv_root: Path, errs: list[str]) -> None:
     for m in sorted(apps_dir.glob("*/Cargo.toml")):
         rel = m.relative_to(lv_root).as_posix()
         banned_list = (
-            APPS_BANNED_WAN_CRATES + XR_LIVE_BANNED_CRATES
-            if rel == "apps/xr-live/Cargo.toml"
+            APPS_BANNED_WAN_CRATES + VISION_BANNED_CRATES
+            if rel == "apps/vision/Cargo.toml"
             else APPS_BANNED_WAN_CRATES
         )
         text = m.read_text(encoding="utf-8", errors="replace")
