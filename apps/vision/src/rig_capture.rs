@@ -1,5 +1,5 @@
 //! Stereo rig ingestion (`USB3` UVC uncompressed & high-bitrate LAN sync),
-//! `STEREO_KEYFRAME_QUALITY >= 95.0` enforcement, and 5% Red Tally locked stage control.
+//! `STEREO_KEYFRAME_QUALITY >= 95.0` enforcement, and 5% Red Tally locked sandbox control.
 
 use std::net::SocketAddr;
 
@@ -11,8 +11,8 @@ use crate::validate_local_socket;
 
 /// Minimum compression quality accepted for stereo SBS disparity estimation.
 pub const STEREO_KEYFRAME_QUALITY: f32 = 95.0;
-/// Maximum tally luminance (%) allowed on wireless stage rigs so dark stage lighting stays unpolluted.
-pub const MAX_STAGE_TALLY_LUMA_PCT: u8 = 5;
+/// Maximum tally luminance (%) allowed on wireless sandbox rigs so dark sandbox lighting stays unpolluted.
+pub const MAX_SANDBOX_TALLY_LUMA_PCT: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,11 +38,11 @@ impl RigSource {
             RigSource::UsbUvcUncompressed { width, height, fps, .. } => {
                 ensure!(*width >= 2 && *width % 2 == 0, "SBS width must be even and >= 2, got {width}");
                 ensure!(*height >= 2, "SBS height must be >= 2, got {height}");
-                ensure!(*fps >= 30, "live stage capture requires >= 30 fps, got {fps}");
+                ensure!(*fps >= 30, "live sandbox capture requires >= 30 fps, got {fps}");
                 Ok(())
             }
             RigSource::WirelessLanSync { quality, endpoint } => {
-                validate_local_socket(*endpoint, "wireless stage rig LAN endpoint")?;
+                validate_local_socket(*endpoint, "wireless sandbox rig LAN endpoint")?;
                 ensure!(
                     quality.is_finite() && *quality >= STEREO_KEYFRAME_QUALITY,
                     "wireless stereo stream rejected: quality {quality:.2} < STEREO_KEYFRAME_QUALITY {STEREO_KEYFRAME_QUALITY:.1}"
@@ -102,23 +102,23 @@ pub struct WirelessCameraRig {
 }
 
 impl WirelessCameraRig {
-    /// Creates a stage-ready wireless rig with touch locked and dim 5% red tally by default.
+    /// Creates a sandbox-ready wireless rig with touch locked and dim 5% red tally by default.
     pub fn new(id: impl Into<String>, source: RigSource) -> Result<Self> {
         source.validate()?;
         Ok(Self {
             id: id.into(),
             touch_locked: true,
-            tally_red_luma_pct: MAX_STAGE_TALLY_LUMA_PCT,
+            tally_red_luma_pct: MAX_SANDBOX_TALLY_LUMA_PCT,
             tally: TallyState::Standby,
             source,
         })
     }
 
-    /// Sets tally state while enforcing the 5% dark-stage luminance cap.
+    /// Sets tally state while enforcing the 5% dark-sandbox luminance cap.
     pub fn set_tally(&mut self, tally: TallyState, luma_pct: u8) -> Result<()> {
         ensure!(
-            luma_pct <= MAX_STAGE_TALLY_LUMA_PCT,
-            "stage tally luminance {luma_pct}% exceeds 5% dark-stage ceiling"
+            luma_pct <= MAX_SANDBOX_TALLY_LUMA_PCT,
+            "sandbox tally luminance {luma_pct}% exceeds 5% dark-sandbox ceiling"
         );
         self.tally = tally;
         self.tally_red_luma_pct = luma_pct;
@@ -128,7 +128,7 @@ impl WirelessCameraRig {
     /// Rejects accidental on-rig touchscreen taps unless FOH explicitly unlocked the rig.
     pub fn handle_touch_input(&self, control: &str) -> Result<()> {
         if self.touch_locked {
-            bail!("rig '{}' touch input '{control}' rejected: stage touch lock active", self.id);
+            bail!("rig '{}' touch input '{control}' rejected: sandbox touch lock active", self.id);
         }
         Ok(())
     }
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn wireless_rig_defaults_touch_locked_and_five_pct_tally() {
         let mut rig = WirelessCameraRig::new(
-            "cam-stage-a",
+            "cam-sandbox-a",
             RigSource::WirelessLanSync {
                 quality: 97.5,
                 endpoint: "10.0.0.12:7001".parse().unwrap(),

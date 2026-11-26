@@ -1,5 +1,5 @@
 //! Spatial tracking (`MaskTracker`, `RegionTracker`) and zero-SAM3.1 stereo spatial tier dispatch
-//! (`StereoSpatialTier::{StereoFastTick, StereoMetricGrasp, StereoStageLive}`).
+//! (`StereoSpatialTier::{StereoFastTick, StereoMetricGrasp, StereoSandboxLive}`).
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use crate::frame::{AlphaMatte, DepthMap, Mask, Rgb};
 use crate::locate::SemanticPoint;
 use crate::pyramid::PyramidCfg;
 use crate::stereo::{sgbm, SgbmCfg, StereoOut, StereoRig};
-use crate::zkey::{PerformerTrack3D, StageKeyOut, StageZKeyTracker};
+use crate::zkey::{PerformerTrack3D, SandboxKeyOut, SandboxZKeyTracker};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PointPrompt {
@@ -198,8 +198,8 @@ pub enum StereoSpatialTier {
     StereoFastTick,
     /// Manipulation / placement grasp tick: full `per_l2 = 8` Census-SGBM + 3D ItemPose/ContactRange.
     StereoMetricGrasp,
-    /// Live 60fps empty-stage broadcast & concert XR: Census-SGBM + Z-Keying + Bilateral AlphaMatte + 3D Hungarian tracker.
-    StereoStageLive,
+    /// Live 60fps empty-sandbox broadcast & concert XR: Census-SGBM + Z-Keying + Bilateral AlphaMatte + 3D Hungarian tracker.
+    StereoSandboxLive,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -215,7 +215,7 @@ pub struct StereoSpatialPipeline {
     pub rig: StereoRig,
     pub cfg: SgbmCfg,
     pub pyramid: Option<PyramidCfg>,
-    pub stage_tracker: Option<StageZKeyTracker>,
+    pub sandbox_tracker: Option<SandboxZKeyTracker>,
 }
 
 impl StereoSpatialPipeline {
@@ -223,9 +223,9 @@ impl StereoSpatialPipeline {
         rig: StereoRig,
         cfg: SgbmCfg,
         pyramid: Option<PyramidCfg>,
-        stage_tracker: Option<StageZKeyTracker>,
+        sandbox_tracker: Option<SandboxZKeyTracker>,
     ) -> Self {
-        Self { rig, cfg, pyramid, stage_tracker }
+        Self { rig, cfg, pyramid, sandbox_tracker }
     }
 
     pub fn run_tier(
@@ -240,16 +240,16 @@ impl StereoSpatialPipeline {
         cfg.per_l2 = match tier {
             StereoSpatialTier::StereoFastTick => cfg.per_l2.min(4),
             StereoSpatialTier::StereoMetricGrasp => cfg.per_l2.max(8),
-            StereoSpatialTier::StereoStageLive => cfg.per_l2.clamp(4, 8),
+            StereoSpatialTier::StereoSandboxLive => cfg.per_l2.clamp(4, 8),
         };
         let stereo = sgbm(left, right, &self.rig, &cfg, self.pyramid.as_ref())?;
         let mut matte = None;
         let mut performers = Vec::new();
         let mut hole_recovered_px = 0u32;
 
-        if tier == StereoSpatialTier::StereoStageLive {
-            if let Some(zkey) = &mut self.stage_tracker {
-                let StageKeyOut {
+        if tier == StereoSpatialTier::StereoSandboxLive {
+            if let Some(zkey) = &mut self.sandbox_tracker {
+                let SandboxKeyOut {
                     matte: m,
                     performers: p,
                     hole_recovered_px: h,
@@ -275,7 +275,7 @@ impl StereoSpatialPipeline {
 pub struct StereoMaskTracker {
     pub tier: StereoSpatialTier,
     region: RegionTracker,
-    stage: Option<StageZKeyTracker>,
+    sandbox: Option<SandboxZKeyTracker>,
     pub extent_clamp: Option<ExtentClamp>,
     pub intr: Intrinsics,
     pub pose: Pose,
@@ -286,15 +286,15 @@ impl StereoMaskTracker {
         Self {
             tier,
             region: RegionTracker::new(RegionCfg::default()),
-            stage: None,
+            sandbox: None,
             extent_clamp: None,
             intr,
             pose,
         }
     }
 
-    pub fn with_stage_tracker(mut self, tracker: StageZKeyTracker) -> Self {
-        self.stage = Some(tracker);
+    pub fn with_sandbox_tracker(mut self, tracker: SandboxZKeyTracker) -> Self {
+        self.sandbox = Some(tracker);
         self
     }
 
@@ -308,7 +308,7 @@ impl MaskTracker for StereoMaskTracker {
         match self.tier {
             StereoSpatialTier::StereoFastTick => "stereo-fast-tick",
             StereoSpatialTier::StereoMetricGrasp => "stereo-metric-grasp",
-            StereoSpatialTier::StereoStageLive => "stereo-stage-live",
+            StereoSpatialTier::StereoSandboxLive => "stereo-sandbox-live",
         }
     }
 
@@ -322,8 +322,8 @@ impl MaskTracker for StereoMaskTracker {
         depth: Option<&DepthMap>,
         prompts: &[PointPrompt],
     ) -> Result<Vec<TrackedMask>> {
-        if self.tier == StereoSpatialTier::StereoStageLive {
-            if let (Some(zkey), Some(d)) = (&mut self.stage, depth) {
+        if self.tier == StereoSpatialTier::StereoSandboxLive {
+            if let (Some(zkey), Some(d)) = (&mut self.sandbox, depth) {
                 let key = zkey.step(rgb, d, &self.intr, &self.pose, None)?;
                 let mut out = Vec::with_capacity(key.performers.len());
                 for p in key.performers {

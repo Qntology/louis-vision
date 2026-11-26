@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Vision — Concert XR Dark HUD</title>
+<title>Vision Sandbox — Concert XR Dark HUD</title>
 <style>
   :root {
     --bg: #0B0D10;
@@ -32,7 +32,7 @@
 <body>
 <header>
   <div>
-    <strong>VISION · TIER 2-B2</strong>
+    <strong>VISION-SANDBOX · TIER 2-B2</strong>
     <span style="color: var(--muted); margin-left: 8px;">Stereo SGBM + Z-Key + Interlock</span>
   </div>
   <div>
@@ -53,9 +53,9 @@
 
   <section class="card tally-card">
     <h3>2. Wireless Rig 5% Red Tally</h3>
-    <p>Tally Luma Ceiling: <code>5%</code> (Dark-Stage Safe)</p>
-    <p>Stage Touch Status: <strong id="touchStatus">LOCKED (FOH-ONLY)</strong></p>
-    <button type="button" disabled title="Touch locked on wireless stage rig">Stage Cue Disabled</button>
+    <p>Tally Luma Ceiling: <code>5%</code> (Dark-Sandbox Safe)</p>
+    <p>Sandbox Touch Status: <strong id="touchStatus">LOCKED (FOH-ONLY)</strong></p>
+    <button type="button" disabled title="Touch locked on wireless sandbox rig">Sandbox Cue Disabled</button>
   </section>
 
   <section class="card">
@@ -80,7 +80,7 @@
     haltBanner.classList.toggle("active", halted);
     cueBtn.disabled = halted;
     toggleBtn.textContent = halted ? "Clear Interlock" : "Simulate Interlock Halt";
-    feedback.textContent = halted ? "BLOCKED by StageInterlock" : "Ready";
+    feedback.textContent = halted ? "BLOCKED by SandboxInterlock" : "Ready";
   });
 
   cueBtn.addEventListener("click", function () {

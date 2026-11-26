@@ -14,7 +14,7 @@ use lv_spatial::egoexo::{fuse, ViewObs};
 use lv_spatial::fit3::{M3, V3};
 use serde::{Deserialize, Serialize};
 
-use crate::stage_stereo::{StageFrameOut, StereoStageLive};
+use crate::sandbox_stereo::{SandboxFrameOut, StereoSandboxLive};
 use lv_spatial::frame::{DepthMap, Rgb};
 
 pub const TARGET_FPS: u32 = 60;
@@ -69,16 +69,16 @@ pub fn measure_frame_budget(elapsed: Duration) -> FrameBudgetReport {
     }
 }
 
-pub struct StageLiveEngine {
+pub struct SandboxLiveEngine {
     shared_residency: SharedResidency,
     router: ResidencyRouter,
-    pub stage: StereoStageLive,
+    pub sandbox: StereoSandboxLive,
     pub ticks_executed: u64,
     pub over_budget_ticks: u64,
 }
 
-impl StageLiveEngine {
-    pub fn new(vram_budget_bytes: u64, stage: StereoStageLive) -> Result<Self> {
+impl SandboxLiveEngine {
+    pub fn new(vram_budget_bytes: u64, sandbox: StereoSandboxLive) -> Result<Self> {
         let shared_residency = Residency::shared(Device::Cpu, vram_budget_bytes, ResidencyMode::Pinned);
         {
             let mut guard = shared_residency.lock().expect("residency mutex poisoned");
@@ -88,26 +88,26 @@ impl StageLiveEngine {
         Ok(Self {
             shared_residency,
             router,
-            stage,
+            sandbox,
             ticks_executed: 0,
             over_budget_ticks: 0,
         })
     }
 
     /// Acquires pinned vision residency via `ReadOnly` (zero eviction / zero lazy reload) and steps stereo keying.
-    pub fn tick_stereo_pair(&mut self, left: &Rgb, right: &Rgb) -> Result<(StageFrameOut, FrameBudgetReport)> {
+    pub fn tick_stereo_pair(&mut self, left: &Rgb, right: &Rgb) -> Result<(SandboxFrameOut, FrameBudgetReport)> {
         let t0 = Instant::now();
         self.acquire_pinned_vision()?;
-        let out = self.stage.process_stereo_pair(left, right)?;
+        let out = self.sandbox.process_stereo_pair(left, right)?;
         let budget = self.record_budget(t0.elapsed());
         Ok((out, budget))
     }
 
     /// Acquires pinned vision residency via `ReadOnly` and steps calibrated metric depth keying.
-    pub fn tick_calibrated_depth(&mut self, rgb: &Rgb, depth: &DepthMap) -> Result<(StageFrameOut, FrameBudgetReport)> {
+    pub fn tick_calibrated_depth(&mut self, rgb: &Rgb, depth: &DepthMap) -> Result<(SandboxFrameOut, FrameBudgetReport)> {
         let t0 = Instant::now();
         self.acquire_pinned_vision()?;
-        let out = self.stage.process_calibrated_depth(rgb, depth)?;
+        let out = self.sandbox.process_calibrated_depth(rgb, depth)?;
         let budget = self.record_budget(t0.elapsed());
         Ok((out, budget))
     }
@@ -131,7 +131,7 @@ impl StageLiveEngine {
     }
 
     fn acquire_pinned_vision(&self) -> Result<()> {
-        let phase = Phase::new("vision", [Group::Vision]);
+        let phase = Phase::new("vision_sandbox", [Group::Vision]);
         let _handles = self.router.acquire(
             CacheAccessMode::ReadOnly,
             ModelId::Siglip2,
@@ -160,15 +160,15 @@ mod tests {
     use lv_spatial::fit3::Similarity;
     use lv_spatial::frame::DepthKind;
     use lv_spatial::stereo::{SgbmCfg, StereoRig};
-    use lv_spatial::zkey::{StageBackground, ZKeyCfg};
+    use lv_spatial::zkey::{SandboxBackground, ZKeyCfg};
 
     #[test]
     fn pinned_residency_zero_eviction_and_multiview_fusion_under_2cm() {
         let (w, h) = (32u32, 24u32);
         let bg_d = DepthMap { width: w, height: h, kind: DepthKind::Metric, data: vec![6.0; (w * h) as usize] };
         let refs: Vec<&DepthMap> = (0..30).map(|_| &bg_d).collect();
-        let bg = StageBackground::capture_median(&refs, None, 0.02).unwrap();
-        let stage = StereoStageLive::new(
+        let bg = SandboxBackground::capture_median(&refs, None, 0.02).unwrap();
+        let sandbox = StereoSandboxLive::new(
             StereoRig { focal_px: 300.0, baseline_m: 0.12, subpixel_px: 0.15 },
             SgbmCfg::default(),
             None,
@@ -178,7 +178,7 @@ mod tests {
             Pose { x: 0.0, z: 0.0, yaw: 0.0, eye_m: 1.5 },
             Similarity { s: 1.0, r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0, 0.0, 0.0] },
         );
-        let mut engine = StageLiveEngine::new(64 * 1024 * 1024, stage).unwrap();
+        let mut engine = SandboxLiveEngine::new(64 * 1024 * 1024, sandbox).unwrap();
         let rgb = Rgb::new(w, h, vec![50u8; (w * h * 3) as usize]);
 
         for _ in 0..5 {

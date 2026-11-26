@@ -1,6 +1,6 @@
 [package]
 name = "lv-domain"
-description = "Zero-network domain packs (7 office domain packs + PowerPlant/AiDataCenter modes), LOUIS_ENGINE=rules fast path, KKS/DCIM CodeScheme repair, and offline premium-discount-eval self-scoring"
+description = "Zero-network domain packs (7 docs domain packs + PowerPlant/AiDataCenter modes), LOUIS_ENGINE=rules fast path, KKS/DCIM CodeScheme repair, and offline premium-discount-eval self-scoring"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -21,7 +21,7 @@ use lv_spatial::stairs::{read_step, StepCfg};
 use lv_spatial::stereo::{sgbm, SgbmCfg, SgbmDepth, StereoRig};
 use lv_spatial::tips::{maybe_load_monocular, InputGrid, TipsConfig, TipsDepth, ADE_CLASSES};
 use lv_spatial::track::{StereoSpatialPipeline, StereoSpatialTier};
-use lv_spatial::zkey::{StageBackground, StageZKeyTracker, ZKeyCfg};
+use lv_spatial::zkey::{SandboxBackground, SandboxZKeyTracker, ZKeyCfg};
 
 fn smooth_texture(w: u32, h: u32, seed: u64) -> Vec<f32> {
     let mut raw = Vec::with_capacity((w * h) as usize);
@@ -213,7 +213,7 @@ fn gate_t1_spatial_b_zkey_bilateral_hole_recovery_and_unlimited_3d_tracking() {
         .collect();
     let bg_refs: Vec<&DepthMap> = bg_frames_storage.iter().collect();
     let rgb_bg = Rgb::new(120, 80, vec![30u8; 120 * 80 * 3]);
-    let bg = StageBackground::capture_median(&bg_refs, Some(rgb_bg), 0.03).unwrap();
+    let bg = SandboxBackground::capture_median(&bg_refs, Some(rgb_bg), 0.03).unwrap();
     assert_eq!(bg.frame_count, 30);
 
     // Frame with 2 crossing performers wearing IDENTICAL white shirts ([230,230,230]) at distinct depths
@@ -246,7 +246,7 @@ fn gate_t1_spatial_b_zkey_bilateral_hole_recovery_and_unlimited_3d_tracking() {
     cur_depth.data[(16 * w + 19) as usize] = f32::NAN;
     let cur_rgb = Rgb::new(120, 80, cur_rgb_buf);
 
-    let mut tracker = StageZKeyTracker::new(bg.clone(), ZKeyCfg::default());
+    let mut tracker = SandboxZKeyTracker::new(bg.clone(), ZKeyCfg::default());
     let res = tracker.step(&cur_rgb, &cur_depth, &intr, &pose, None).unwrap();
     assert!(res.hole_recovered_px >= 2, "NaN hole inside moving performer must be recovered by RGB delta");
     assert_eq!(res.matte.width, 120);
@@ -259,7 +259,7 @@ fn gate_t1_spatial_b_zkey_bilateral_hole_recovery_and_unlimited_3d_tracking() {
     let wide_w = 200u32;
     let wide_h = 20u32;
     let bg20_d = DepthMap { width: wide_w, height: wide_h, kind: DepthKind::Metric, data: vec![8.0; (wide_w * wide_h) as usize] };
-    let bg20 = StageBackground::capture_median(&[&bg20_d], None, 0.02).unwrap();
+    let bg20 = SandboxBackground::capture_median(&[&bg20_d], None, 0.02).unwrap();
     let mut fg20_d = bg20_d.clone();
     for k in 0..20u32 {
         let x0 = k * 10 + 1;
@@ -271,7 +271,7 @@ fn gate_t1_spatial_b_zkey_bilateral_hole_recovery_and_unlimited_3d_tracking() {
     }
     let rgb20 = Rgb::new(200, 20, vec![120; 200 * 20 * 3]);
     let intr20 = Intrinsics { width: 200, height: 20, fov_deg: 90.0, pitch_deg: 0.0, roll_deg: 0.0 };
-    let mut t20 = StageZKeyTracker::new(bg20, ZKeyCfg { border_fix: 0, hole_fill: 0, dot_remove: 0, min_cluster_px: 4, ..ZKeyCfg::default() });
+    let mut t20 = SandboxZKeyTracker::new(bg20, ZKeyCfg { border_fix: 0, hole_fill: 0, dot_remove: 0, min_cluster_px: 4, ..ZKeyCfg::default() });
     let out20 = t20.step(&rgb20, &fg20_d, &intr20, &pose, None).unwrap();
     assert_eq!(out20.performers.len(), 20, "Must track >= 20 performers with zero 16-object limit");
 }

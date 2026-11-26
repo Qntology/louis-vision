@@ -58,9 +58,9 @@ mod tests {
     fn packs_local_ndi_bgra_alpha_and_rejects_wan() {
         let rgb = Rgb::new(2, 1, vec![10, 20, 30, 40, 50, 60]);
         let matte = AlphaMatte { width: 2, height: 1, alpha: vec![200, 55] };
-        assert!(pack_ndi_video_alpha("Stage1", "8.8.4.4:5961".parse().unwrap(), &rgb, &matte).is_err());
+        assert!(pack_ndi_video_alpha("Sandbox1", "8.8.4.4:5961".parse().unwrap(), &rgb, &matte).is_err());
 
-        let frame = pack_ndi_video_alpha("Stage1", "192.168.1.50:5961".parse().unwrap(), &rgb, &matte).unwrap();
+        let frame = pack_ndi_video_alpha("Sandbox1", "192.168.1.50:5961".parse().unwrap(), &rgb, &matte).unwrap();
         assert_eq!(frame.fourcc, "BGRA");
         assert_eq!(&frame.bgra[..4], &[30, 20, 10, 200]);
         assert_eq!(&frame.bgra[4..8], &[60, 50, 40, 55]);

@@ -1,4 +1,4 @@
-//! Guarded office writers (`WriterGuard` + `.docx` + native OWPML `.hwpx`).
+//! Guarded docs writers (`WriterGuard` + `.docx` + native OWPML `.hwpx`).
 
 pub mod docx_writer;
 pub mod guard;

@@ -10,7 +10,7 @@ use anyhow::Result;
 use candle_core::Device;
 use lv_agent::staged::{run_staged, Commit, StagedEngine, StagedSnapshot};
 use lv_core::residency::{Group, Loaded, ModelId, Phase, Residency, ResidencyMode};
-use lv_doc::office::parse_office_bytes;
+use lv_doc::docs::parse_docs_bytes;
 use lv_router::residency_router::{CacheAccessMode, ResidencyRouter, RouterError};
 use sha2::{Digest, Sha256};
 
@@ -144,7 +144,7 @@ impl StagedLouisPipeline {
                 Ok(snap)
             },
             |(_k, data)| {
-                let ir = parse_office_bytes(&ext_s, data)?;
+                let ir = parse_docs_bytes(&ext_s, data)?;
                 let lines: Vec<String> = ir.blocks.iter().map(|b| format!("{b:?}")).collect();
                 Ok(lines)
             },
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn watcher_prefilter_staged_lock_hold_and_readonly_routing() {
-        let tmp = std::env::temp_dir().join(format!("louis-watch-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("louis-docs-watch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 

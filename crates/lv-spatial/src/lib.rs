@@ -27,4 +27,4 @@ pub use depth::{DepthMetrics, DepthModel, DepthScene, SceneHeads};
 pub use frame::{AlphaMatte, DepthKind, DepthMap, Mask, NormalMap, Rgb, SegMap};
 pub use stereo::{sgbm, stereo_grid, stereo_sigma_z, SgbmCfg, SgbmDepth, StereoOut, StereoRig, StereoStats};
 pub use track::{MaskTracker, PointPrompt, RegionCfg, RegionTracker, StereoSpatialPipeline, StereoSpatialTier, TrackedMask};
-pub use zkey::{PerformerTrack3D, StageBackground, StageKeyOut, StageZKeyTracker, ZKeyCfg};
+pub use zkey::{PerformerTrack3D, SandboxBackground, SandboxKeyOut, SandboxZKeyTracker, ZKeyCfg};

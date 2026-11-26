@@ -1,4 +1,4 @@
-//! Hybrid AST intermediate representation for digital office files (`HWP5`, `HWPX`, `DOCX`, `XLSX`, `CSV`, `PDF`).
+//! Hybrid AST intermediate representation for digital docs files (`HWP5`, `HWPX`, `DOCX`, `XLSX`, `CSV`, `PDF`).
 
 use serde::{Deserialize, Serialize};
 

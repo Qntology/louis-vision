@@ -1,15 +1,15 @@
 [package]
 name = "lv-doc"
-description = "Zero-network 2D document/blueprint vision & hybrid AST office reader/writer: ZZD1 delta, TitleBlock invariant, 3-Way crop, Value Grounding, native OWPML/DOCX/HWP/PDF IR, and WriterGuard"
+description = "Zero-network 2D document/blueprint vision & hybrid AST docs reader/writer: ZZD1 delta, TitleBlock invariant, 3-Way crop, Value Grounding, native OWPML/DOCX/HWP/PDF IR, and WriterGuard"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [features]
-default     = ["office-io"]
-office-io   = ["dep:cfb", "dep:zip", "dep:quick-xml", "dep:calamine", "dep:csv", "dep:pdf-extract", "dep:flate2"]
-hwp-writer  = ["office-io"]
+default     = ["docs-io"]
+docs-io     = ["dep:cfb", "dep:zip", "dep:quick-xml", "dep:calamine", "dep:csv", "dep:pdf-extract", "dep:flate2"]
+hwp-writer  = ["docs-io"]
 cuda        = ["lv-core/cuda"]
 rocm        = ["lv-core/rocm"]
 vulkan      = ["lv-core/vulkan"]

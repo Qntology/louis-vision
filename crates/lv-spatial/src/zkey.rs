@@ -1,4 +1,4 @@
-//! Empty-stage stereo Z-Keying, RGB motion NaN-hole recovery, `mask_ops` contour cleanup,
+//! Empty-sandbox stereo Z-Keying, RGB motion NaN-hole recovery, `mask_ops` contour cleanup,
 //! RGB Joint Bilateral upsampling (`AlphaMatte`), and unlimited 3D Kalman + Hungarian multi-performer tracking.
 
 use std::collections::VecDeque;
@@ -12,9 +12,9 @@ use crate::frame::{AlphaMatte, DepthMap, Mask, Rgb};
 use crate::mask_ops::postprocess::{apply as postprocess_mask, PostprocessParams};
 use crate::stereo::{stereo_sigma_z, StereoRig};
 
-/// Static empty-stage background model built from 30+ calibration frames.
+/// Static empty-sandbox background model built from 30+ calibration frames.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StageBackground {
+pub struct SandboxBackground {
     pub width: u32,
     pub height: u32,
     pub z_bg: Vec<f32>,
@@ -23,7 +23,7 @@ pub struct StageBackground {
     pub frame_count: usize,
 }
 
-impl StageBackground {
+impl SandboxBackground {
     /// Captures per-pixel median depth and robust MAD noise floor (`sigma_bg`) across static calibration frames.
     pub fn capture_median(
         frames: &[&DepthMap],
@@ -143,7 +143,7 @@ pub struct PerformerTrack3D {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StageKeyOut {
+pub struct SandboxKeyOut {
     pub mask: Mask,
     pub matte: AlphaMatte,
     pub performers: Vec<PerformerTrack3D>,
@@ -193,17 +193,17 @@ impl TrackState {
     }
 }
 
-/// Stateful 60fps empty-stage Z-Keyer + unlimited 3D Kalman-Hungarian multi-performer tracker.
-pub struct StageZKeyTracker {
+/// Stateful 60fps empty-sandbox Z-Keyer + unlimited 3D Kalman-Hungarian multi-performer tracker.
+pub struct SandboxZKeyTracker {
     pub cfg: ZKeyCfg,
-    bg: StageBackground,
+    bg: SandboxBackground,
     tracks: Vec<TrackState>,
     next_id: u32,
     prev_rgb: Option<Rgb>,
 }
 
-impl StageZKeyTracker {
-    pub fn new(bg: StageBackground, cfg: ZKeyCfg) -> Self {
+impl SandboxZKeyTracker {
+    pub fn new(bg: SandboxBackground, cfg: ZKeyCfg) -> Self {
         Self {
             cfg,
             bg,
@@ -224,11 +224,11 @@ impl StageZKeyTracker {
         intr: &Intrinsics,
         pose: &Pose,
         rig: Option<StereoRig>,
-    ) -> Result<StageKeyOut> {
+    ) -> Result<SandboxKeyOut> {
         let (dw, dh) = (self.bg.width as usize, self.bg.height as usize);
         if depth.width != self.bg.width || depth.height != self.bg.height {
             bail!(
-                "depth grid {}x{} does not match StageBackground {}x{}",
+                "depth grid {}x{} does not match SandboxBackground {}x{}",
                 depth.width,
                 depth.height,
                 self.bg.width,
@@ -317,7 +317,7 @@ impl StageZKeyTracker {
         let performers = self.associate_and_update(&clusters);
         self.prev_rgb = Some(rgb.clone());
 
-        Ok(StageKeyOut {
+        Ok(SandboxKeyOut {
             mask,
             matte,
             performers,
