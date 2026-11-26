@@ -1,0 +1,12 @@
+{
+  "lang": "ar",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "تحميل الرسائل السابقة",
+  "pair_title": "اقتران محلي آمن (Zero-WAN · X25519)",
+  "pair_qr_hint": "امسح الرمز عبر نفس الشبكة المحلية",
+  "pair_role_label": "تحديد دور الجهاز",
+  "pair_connect": "اتصال محلي",
+  "pair_recover": "إدخال عبارة الاسترداد المكونة من 12 كلمة",
+  "sql_blocked": "تم الحظر بواسطة بوابة SQL الأمنية",
+  "reposition_hint": "يرجى تعديل المسافة أو الزاوية"
+}

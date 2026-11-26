@@ -15,7 +15,7 @@ chrono.workspace = true
 sha2.workspace = true
 lv-sds.workspace = true
 lv-core.workspace = true
-lv-doc.workspace = true
+lv-doc = { workspace = true, features = ["docs-io"] }
 lv-domain.workspace = true
 premium-discount-sds.workspace = true
 premium-discount-eval.workspace = true

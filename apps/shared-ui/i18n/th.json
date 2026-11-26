@@ -1,0 +1,12 @@
+{
+  "lang": "th",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "โหลดข้อความก่อนหน้า",
+  "pair_title": "จับคู่อุปกรณ์ในเครือข่ายภายใน (Zero-WAN · X25519)",
+  "pair_qr_hint": "สแกนผ่านเครือข่ายท้องถิ่นเดียวกัน",
+  "pair_role_label": "กำหนดบทบาทอุปกรณ์",
+  "pair_connect": "เชื่อมต่อ LAN",
+  "pair_recover": "กรอกวลีกู้คืน 12 คำแบบออฟไลน์",
+  "sql_blocked": "ถูกบล็อกโดยตัวกรองความปลอดภัย SQL AST",
+  "reposition_hint": "กรุณาปรับระยะหรือมุมมอง"
+}

@@ -1,5 +1,6 @@
 //! Domain-neutral 2D document and engineering blueprint vision pipeline.
 
+pub mod arena;
 pub mod delta;
 pub mod grounding;
 pub mod ink;
@@ -8,8 +9,10 @@ pub mod layout_cache;
 pub mod legibility;
 pub mod phrase_cache;
 pub mod plan;
+pub mod probe;
 pub mod symbols;
 pub mod table_grid_reverse;
+pub mod tiling;
 
 use lv_core::siglip2::PatchGrid;
 

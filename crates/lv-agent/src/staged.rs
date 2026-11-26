@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Result};
 
-const ATTEMPTS: usize = 3;
+const ATTEMPTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Commit<T> {

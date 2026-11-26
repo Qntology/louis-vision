@@ -1,0 +1,12 @@
+{
+  "lang": "zh-tw",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "載入歷史對話紀錄",
+  "pair_title": "本地端安全裝置配對 (Zero-WAN · X25519)",
+  "pair_qr_hint": "請使用同一區域網路或熱點手機掃描（無STUN/TURN）",
+  "pair_role_label": "指定裝置角色與介面外觀",
+  "pair_connect": "區域網路連線",
+  "pair_recover": "輸入12字離線復原助記詞",
+  "sql_blocked": "已被資料安全SQL閘道攔截",
+  "reposition_hint": "需調整拍攝距離或角度方可辨識"
+}

@@ -1,0 +1,448 @@
+{
+  "schema": "louis-ui-nn/v1",
+  "surfaces": [
+    "shared_router",
+    "louis_pill_vault",
+    "louis_docs_studio",
+    "louis_field_3d",
+    "vision_sim_sandbox",
+    "vision_xr_stage"
+  ],
+  "axes": [
+    "window_dpi_esc",
+    "omnibar_hybrid_sql",
+    "async_ingest_bubble",
+    "spatial_grounding_hud",
+    "privacy_kiosk_interlock",
+    "concurrency_gpu_60fps"
+  ],
+  "scenarios": [
+    {
+      "id": "UI-01",
+      "surface": "shared_router",
+      "axis": "window_dpi_esc",
+      "name_ko": "단일 ( ✦ ) 루프백 앵커 소유권 락 == 1 및 상태 이관 무중복",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "active_star_widgets": 1, "anchor_lock": "louis.desktop.anchor.v1" }
+    },
+    {
+      "id": "UI-02",
+      "surface": "louis_pill_vault",
+      "axis": "window_dpi_esc",
+      "name_ko": "바탕화면 알약 0x0808_00A8 · 고DPI/음수좌표 잘림 0 px",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "ex_style": "0x080800A8", "clip_px": 0 }
+    },
+    {
+      "id": "UI-03",
+      "surface": "louis_docs_studio",
+      "axis": "window_dpi_esc",
+      "name_ko": "Docs Studio growsTo 전체화면 왕복 및 3-Pane 유리 무대 무깜빡임",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "target_stage": "fullscreen", "inline_scripts": 0 }
+    },
+    {
+      "id": "UI-04",
+      "surface": "louis_field_3d",
+      "axis": "window_dpi_esc",
+      "name_ko": "Field-3D 안전장갑 하단 도크 모든 버튼 >= 56x56 px 실측 히트박스",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "min_hit_px": 56 }
+    },
+    {
+      "id": "UI-05",
+      "surface": "vision_sim_sandbox",
+      "axis": "window_dpi_esc",
+      "name_ko": "Vision #hub 슬림화 · ( ✦ ) 우하단 팝오버 토글 및 단일 앵커",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "star_roots": 1, "popover_toggle": true }
+    },
+    {
+      "id": "UI-06",
+      "surface": "vision_xr_stage",
+      "axis": "window_dpi_esc",
+      "name_ko": "Sim <-> Stage < 100 ms 무리로드 스위치 및 stage-dark 테마 전환",
+      "split": "diag",
+      "hard_gates": ["GATE_STAGE_VRAM_CONTENTION"],
+      "expect": { "switch_ms_max": 100, "theme": "stage-dark" }
+    },
+    {
+      "id": "UI-07",
+      "surface": "shared_router",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "Omni-Bar 4방향 의도·확장자 라우팅 및 자유어 무손실 분리 100%",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "routes_matched": 4, "free_text_preserved": true }
+    },
+    {
+      "id": "UI-08",
+      "surface": "louis_pill_vault",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "봉인 금고 및 CounterKiosk 검색/SQL 요청 즉시 KioskForbidden 차단",
+      "split": "diag",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH", "GATE_SQL_GUARD_BYPASS"],
+      "expect": { "kiosk_blocked": true }
+    },
+    {
+      "id": "UI-09",
+      "surface": "louis_docs_studio",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "5중 DataFusion SQL AST 가드 비-SELECT 차단 100% 및 vault_id 래핑",
+      "split": "diag",
+      "hard_gates": ["GATE_SQL_GUARD_BYPASS"],
+      "expect": { "blocked_unsafe": true, "wrapped_limit_max": 200 }
+    },
+    {
+      "id": "UI-10",
+      "surface": "louis_field_3d",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "/lens 및 현장 검측 인텐트 LouisField3dLens 즉시 라우팅",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "owner": "LouisField3dLens" }
+    },
+    {
+      "id": "UI-11",
+      "surface": "vision_sim_sandbox",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "Vision ( ✦ ) 팝오버 내 #command-bar · #unit-tag 통합 명령줄 검증",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "command_bar_inside_star": true }
+    },
+    {
+      "id": "UI-12",
+      "surface": "vision_xr_stage",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "stage_cues 오차 조회 허용 SQL 및 #cue-bar 큐 복기 연동",
+      "split": "diag",
+      "hard_gates": ["GATE_SQL_GUARD_BYPASS"],
+      "expect": { "stage_cues_sql_ok": true }
+    },
+    {
+      "id": "UI-13",
+      "surface": "shared_router",
+      "axis": "async_ingest_bubble",
+      "name_ko": "우측 하단 ( ✦ ) 미니 피드 최신 3줄 유지 및 최상단 .feed-top 마스크 감쇠",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "max_bubbles": 3, "top_masked": true }
+    },
+    {
+      "id": "UI-14",
+      "surface": "louis_pill_vault",
+      "axis": "async_ingest_bubble",
+      "name_ko": "크래시 run-file 복구 칩 · ( ✦ ) 팝오버 seq 무손실 복원",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "popover_seq_monotonic": true }
+    },
+    {
+      "id": "UI-15",
+      "surface": "louis_docs_studio",
+      "axis": "async_ingest_bubble",
+      "name_ko": "18대 도메인 스킨 [data-term] 무누락 치환 및 4종 포렌식 레이어 토글",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "packs_count": 18, "forensic_toggles": 4 }
+    },
+    {
+      "id": "UI-16",
+      "surface": "louis_field_3d",
+      "axis": "async_ingest_bubble",
+      "name_ko": "Field-3D #rectified-pip 확장 토글 · 볼륨키 장갑 프리뷰 제어",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "pip_resized": true }
+    },
+    {
+      "id": "UI-17",
+      "surface": "vision_sim_sandbox",
+      "axis": "async_ingest_bubble",
+      "name_ko": ".urdf 워밍업 Speculative 45s 및 #log-feed 통합 패널 수용",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "speculative_ttl_sec": 45, "log_feed_inside_star": true }
+    },
+    {
+      "id": "UI-18",
+      "surface": "vision_xr_stage",
+      "axis": "async_ingest_bubble",
+      "name_ko": "Stage 암전(Blackout) 발령 시 #stage-interlock-hud 상시 고정 유지",
+      "split": "diag",
+      "hard_gates": ["GATE_INTERLOCK_OR_BLACKOUT_MISS"],
+      "expect": { "interlock_pinned": true, "blackout_active": true }
+    },
+    {
+      "id": "UI-19",
+      "surface": "shared_router",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "Docs <-> Vision 3D 트윈 양방향 딥링크 라우팅 및 시퀀스 보존",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "deep_link_ok": true }
+    },
+    {
+      "id": "UI-20",
+      "surface": "louis_pill_vault",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "StickyNumberer 1~9 번호 배지 고정성 · 무점멸",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "sticky_flicker": 0 }
+    },
+    {
+      "id": "UI-21",
+      "surface": "louis_docs_studio",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "A0 4x4 ZZD1 미니맵 · 2홉 OPC 점프 · 0-LLM 범례 퓨샷 · L1~L3 모호 기권",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "a0_tiles": 16, "legend_llm_calls": 0, "ambiguous_pending": true }
+    },
+    {
+      "id": "UI-22",
+      "surface": "louis_field_3d",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "비가독 4사유 한글 유도 배너 · Pass 350ms 자동 프리즈",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "guide_reasons": 4, "auto_freeze_350ms": true }
+    },
+    {
+      "id": "UI-23",
+      "surface": "vision_sim_sandbox",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "Provenance 분리: 오라클 비활성 시 Truth | Reference 뱃지 숨김",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "truth_hidden_when_oracle_off": true }
+    },
+    {
+      "id": "UI-24",
+      "surface": "vision_xr_stage",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "Stage #stage-calib-popover s=1.000 · Z_bg >= 30 수집 후 Z-Keying 잠금 해금",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "zbg_required": 30, "scale_one": true }
+    },
+    {
+      "id": "UI-25",
+      "surface": "shared_router",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "전역 privacy_epoch 동시 브로드캐스트 · 멀티모니터 락 전파",
+      "split": "diag",
+      "hard_gates": ["GATE_PRIVACY_PIXEL_LEAK"],
+      "expect": { "epoch_incremented": true, "privacy_locked": true }
+    },
+    {
+      "id": "UI-26",
+      "surface": "louis_pill_vault",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "사설망 WAN IP 차단 · 모바일 GraceBlurred 순단 유예/복구 & zeroize",
+      "split": "diag",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH", "GATE_PRIVACY_PIXEL_LEAK"],
+      "expect": { "wan_blocked": true, "grace_blurred_ok": true }
+    },
+    {
+      "id": "UI-27",
+      "surface": "louis_docs_studio",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "5-Gate 양식 스냅 · +1원 차단 · 고무도장 잠금 · Reverse-CDR C/S->O 차단",
+      "split": "diag",
+      "hard_gates": ["GATE_WRONG_FORM_UNOVERRIDDEN", "GATE_RUBBER_STAMP_OR_OUTBOUND_LEAK"],
+      "expect": { "form_overridden": true, "plus1_blocked": true, "cdr_c_to_o_bytes": 0 }
+    },
+    {
+      "id": "UI-28",
+      "surface": "louis_field_3d",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "Field-3D 3D 모니터 마스킹 스탬프 · CounterKiosk 차단 · LOTO 역순 잠금",
+      "split": "diag",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH", "GATE_INTERLOCK_OR_BLACKOUT_MISS"],
+      "expect": { "kiosk_shield_active": true, "loto_out_of_order_blocked": true }
+    },
+    {
+      "id": "UI-29",
+      "surface": "vision_sim_sandbox",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "Show-IO 공인 WAN 주소(8.8.8.8:9000) 거부 및 RFC1918 사설망 허용",
+      "split": "diag",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH"],
+      "expect": { "wan_rejected": true, "rfc1918_accepted": true }
+    },
+    {
+      "id": "UI-30",
+      "surface": "vision_xr_stage",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "3중 안전 인터록 위반 시 [GO] 비활성 · F12 비상 Blackout <= 16.6 ms",
+      "split": "diag",
+      "hard_gates": ["GATE_INTERLOCK_OR_BLACKOUT_MISS"],
+      "expect": { "go_disabled_on_halt": true, "blackout_ms_max": 16.6 }
+    },
+    {
+      "id": "UI-31",
+      "surface": "shared_router",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "Speculative 45s 유휴 만료 규약 및 단일 ( ✦ ) 위젯 유지",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "speculative_ttl_sec": 45, "active_star_widgets": 1 }
+    },
+    {
+      "id": "UI-32",
+      "surface": "louis_pill_vault",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "Vision 활성 시 louis 바탕화면 알약 숨김 · 중복 위젯 0건",
+      "split": "diag",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"],
+      "expect": { "louis_overlay_visible": false, "vision_star_visible": true }
+    },
+    {
+      "id": "UI-33",
+      "surface": "louis_docs_studio",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "5년 WORM 이중 해시 검증 · 변조(seq=200) 적발 및 조건부 실명 언마스킹",
+      "split": "diag",
+      "hard_gates": ["GATE_RUBBER_STAMP_OR_OUTBOUND_LEAK"],
+      "expect": { "worm_broken_seq": 200, "unmask_requires_cosign": true }
+    },
+    {
+      "id": "UI-34",
+      "surface": "louis_field_3d",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "Field-3D 비가독 VLM 호출 0회 · LOTO 완료 원장 커밋 락 < 2,000 us",
+      "split": "diag",
+      "hard_gates": [],
+      "expect": { "vlm_calls_on_block": 0, "lock_hold_us_max": 2000 }
+    },
+    {
+      "id": "UI-35",
+      "surface": "vision_sim_sandbox",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "CoexistSim 전환 시 louis Heavy4B 즉시 반납 · 모의 백엔드 무오류 기동",
+      "split": "diag",
+      "hard_gates": ["GATE_STAGE_VRAM_CONTENTION"],
+      "expect": { "coexist_louis_mb_max": 1150.0, "console_errors": 0 }
+    },
+    {
+      "id": "UI-36",
+      "surface": "vision_xr_stage",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "XR Stage Live 전환 시 louis GPU <= 32 MB · 스왑 0회 · SAM/인라인스크립트 0줄",
+      "split": "diag",
+      "hard_gates": ["GATE_STAGE_VRAM_CONTENTION", "GATE_DUPLICATE_ANCHOR"],
+      "expect": {
+        "louis_gpu_after_lock_mb_max": 32.0,
+        "louis_ingest_mode": "disk_queue_only",
+        "vision_vram_swaps": 0,
+        "sam_residual_hits": 0
+      }
+    }
+  ],
+  "holdout_scenarios": [
+    {
+      "id": "UI-ZH-00",
+      "surface": "shared_router",
+      "axis": "window_dpi_esc",
+      "name_ko": "듀얼 앱 동시 핸드오프 경합 중 ( ✦ ) 단일 앵커 불변식 == 1",
+      "split": "holdout",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"]
+    },
+    {
+      "id": "UI-ZH-01",
+      "surface": "louis_pill_vault",
+      "axis": "window_dpi_esc",
+      "name_ko": "CJK 한글 IME 조합(isComposing=true) 중 Enter/Escape 오동작 0건",
+      "split": "holdout",
+      "hard_gates": ["GATE_DUPLICATE_ANCHOR"]
+    },
+    {
+      "id": "UI-ZH-02",
+      "surface": "louis_docs_studio",
+      "axis": "omnibar_hybrid_sql",
+      "name_ko": "적대적 SQL 인젝션(read_file · CROSS JOIN · 미허용 컬럼) 100% 차단",
+      "split": "holdout",
+      "hard_gates": ["GATE_SQL_GUARD_BYPASS"]
+    },
+    {
+      "id": "UI-ZH-03",
+      "surface": "louis_docs_studio",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "전 불이익/보완 처분 ApprovalNotice 오선택 시 강제 양식 스냅 100%",
+      "split": "holdout",
+      "hard_gates": ["GATE_WRONG_FORM_UNOVERRIDDEN"]
+    },
+    {
+      "id": "UI-ZH-04",
+      "surface": "louis_docs_studio",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "증빙 +1원 초과 수동 상향(85,000,001원) G2BlockUnprovenEdit 하드 차단",
+      "split": "holdout",
+      "hard_gates": ["GATE_RUBBER_STAMP_OR_OUTBOUND_LEAK"]
+    },
+    {
+      "id": "UI-ZH-05",
+      "surface": "louis_docs_studio",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "N2SF Reverse-CDR Classified->Open(승인번호 있어도 0 B) 및 S->O 무승인 차단",
+      "split": "holdout",
+      "hard_gates": ["GATE_RUBBER_STAMP_OR_OUTBOUND_LEAK"]
+    },
+    {
+      "id": "UI-ZH-06",
+      "surface": "louis_docs_studio",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "WORM 해시 변조 broken_at seq=200 핀포인트 & 미서명 실명 언마스킹 거부",
+      "split": "holdout",
+      "hard_gates": ["GATE_RUBBER_STAMP_OR_OUTBOUND_LEAK"]
+    },
+    {
+      "id": "UI-ZH-07",
+      "surface": "louis_field_3d",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "CounterKiosk Field-3D 진입 · /lens 라우팅 · Heavy4B 호출 100% 차단",
+      "split": "holdout",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH"]
+    },
+    {
+      "id": "UI-ZH-08",
+      "surface": "louis_field_3d",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "Field-3D LOTO 역순(Step 2 미충족 49%) 서명 차단 및 >= 56x56 px 장갑 타깃",
+      "split": "holdout",
+      "hard_gates": ["GATE_INTERLOCK_OR_BLACKOUT_MISS"]
+    },
+    {
+      "id": "UI-ZH-09",
+      "surface": "louis_pill_vault",
+      "axis": "privacy_kiosk_interlock",
+      "name_ko": "모바일 4스킨 격리 · WirelessCameraRig 단탭 잠금 · GraceBlurred · WAN 거부",
+      "split": "holdout",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH", "GATE_PRIVACY_PIXEL_LEAK"]
+    },
+    {
+      "id": "UI-ZH-10",
+      "surface": "vision_sim_sandbox",
+      "axis": "spatial_grounding_hud",
+      "name_ko": "Vision Sim 오라클 분리 · Show-IO 공인 IP 차단 · DOM 내 SAM/인라인 0건",
+      "split": "holdout",
+      "hard_gates": ["GATE_KIOSK_OR_WAN_BREACH"]
+    },
+    {
+      "id": "UI-ZH-11",
+      "surface": "vision_xr_stage",
+      "axis": "concurrency_gpu_60fps",
+      "name_ko": "XR Stage Shift+Space 비상 암전 <= 16.6ms · 인터록 잠금 · GPU <= 32MB",
+      "split": "holdout",
+      "hard_gates": ["GATE_STAGE_VRAM_CONTENTION", "GATE_INTERLOCK_OR_BLACKOUT_MISS"]
+    }
+  ]
+}

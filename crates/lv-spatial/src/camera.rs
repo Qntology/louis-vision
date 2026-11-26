@@ -1,6 +1,7 @@
 //! Camera intrinsics, pose, ray unprojection, and vertical FOV / look-down pitch geometry.
 
 use serde::{Deserialize, Serialize};
+use crate::fit3::V3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Intrinsics {
@@ -18,6 +19,12 @@ pub struct Pose {
     pub z: f32,
     pub yaw: f32,
     pub eye_m: f32,
+}
+
+impl Pose {
+    pub fn at_pos(x: f32, eye_m: f32, z: f32) -> Self {
+        Self { x, z, yaw: 0.0, eye_m }
+    }
 }
 
 fn basis(yaw: f32, pitch: f32, roll: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
@@ -44,6 +51,16 @@ pub fn wrap_angle(a: f32) -> f32 {
 }
 
 impl Intrinsics {
+    pub fn pinhole(width: u32, height: u32, fov_deg: f32) -> Self {
+        Self {
+            width,
+            height,
+            fov_deg,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
+        }
+    }
+
     fn screen(&self, px: f32, py: f32) -> (f32, f32) {
         let (w, h) = (self.width.max(1) as f32, self.height.max(1) as f32);
         let half_w = (self.fov_deg.to_radians() * 0.5).tan();
@@ -53,6 +70,59 @@ impl Intrinsics {
 
     fn axes(&self, yaw: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
         basis(yaw, self.pitch_deg.to_radians(), self.roll_deg.to_radians())
+    }
+
+    #[inline]
+    pub fn focal_px(&self) -> f64 {
+        0.5 * (self.height.max(1) as f64) / (0.5 * (self.vfov_deg() as f64).to_radians()).tan().max(1e-6)
+    }
+
+    #[inline]
+    pub fn camera_axes(&self, yaw: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        self.axes(yaw)
+    }
+
+    pub fn project_world_unclamped(&self, pose: &Pose, p: V3) -> Option<(f32, f32, f32)> {
+        let (fwd, right, up) = self.axes(pose.yaw);
+        let d = [
+            p[0] - pose.x as f64,
+            p[1] - pose.eye_m as f64,
+            p[2] - pose.z as f64,
+        ];
+        let x_c = d[0] * right[0] as f64 + d[1] * right[1] as f64 + d[2] * right[2] as f64;
+        let y_c = -(d[0] * up[0] as f64 + d[1] * up[1] as f64 + d[2] * up[2] as f64);
+        let z_c = d[0] * fwd[0] as f64 + d[1] * fwd[1] as f64 + d[2] * fwd[2] as f64;
+        if !z_c.is_finite() || z_c <= 1e-4 {
+            return None;
+        }
+        let f_px = self.focal_px();
+        let px = 0.5 * self.width.max(1) as f64 + f_px * (x_c / z_c);
+        let py = 0.5 * self.height.max(1) as f64 + f_px * (y_c / z_c);
+        Some((px as f32, py as f32, z_c as f32))
+    }
+
+    pub fn project_world(&self, pose: &Pose, p: V3) -> Option<(f32, f32, f32)> {
+        let (px, py, z) = self.project_world_unclamped(pose, p)?;
+        if px >= 0.0 && px < self.width as f32 && py >= 0.0 && py < self.height as f32 {
+            Some((px, py, z))
+        } else {
+            None
+        }
+    }
+
+    pub fn unproject_optical(&self, pose: &Pose, px: f32, py: f32, depth_m: f32) -> V3 {
+        let (fwd, right, up) = self.axes(pose.yaw);
+        let f_px = self.focal_px();
+        let x_n = (px as f64 - 0.5 * self.width.max(1) as f64) / f_px;
+        let y_n = (py as f64 - 0.5 * self.height.max(1) as f64) / f_px;
+        let z = depth_m as f64;
+        let x_c = x_n * z;
+        let y_c = -y_n * z;
+        [
+            pose.x as f64 + x_c * right[0] as f64 + y_c * up[0] as f64 + z * fwd[0] as f64,
+            pose.eye_m as f64 + x_c * right[1] as f64 + y_c * up[1] as f64 + z * fwd[1] as f64,
+            pose.z as f64 + x_c * right[2] as f64 + y_c * up[2] as f64 + z * fwd[2] as f64,
+        ]
     }
 
     pub fn world_up_in_camera(&self) -> [f32; 3] {

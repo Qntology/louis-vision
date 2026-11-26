@@ -1,0 +1,36 @@
+[package]
+name = "lv-planar"
+description = "Layer 2.5 zero-network 3D-to-2D metric homography bridge: ActiveReadabilityGate, closed-form 3x3 unwarping, lv-doc/lv-screen routing, 3D privacy quad zeroize, and H^-1 + egoexo 3D anchoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["domain"]
+domain  = ["dep:lv-domain"]
+screen  = ["dep:lv-screen"]
+cuda    = ["lv-core/cuda", "lv-doc/cuda", "lv-spatial/cuda", "lv-screen?/cuda"]
+rocm    = ["lv-core/rocm", "lv-doc/rocm", "lv-spatial/rocm", "lv-screen?/rocm"]
+vulkan  = ["lv-core/vulkan", "lv-doc/vulkan", "lv-spatial/vulkan", "lv-screen?/vulkan"]
+metal   = ["lv-core/metal", "lv-doc/metal", "lv-spatial/metal", "lv-screen?/metal"]
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec = { workspace = true, optional = false }
+zeroize.workspace = true
+
+lv-kernels.workspace = true
+lv-sds.workspace = true
+lv-core.workspace = true
+lv-spatial.workspace = true
+lv-doc    = { workspace = true, default-features = false }
+lv-domain = { workspace = true, optional = true }
+lv-screen = { workspace = true, optional = true }
+
+premium-discount-eval.workspace = true
+premium-discount-sds.workspace = true

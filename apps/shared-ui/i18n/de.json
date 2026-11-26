@@ -1,0 +1,12 @@
+{
+  "lang": "de",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "Vorherige Nachrichten laden",
+  "pair_title": "Lokale Geräte-Kopplung (Zero-WAN · X25519)",
+  "pair_qr_hint": "Im selben lokalen Netzwerk scannen",
+  "pair_role_label": "Geräterolle festlegen",
+  "pair_connect": "LAN verbinden",
+  "pair_recover": "12-Wort-Wiederherstellung eingeben",
+  "sql_blocked": "Durch SQL-AST-Guard blockiert",
+  "reposition_hint": "Abstand oder Winkel anpassen"
+}

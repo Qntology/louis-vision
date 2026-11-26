@@ -181,6 +181,13 @@ impl OverlayController {
         }
     }
 
+    pub fn notify_external_privacy_hit(&mut self) -> u64 {
+        let next = self.privacy_epoch.fetch_add(1, Ordering::Release) + 1;
+        self.sensor.purge_privacy_residue();
+        self.diff_state.purge_privacy_residue();
+        next
+    }
+
     pub fn reprime_sentinel() -> u32 {
         REPRIME_THRESHOLD_MILLI
     }

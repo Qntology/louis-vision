@@ -1,0 +1,101 @@
+/* apps/shared-ui/css/tokens.css
+ * Unified zero-npm design tokens for Louis-Vision (apps/louis & apps/vision). */
+:root {
+  /* 1. Translucent Glass HUD Surface */
+  --lv-bg-stage: rgba(15, 18, 24, 0.78);
+  --glass: rgba(20, 24, 32, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-blur: blur(14px);
+  --lv-text-primary: #F3F5F8;
+  --lv-text-muted: #9BA3B0;
+  --lv-accent: #60A5FA;
+
+  /* 2. Verdict & Interlock Semantic Colors */
+  --lv-ok: #22C55E;
+  --lv-wait: #F59E0B;
+  --lv-busy: #38BDF8;
+  --lv-bad: #EF4444;
+
+  /* 3. N2SF Security Grade Chrome Edge (2px top strip) */
+  --n2sf-open: #14B8A6;
+  --n2sf-sensitive: #F59E0B;
+  --n2sf-classified: #EF4444;
+
+  /* 4. Base Pointer & HUD Geometry */
+  --lv-hit-min: 34px;
+  --lv-font-scale: 1;
+  --lv-hud-w: 360px;
+  --lv-star-size: 52px;
+  --lv-popover-w: 400px;
+  --lv-popover-h: 600px;
+}
+
+/* XR Stage Live Blackout Console Theme */
+[data-theme="stage-dark"] {
+  --lv-bg-stage: #0B0D10;
+  --glass: rgba(11, 13, 16, 0.90);
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --lv-accent: #F43F5E;
+}
+
+/* Field Safety-Glove Operation Mode */
+[data-trait="no-fine-gesture"] {
+  --lv-hit-min: 56px;
+  --lv-font-scale: 1.15;
+}
+
+/* N2SF 2px Top Chrome Edge */
+.lv-n2sf-edge {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 9999;
+  pointer-events: none;
+  background: var(--n2sf-sensitive);
+}
+
+[data-n2sf="open"] .lv-n2sf-edge,
+[data-n2sf="open"] .lv-n2sf-dot {
+  background: var(--n2sf-open);
+}
+
+[data-n2sf="sensitive"] .lv-n2sf-edge,
+[data-n2sf="sensitive"] .lv-n2sf-dot {
+  background: var(--n2sf-sensitive);
+}
+
+[data-n2sf="classified"] .lv-n2sf-edge,
+[data-n2sf="classified"] .lv-n2sf-dot {
+  background: var(--n2sf-classified);
+}
+
+/* Low-contrast diagonal Classified watermark (zero-opacity unless Classified active) */
+.lv-classified-watermark {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  display: none;
+  place-items: center;
+  font-size: 20px;
+  letter-spacing: 0.25em;
+  color: rgba(239, 68, 68, 0.14);
+  transform: rotate(-22deg);
+  user-select: none;
+}
+
+[data-n2sf="classified"] .lv-classified-watermark {
+  display: grid;
+}
+
+/* Enforce mobile/tablet glove & tap target ergonomics without inline styles */
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: flex;
+  flex-direction: column;
+}

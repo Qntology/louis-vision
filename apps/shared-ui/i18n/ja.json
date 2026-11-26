@@ -1,0 +1,12 @@
+{
+  "lang": "ja",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "以前の履歴を読み込む",
+  "pair_title": "ローカル端末ペアリング (Zero-WAN · X25519)",
+  "pair_qr_hint": "同一ルーターの端末でスキャンしてください",
+  "pair_role_label": "端末ロール・スキン指定",
+  "pair_connect": "LAN接続",
+  "pair_recover": "12語オフライン復旧フレーズ入力",
+  "sql_blocked": "SQL AST安全ゲートにより遮断されました",
+  "reposition_hint": "距離または角度の調整が必要です"
+}

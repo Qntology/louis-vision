@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod models;
+pub mod router_peer;
 pub mod sim;
 pub mod state;
 pub mod views;
@@ -24,6 +25,7 @@ pub fn run() {
     }
     tauri::Builder::default()
         .manage(app_state)
+        .manage(router_peer::ManagedPeerRouter::default())
         .invoke_handler(tauri::generate_handler![
             commands::presets,
             commands::hand_geometry,
@@ -59,6 +61,9 @@ pub fn run() {
             models::models_cancel,
             models::models_delete,
             models::models_activate,
+            router_peer::peer_state,
+            router_peer::peer_request_stage_live,
+            router_peer::peer_apply_privacy_epoch,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Vision Sandbox logistics robot simulator")

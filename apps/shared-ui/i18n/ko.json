@@ -1,0 +1,12 @@
+{
+  "lang": "ko",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "이전 대화 불러오기",
+  "pair_title": "로컬 보안 단말 연결 (Zero-WAN · X25519)",
+  "pair_qr_hint": "동일 공유기/핫스팟 스마트폰으로 스캔하세요 (STUN/TURN 없음)",
+  "pair_role_label": "연결 단말 역할·스킨 지정",
+  "pair_connect": "사설망 연결",
+  "pair_recover": "단말 분실 시 12단어 오프라인 복구 구문 입력",
+  "sql_blocked": "보안 SQL 가드에 의해 차단되었습니다",
+  "reposition_hint": "시점·거리 조정이 필요합니다"
+}

@@ -1,0 +1,12 @@
+{
+  "lang": "zh",
+  "star_title": "✦ Louis Assistant",
+  "pull_prev": "加载历史记录",
+  "pair_title": "本地安全终端配对 (Zero-WAN · X25519)",
+  "pair_qr_hint": "请使用同一局域网设备扫描（无STUN/TURN）",
+  "pair_role_label": "指定终端角色与界面",
+  "pair_connect": "局域网连接",
+  "pair_recover": "输入12词离线恢复短语",
+  "sql_blocked": "已被SQL安全网关拦截",
+  "reposition_hint": "需要调整距离或视角以读取"
+}

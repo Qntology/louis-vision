@@ -237,3 +237,14 @@ pub fn inject_virtual_gridlines(gray: &GrayImage, min_row_bands: usize) -> Optio
     }
     Some((out, valleys_x, valleys_y))
 }
+
+/// Runs `straight_ink` deskew alignment on an RGB scan prior to injecting `Luma = 180` virtual gridlines.
+pub fn straight_borderless_grid(
+    rgb: &image::RgbImage,
+    min_row_bands: usize,
+) -> Option<(GrayImage, Vec<u32>, Vec<u32>, f32)> {
+    let (aligned_rgb, _ink, deg) = super::ink::straight_ink(rgb);
+    let gray = image::imageops::grayscale(&aligned_rgb);
+    let (out, vx, vy) = inject_virtual_gridlines(&gray, min_row_bands)?;
+    Some((out, vx, vy, deg))
+}

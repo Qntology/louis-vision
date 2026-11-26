@@ -62,7 +62,11 @@ pub fn parse_hwp5(bytes: &[u8]) -> Result<DocIr> {
         (true, true) => VisionFallbackNeed::FullPage,
         (false, true) => VisionFallbackNeed::None,
     };
-    Ok(DocIr { format: "hwp5".to_string(), blocks, media, fallback, plain_text: lines.join("\n") })
+    let mut ir = DocIr::new("hwp5", fallback);
+    ir.blocks = blocks;
+    ir.media = media;
+    ir.plain_text = lines.join("\n");
+    Ok(ir.finalize())
 }
 
 fn decode_hwp5_section(data: &[u8]) -> Vec<String> {
@@ -160,7 +164,11 @@ pub fn parse_hwpx(bytes: &[u8]) -> Result<DocIr> {
         (false, false) => VisionFallbackNeed::EmbeddedOnly,
         (false, true) => VisionFallbackNeed::None,
     };
-    Ok(DocIr { format: "hwpx".to_string(), blocks, media, fallback, plain_text: plain_lines.join("\n") })
+    let mut ir = DocIr::new("hwpx", fallback);
+    ir.blocks = blocks;
+    ir.media = media;
+    ir.plain_text = plain_lines.join("\n");
+    Ok(ir.finalize())
 }
 
 fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
@@ -181,7 +189,10 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
     let mut cell_text = String::new();
 
     let mut in_t = false;
+    let mut in_strike = false;
     let mut para_text = String::new();
+    let mut para_struck: Vec<super::ir::TrackChange> = Vec::new();
+    let mut cell_struck: Vec<super::ir::TrackChange> = Vec::new();
 
     let attr_usize = |e: &quick_xml::events::BytesStart<'_>, keys: &[&[u8]]| -> Option<usize> {
         for a in e.attributes().flatten() {
@@ -228,14 +239,27 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                         cur_cspan = attr_usize(&e, &[b"colSpan"]).unwrap_or(1).max(1);
                         cur_rspan = attr_usize(&e, &[b"rowSpan"]).unwrap_or(1).max(1);
                     }
-                    b"p" if !in_tc => para_text.clear(),
+                    b"p" if !in_tc => {
+                        para_text.clear();
+                        para_struck.clear();
+                    }
+                    b"strikeout" | b"strike" => in_strike = true,
                     b"t" => in_t = true,
                     _ => {}
                 }
             }
             Ok(Event::Text(e)) if in_t => {
                 let s = String::from_utf8_lossy(e.as_ref());
-                if in_tc {
+                if in_strike {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        if in_tc {
+                            cell_struck.push(super::ir::TrackChange::Struck(t.to_string()));
+                        } else {
+                            para_struck.push(super::ir::TrackChange::Struck(t.to_string()));
+                        }
+                    }
+                } else if in_tc {
                     if !cell_text.is_empty() && !cell_text.ends_with('\n') && !s.is_empty() {
                         // Append inline segments directly; separate paragraphs on </hp:p>
                     }
@@ -246,13 +270,17 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"t" => in_t = false,
+                b"strikeout" | b"strike" => in_strike = false,
                 b"p" => {
                     if in_tc {
                         if !cell_text.ends_with('\n') && !cell_text.is_empty() {
                             cell_text.push('\n');
                         }
-                    } else if !para_text.trim().is_empty() {
-                        blocks.push(DocBlock::Paragraph { text: para_text.trim().to_string(), track_changes: Vec::new() });
+                    } else if !para_text.trim().is_empty() || !para_struck.is_empty() {
+                        blocks.push(DocBlock::Paragraph {
+                            text: para_text.trim().to_string(),
+                            track_changes: std::mem::take(&mut para_struck),
+                        });
                         para_text.clear();
                     }
                 }
@@ -284,6 +312,9 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                             cols: tbl_cols,
                             col_widths: vec![1; tbl_cols],
                             cells: std::mem::take(&mut cells),
+                            unit_multiplier: 1,
+                            carried_scale_from_prev: false,
+                            headers: Vec::new(),
                         }));
                     }
                 }

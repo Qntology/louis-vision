@@ -45,7 +45,16 @@ TIER1_BANNED_CRATES = (
 )
 
 APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
-VISION_BANNED_CRATES = ("lv-doc", "lv-screen", "lv-agent", "lv-domain", "lancedb", "louis-docs", "louis", "tauri")
+VISION_BANNED_CRATES = ("lv-screen", "lv-agent", "lancedb", "louis-docs", "louis", "tauri")
+VISION_OFFICE_PARSER_CRATES = ("cfb", "calamine", "pdf-extract", "scraper", "html-pug", "hwp-writer")
+TIER1_EVAL_FORBIDDEN_LITERALS = (
+    '"docs_nn_scenarios"',
+    '"DOCS_NN_HOLDOUT_SEED"',
+    '"ZH-"',
+    '"ui_nn_scenarios"',
+    '"UI_NN_HOLDOUT_SEED"',
+    '"UI-ZH-"',
+)
 
 
 def iter_cargo_manifests(base: Path) -> list[Path]:
@@ -125,6 +134,16 @@ def check_tier1_purity(lv_root: Path, errs: list[str]) -> None:
                 if re.search(rf"(?<![\w-]){re.escape(banned)}(?![\w-])", code):
                     errs.append(f"Tier 1 purity violation in {rel}:{lineno}: banned crate '{banned}'")
 
+    planar_manifest = lv_root / "crates" / "lv-planar" / "Cargo.toml"
+    if planar_manifest.exists():
+        ptext = planar_manifest.read_text(encoding="utf-8", errors="replace")
+        has_no_default_lv_doc = any(
+            ("lv-doc" in strip_comment(ln)) and ("default-features" in ln) and ("false" in ln)
+            for ln in ptext.splitlines()
+        )
+        if not has_no_default_lv_doc:
+            errs.append("Tier 1 boundary violation in crates/lv-planar/Cargo.toml: lv-doc must set default-features = false")
+
     crates_dir = lv_root / "crates"
     if crates_dir.exists():
         for rs in sorted(crates_dir.glob("lv-*/src/**/*.rs")):
@@ -141,6 +160,26 @@ def check_tier1_purity(lv_root: Path, errs: list[str]) -> None:
                 ):
                     if re.search(pat, line):
                         errs.append(f"Tier 1 source violation in {rel}:{lineno}: {label}")
+                for lit in TIER1_EVAL_FORBIDDEN_LITERALS:
+                    if lit in line:
+                        errs.append(f"Tier 1 eval-literal leak in {rel}:{lineno}: forbidden literal {lit}")
+
+
+def _scan_vision_lv_doc_no_default(manifest: Path, lv_root: Path, errs: list[str]) -> None:
+    rel = manifest.relative_to(lv_root).as_posix()
+    text = manifest.read_text(encoding="utf-8", errors="replace")
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        code = strip_comment(raw).strip()
+        if not code:
+            continue
+        if re.match(r"^lv-doc\s*=", code):
+            if "default-features = false" not in code or "docs-io" in code:
+                errs.append(f"Tier 2-B violation in {rel}:{lineno}: apps/vision lv-doc must link with default-features = false (no docs-io)")
+        elif "lv-doc/docs-io" in code:
+            errs.append(f"Tier 2-B violation in {rel}:{lineno}: apps/vision must not enable lv-doc/docs-io")
+        for parser in VISION_OFFICE_PARSER_CRATES:
+            if re.search(rf"(?<![\w-]){re.escape(parser)}(?![\w-])", code):
+                errs.append(f"Tier 2-B violation in {rel}:{lineno}: office parser '{parser}' forbidden in apps/vision")
 
 
 def _scan_manifest_banned(manifest: Path, lv_root: Path, banned_list: tuple[str, ...], errs: list[str]) -> None:
@@ -165,16 +204,19 @@ def check_apps_purity(lv_root: Path, errs: list[str]) -> None:
     vision_manifest = apps_dir / "vision" / "Cargo.toml"
     if vision_manifest.exists():
         _scan_manifest_banned(vision_manifest, lv_root, APPS_BANNED_WAN_CRATES + VISION_BANNED_CRATES, errs)
+        _scan_vision_lv_doc_no_default(vision_manifest, lv_root, errs)
     for m in sorted((apps_dir / "vision" / "crates").glob("*/Cargo.toml")):
         crate_banned = APPS_BANNED_WAN_CRATES + (
-            "lv-doc",
             "lv-screen",
             "lv-agent",
-            "lv-domain",
             "louis-docs",
             "louis",
             "tauri",
         )
+        if m.parent.name != "sandbox-runtime":
+            crate_banned = crate_banned + ("lv-doc", "lv-planar", "lv-domain")
+        else:
+            _scan_vision_lv_doc_no_default(m, lv_root, errs)
         if m.parent.name != "sandbox-data":
             crate_banned = crate_banned + ("lancedb",)
         _scan_manifest_banned(m, lv_root, crate_banned, errs)
@@ -183,7 +225,7 @@ def check_apps_purity(lv_root: Path, errs: list[str]) -> None:
         _scan_manifest_banned(
             tauri_manifest,
             lv_root,
-            ("sammie-sam3", "sammie-accel", "lv-doc", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis"),
+            ("sammie-sam3", "sammie-accel", "lv-doc", "lv-planar", "lv-screen", "lv-agent", "lv-domain", "louis-docs", "louis"),
             errs,
         )
 
@@ -250,6 +292,14 @@ def main() -> int:
             if extra.exists():
                 for m in iter_cargo_manifests(extra):
                     check_manifest_rules(m, extra, errs, candle_revs)
+        lc_doc_manifest = lc_root / "crates" / "logis-vision-doc" / "Cargo.toml"
+        if lc_doc_manifest.exists():
+            lc_text = lc_doc_manifest.read_text(encoding="utf-8", errors="replace")
+            for lineno, raw in enumerate(lc_text.splitlines(), 1):
+                code = strip_comment(raw).strip()
+                for banned_3d in ("lv-spatial", "lv-planar", "lv-screen"):
+                    if re.search(rf"(?<![\w-]){re.escape(banned_3d)}(?![\w-])", code):
+                        errs.append(f"logis-center boundary violation in crates/logis-vision-doc/Cargo.toml:{lineno}: banned 3D crate '{banned_3d}'")
 
     if not candle_revs:
         errs.append("No candle-rocm-vulkan rev found")

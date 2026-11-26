@@ -70,7 +70,9 @@ function dropBubble(b) {
 /** 안 덮을 영역: 코너·허브·유닛 HUD (world-wrap 기준). */
 function obstacles() {
   const o = $('world-wrap').getBoundingClientRect();
-  return ['corner-tl', 'hub', 'unit-hud'].map($).concat(document.querySelector('.corner-tr'))
+  return ['corner-tl', 'hub', 'unit-hud', 'stage-interlock-hud', 'lv-star-root']
+    .map($)
+    .concat(document.querySelector('.corner-tr'))
     .filter((n) => n && !n.hidden)
     .map((n) => {
       const r = n.getBoundingClientRect();

@@ -272,6 +272,192 @@ impl DeviceVramSnapshot {
         self.proc_active_bytes
             .unwrap_or_else(|| self.total_bytes.saturating_sub(self.driver_free_bytes.min(self.os_budget_free_bytes)))
     }
+
+    pub fn resident_used_mb_f32(&self) -> f32 {
+        (self.proc_active_or_used() as f64 / (1024.0 * 1024.0)) as f32
+    }
+}
+
+pub fn device_from_env_or_cpu() -> Device {
+    select_device().unwrap_or(Device::Cpu)
+}
+
+pub fn is_software_vulkan_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    ["llvmpipe", "lavapipe", "swiftshader", "softpipe"]
+        .iter()
+        .any(|pat| lower.contains(pat))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccelProbeOutcome {
+    pub backend: String,
+    pub ordinal: usize,
+    pub adapter_name: String,
+    pub hardware_verified: bool,
+    pub accel_fallbacks: Vec<String>,
+    pub panic_abort_safe: bool,
+    pub reason: Option<String>,
+}
+
+pub fn validate_adapter_hardware(backend: &str, adapter_name: &str) -> std::result::Result<(), String> {
+    if backend.eq_ignore_ascii_case("vulkan") && is_software_vulkan_name(adapter_name) {
+        return Err(format!("software vulkan adapter rejected: {adapter_name}"));
+    }
+    Ok(())
+}
+
+/// Evaluates the current process's accelerator stack on `(backend, ordinal)` without panicking under `panic = "abort"`.
+pub fn probe_current_process_accel(backend: &str, ordinal: usize) -> AccelProbeOutcome {
+    let pref = DevicePref::parse(backend).unwrap_or(DevicePref::Auto);
+    let label = if backend.trim().is_empty() { "auto" } else { backend.trim() };
+    let adapter_name = std::env::var("LV_PROBE_ADAPTER_NAME").unwrap_or_else(|_| {
+        format!("{label}:{ordinal}")
+    });
+    if let Err(reason) = validate_adapter_hardware(label, &adapter_name) {
+        return AccelProbeOutcome {
+            backend: label.to_string(),
+            ordinal,
+            adapter_name,
+            hardware_verified: false,
+            accel_fallbacks: vec![reason.clone()],
+            panic_abort_safe: true,
+            reason: Some(reason),
+        };
+    }
+    // Never panic inside probe; degrade via Result::Err -> false.
+    let dev = match pref {
+        DevicePref::Cpu => Device::Cpu,
+        _ => match select_device_with(pref) {
+            Ok(d) => d,
+            Err(e) => {
+                let msg = format!("device open fallback to cpu: {e}");
+                return AccelProbeOutcome {
+                    backend: label.to_string(),
+                    ordinal,
+                    adapter_name,
+                    hardware_verified: false,
+                    accel_fallbacks: vec![msg.clone()],
+                    panic_abort_safe: true,
+                    reason: Some(msg),
+                };
+            }
+        },
+    };
+    let ops_ok = accel_op_ok(&dev, AccelOp::Matmul) && accel_op_ok(&dev, AccelOp::QuantQ8);
+    AccelProbeOutcome {
+        backend: backend_name(&dev).to_string(),
+        ordinal,
+        adapter_name,
+        hardware_verified: ops_ok && (!dev.is_cpu() || pref == DevicePref::Cpu),
+        accel_fallbacks: if ops_ok {
+            Vec::new()
+        } else {
+            vec![format!("accel_op_ok failed on {}", device_label(&dev))]
+        },
+        panic_abort_safe: true,
+        reason: if ops_ok { None } else { Some("kernel parity check failed".into()) },
+    }
+}
+
+pub fn maybe_run_accel_probe_from_args(args: &[String]) -> Option<AccelProbeOutcome> {
+    if !args.iter().any(|a| a == PROBE_FLAG) {
+        return None;
+    }
+    let mut backend = "auto".to_string();
+    let mut ordinal = 0usize;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--backend" {
+            if let Some(v) = args.get(i + 1) {
+                backend = v.clone();
+                i += 1;
+            }
+        } else if args[i] == "--ordinal" {
+            if let Some(v) = args.get(i + 1) {
+                ordinal = v.parse::<usize>().unwrap_or(0);
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    Some(probe_current_process_accel(&backend, ordinal))
+}
+
+/// Spawns `exe_path --lv-accel-probe --backend <backend> --ordinal <ordinal>` in an isolated child process
+/// with breadcrumb tracking (`probe_inflight.json`) so driver faults never bring down the parent UI/eval host.
+pub fn run_isolated_accel_probe(
+    exe_path: &Path,
+    backend: &str,
+    ordinal: usize,
+    breadcrumb_dir: Option<&Path>,
+) -> AccelProbeOutcome {
+    let crumb_path = breadcrumb_dir.map(ProbeBreadcrumb::default_path);
+    if let Some(ref p) = crumb_path {
+        let _ = (ProbeBreadcrumb {
+            backend: backend.to_string(),
+            ordinal,
+            stage: "spawn".to_string(),
+        })
+        .write(p);
+    }
+    let out = std::process::Command::new(exe_path)
+        .arg(PROBE_FLAG)
+        .arg("--backend")
+        .arg(backend)
+        .arg("--ordinal")
+        .arg(ordinal.to_string())
+        .env(GPU_ENV, ordinal.to_string())
+        .env(DEVICE_ENV, backend)
+        .output();
+    if let Some(ref p) = crumb_path {
+        ProbeBreadcrumb::clear(p);
+    }
+    match out {
+        Ok(res) if res.status.success() => {
+            if let Ok(parsed) = serde_json::from_slice::<AccelProbeOutcome>(&res.stdout) {
+                return parsed;
+            }
+            AccelProbeOutcome {
+                backend: backend.to_string(),
+                ordinal,
+                adapter_name: format!("{backend}:{ordinal}"),
+                hardware_verified: false,
+                accel_fallbacks: vec!["invalid probe json output".into()],
+                panic_abort_safe: true,
+                reason: Some("probe output was not valid JSON".into()),
+            }
+        }
+        Ok(res) => {
+            let stderr = String::from_utf8_lossy(&res.stderr).trim().to_string();
+            let reason = format!(
+                "isolated probe exited with status {}{}",
+                res.status,
+                if stderr.is_empty() { String::new() } else { format!(": {stderr}") }
+            );
+            AccelProbeOutcome {
+                backend: backend.to_string(),
+                ordinal,
+                adapter_name: format!("{backend}:{ordinal}"),
+                hardware_verified: false,
+                accel_fallbacks: vec![reason.clone()],
+                panic_abort_safe: res.status.code().is_some(),
+                reason: Some(reason),
+            }
+        }
+        Err(e) => {
+            let reason = format!("failed to spawn isolated probe: {e}");
+            AccelProbeOutcome {
+                backend: backend.to_string(),
+                ordinal,
+                adapter_name: format!("{backend}:{ordinal}"),
+                hardware_verified: false,
+                accel_fallbacks: vec![reason.clone()],
+                panic_abort_safe: true,
+                reason: Some(reason),
+            }
+        }
+    }
 }
 
 pub fn proc_active_bytes(device: &Device) -> Option<u64> {
@@ -516,5 +702,36 @@ mod tests {
         assert!(trusted_with_cache("sim:0", AccelOp::DecoderOps, ToleranceTier::F32Compute, || {
             Ok((vec![1.0, 2.0], vec![1.0, 2.0]))
         }));
+    }
+
+    #[test]
+    fn software_vulkan_adapter_is_rejected_and_vram_mb_computes() {
+        assert!(validate_adapter_hardware("vulkan", "llvmpipe (LLVM 17.0)").is_err());
+        assert!(validate_adapter_hardware("vulkan", "lavapipe").is_err());
+        assert!(validate_adapter_hardware("vulkan", "AMD Radeon RX 6600").is_ok());
+
+        let snap = DeviceVramSnapshot {
+            driver_free_bytes: 6 * 1024 * 1024 * 1024,
+            os_budget_free_bytes: 7 * 1024 * 1024 * 1024,
+            pool_idle_bytes: 0,
+            proc_active_bytes: Some(256 * 1024 * 1024),
+            total_bytes: 8 * 1024 * 1024 * 1024,
+        };
+        assert!((snap.resident_used_mb_f32() - 256.0).abs() < 1e-4);
+
+        let args = vec![
+            "bin".into(),
+            PROBE_FLAG.into(),
+            "--backend".into(),
+            "vulkan".into(),
+            "--ordinal".into(),
+            "1".into(),
+        ];
+        std::env::set_var("LV_PROBE_ADAPTER_NAME", "llvmpipe");
+        let outcome = maybe_run_accel_probe_from_args(&args).unwrap();
+        std::env::remove_var("LV_PROBE_ADAPTER_NAME");
+        assert!(!outcome.hardware_verified);
+        assert!(!outcome.accel_fallbacks.is_empty());
+        assert!(outcome.panic_abort_safe);
     }
 }

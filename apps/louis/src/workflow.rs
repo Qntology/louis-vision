@@ -166,8 +166,18 @@ impl VerdictExt for AgentVerdict {
     }
 }
 
+pub use crate::eval_nn::schema::{DocsNnSuiteReport, SuiteSplit as EvalSplit};
+
 pub fn gate_constants_check() -> (OperatingMode, f32, u64) {
     (OperatingMode::default(), AUTO_CONFIDENCE_FLOOR, POST_AUDIT_MOD)
+}
+
+pub fn evaluate_docs_nn_suite(
+    mode: EngineMode,
+    split: EvalSplit,
+    release_seal_flag: bool,
+) -> Result<DocsNnSuiteReport> {
+    crate::eval_nn::run_eval_nn_suite(mode, split, release_seal_flag)
 }
 
 #[cfg(test)]

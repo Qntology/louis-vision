@@ -1,0 +1,66 @@
+{
+  "schema_version": "docs_nn_v3_1",
+  "diag_seed": 20260501,
+  "holdout_seed": 20261126,
+  "core_pack_ids": [
+    "construction_settle",
+    "rnd_audit",
+    "insolvency_legal",
+    "finance_3way",
+    "claims_med",
+    "ra_qa_esg",
+    "safety_hr"
+  ],
+  "all_18_pack_ids": [
+    "construction_settle",
+    "rnd_audit",
+    "insolvency_legal",
+    "finance_3way",
+    "claims_med",
+    "ra_qa_esg",
+    "safety_hr",
+    "trade_customs_lc",
+    "warehouse_hazmat_pod",
+    "retail_srm_settle",
+    "public_g2b_contract",
+    "fin_kyc_loan",
+    "tax_evid_audit",
+    "ip_patent_sec",
+    "eng_ecn_bom",
+    "defense_ram_mro",
+    "hr_comp_privacy",
+    "audit_board_gov"
+  ],
+  "axes": [
+    "digital_clean",
+    "digital_hostile",
+    "scan_2d_degraded",
+    "field_3d_planar",
+    "privacy_contaminated",
+    "burst_concurrent"
+  ],
+  "hard_gates": [
+    "GATE_FALSE_AUTO_FINALIZE",
+    "GATE_RUBBER_STAMP_BYPASS",
+    "GATE_UNPROVEN_AMOUNT_UPWARD",
+    "GATE_OUTBOUND_TERM_OR_FACT_LEAK",
+    "GATE_PRIVACY_OR_KIOSK_BREACH",
+    "GATE_INTERLOCK_OUT_OF_ORDER"
+  ],
+  "scenarios": [
+    { "id": "D1", "name": "multi_doc_3way_hostile_del_and_4b_crop_escalation", "axes": ["digital_hostile", "scan_2d_degraded"] },
+    { "id": "D2", "name": "sliding_7d_split_vendor_and_homonym_gemma4_resolution", "axes": ["digital_clean", "digital_hostile"] },
+    { "id": "D3", "name": "field_3d_readability_gate_stereo_unwarp_and_loto_order", "axes": ["field_3d_planar", "scan_2d_degraded"] },
+    { "id": "D4", "name": "kr_numeral_equiv_hallucination_fallback_and_16_forbidden", "axes": ["digital_clean", "privacy_contaminated"] },
+    { "id": "D5", "name": "counter_kiosk_jail_overlay_zeroize_and_bip39_vault", "axes": ["privacy_contaminated"] },
+    { "id": "D6", "name": "mandatory_form_snap_and_step0_early_exit", "axes": ["digital_clean", "digital_hostile"] },
+    { "id": "D7", "name": "concurrent_50doc_ingest_readonly_residency_and_low_vram", "axes": ["burst_concurrent"] },
+    { "id": "D8", "name": "shift_dsli_post_audit_10pct_and_worm_tamper_pinpoint", "axes": ["burst_concurrent", "privacy_contaminated"] },
+    { "id": "D9", "name": "multipage_scale_carry_struck_iso6346_mod11_and_srm_xls", "axes": ["digital_hostile", "scan_2d_degraded"] },
+    { "id": "D10", "name": "n2sf_reverse_cdr_unicode_tag_smuggling_and_beacon_block", "axes": ["digital_hostile", "privacy_contaminated"] },
+    { "id": "D11", "name": "cross_modal_gemma4_unrelated_image_and_baseline_gaslight", "axes": ["digital_hostile", "scan_2d_degraded"] },
+    { "id": "D12", "name": "blueprint_l1_l3_legend_a0_2hop_and_18pack_sweep", "axes": ["scan_2d_degraded", "field_3d_planar"] }
+  ],
+  "holdout_prefix": "ZH-",
+  "holdout_count": 36
+}

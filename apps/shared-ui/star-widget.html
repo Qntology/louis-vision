@@ -1,0 +1,34 @@
+<aside id="lv-star-root" data-stage="mini" data-shield="clear">
+  <ol id="lv-mini-feed" class="lv-mini-feed" aria-live="polite"></ol>
+
+  <button id="lv-star-btn" class="lv-star-btn" type="button" aria-label="Louis Assistant 열기">
+    <span class="lv-star-ring" aria-hidden="true"></span>
+    <span class="lv-star-glyph" aria-hidden="true">✦</span>
+    <span id="lv-star-badge" class="lv-star-badge" hidden>0</span>
+  </button>
+
+  <section id="lv-chat-popover" class="lv-chat-popover" hidden>
+    <header id="lv-chat-head" class="lv-chat-head drag-area">
+      <span id="lv-n2sf-dot" class="lv-n2sf-dot" data-grade="sensitive"></span>
+      <strong id="lv-chat-title" data-i18n="star_title">✦ Louis Assistant</strong>
+      <span id="lv-unit-chip" class="lv-unit-chip" hidden></span>
+      <div class="lv-head-actions">
+        <button id="lv-btn-studio" type="button" data-tip="풀스크린 스튜디오 확장">[+]</button>
+        <button id="lv-btn-collapse" type="button" data-tip="미니 상태로 접기">[-]</button>
+      </div>
+    </header>
+
+    <div class="lv-chat-wrap">
+      <div id="lv-pull-top" class="lv-pull-indicator" hidden data-i18n="pull_prev">이전 대화 불러오기</div>
+      <div id="lv-chat-scroll" class="lv-chat-scroll">
+        <div id="lv-chat-stream" class="lv-chat-stream"></div>
+      </div>
+    </div>
+
+    <form id="lv-chat-form" class="lv-chat-form" autocomplete="off">
+      <button id="lv-btn-attach" type="button" aria-label="파일·폴더 등록">+</button>
+      <input id="lv-chat-input" type="text" placeholder="질의, /명령어, SQL 집계 요청..." />
+      <button id="lv-btn-send" type="submit" aria-label="전송">Send</button>
+    </form>
+  </section>
+</aside>

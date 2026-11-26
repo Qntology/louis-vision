@@ -89,3 +89,21 @@ pub fn fuse(obs: &[ViewObs]) -> Option<(V3, M3)> {
     }
     Some((mean, fused_cov))
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Fused3D {
+    pub point: V3,
+    pub cov: M3,
+    pub sigma_m: f32,
+}
+
+/// Convenience wrapper returning fused 3D point, covariance matrix, and isotropic radial sigma (`sqrt(trace(cov) / 3)`).
+pub fn fuse_3d(obs: &[ViewObs]) -> Option<Fused3D> {
+    let (point, cov) = fuse(obs)?;
+    let trace = (cov[0][0] + cov[1][1] + cov[2][2]).max(0.0);
+    Some(Fused3D {
+        point,
+        cov,
+        sigma_m: (trace / 3.0).sqrt() as f32,
+    })
+}
