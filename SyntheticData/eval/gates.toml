@@ -1,0 +1,51 @@
+# Declarative N:N Retrieval & Hygiene Gates for louis-vision SyntheticData (seed2 vs E2E)
+
+[overall]
+min_mrr = 0.90
+min_recall_at_10 = 0.95
+min_ndcg_at_10 = 0.90
+min_hit_at_1 = 0.85
+min_zero_hit_accuracy = 1.0
+min_cross_lingual_mrr = 0.85
+min_relay_recall = 0.95
+
+[per_format_e2e]
+min_mrr = 0.90
+min_recall_at_10 = 0.95
+max_security_leaks = 0
+max_covert_leaks = 0
+max_superseded_leaks = 0
+
+[coverage]
+min_domains = 19
+min_formats = 8
+min_langs = 15
+min_domain_format_cells = 152
+
+[zero_tolerance]
+max_security_leaks = 0
+max_covert_leaks = 0
+max_superseded_leaks = 0
+max_gov_id_digit_leaks = 0
+max_parse_failures = 0
+max_wav_alignment_failures = 0
+
+[corpus_size]
+min_total_docs_full = 3000
+min_doc_bytes = 512000
+max_docs_under_500kb = 0
+
+[answer_quality]
+min_fact_recall = 0.95
+min_numeric_exact_rate = 0.98
+min_citation_precision = 0.95
+min_groundedness_rate = 0.98
+min_citizen_guard_clean_rate = 1.0
+min_abstention_accuracy = 1.0
+
+[domain_fit]
+min_structural_pass_rate = 1.0
+min_probe_top1_accuracy = 1.0
+min_probe_top10_purity = 0.99
+max_domain_mismatch_top1 = 0
+min_doc_affinity_accuracy = 0.99

@@ -6,3 +6,9 @@
 .DS_Store
 Thumbs.db
 **/binaries/*.exe
+
+# Generated 2+ GB SyntheticData binary corpus & raw search dumps
+# (regenerate locally via SyntheticData/eval/run_eval.ps1)
+SyntheticData/domains/
+SyntheticData/relational/*.jsonl
+SyntheticData/eval/search_results_*.jsonl

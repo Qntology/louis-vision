@@ -7,9 +7,79 @@
   <link rel="stylesheet" href="../../shared-ui/css/tokens.css" />
   <link rel="stylesheet" href="../../shared-ui/css/widgets.css" />
 </head>
-<body data-surface="louis_desktop_overlay" data-n2sf="sensitive">
+<body class="lv-overlay-body" data-surface="louis_desktop_overlay" data-n2sf="sensitive" data-shield="clear">
   <div class="lv-n2sf-edge" aria-hidden="true"></div>
   <div class="lv-classified-watermark" aria-hidden="true">CLASSIFIED · INTERNAL AUDIT</div>
+
+  <main id="lv-router-deck" class="lv-router-deck" aria-label="Single-Anchor Process Router">
+    <header class="lv-deck-head">
+      <div>
+        <strong>✦ Louis-Vision 단일 앵커 프로세스 라우터</strong>
+        <div class="lv-muted" style="margin-top:2px;">127.0.0.1:8787 루프백 버스 · Single-Anchor Dual-Engine 중재</div>
+      </div>
+      <span id="rt-stars" class="lv-pill">Active ( ✦ ): 1 / Anchor: louis.desktop.anchor.v1</span>
+    </header>
+
+    <section class="lv-telemetry-grid" aria-label="라우터 실시간 상태">
+      <div class="lv-tel-card">
+        <span class="lv-tel-k">활성 표면 (Surface Owner)</span>
+        <span id="rt-owner" class="lv-tel-v">louis_desktop_overlay</span>
+      </div>
+      <div class="lv-tel-card">
+        <span class="lv-tel-k">GPU 임대 (Lease · Resident)</span>
+        <span id="rt-lease" class="lv-tel-v">louis_exclusive (1850 MB)</span>
+      </div>
+      <div class="lv-tel-card">
+        <span class="lv-tel-k">보안 등급 · Privacy Epoch</span>
+        <span id="rt-privacy" class="lv-tel-v">Sensitive · epoch=0 clear</span>
+      </div>
+    </section>
+
+    <nav class="lv-deck-actions" aria-label="전 표면 1-클릭 라우팅">
+      <a id="btn-go-studio" class="lv-route-pill primary" href="./studio.html">/docs Docs Studio</a>
+      <a id="btn-go-field" class="lv-route-pill" href="./field-lens.html">/lens Field-3D AR</a>
+      <a id="btn-go-mobile" class="lv-route-pill" href="./mobile.html">LAN 모바일 4-스킨</a>
+      <a id="btn-go-sim" class="lv-route-pill" href="../../vision/ui/index.html">/sim · /stage Vision Sandbox</a>
+      <button id="btn-open-omni" class="lv-route-pill" type="button">Omni-Bar (Ctrl+K)</button>
+      <button id="btn-open-pair" class="lv-route-pill" type="button">LAN QR 페어링</button>
+      <button id="btn-toggle-privacy" class="lv-route-pill warn" type="button">Privacy Epoch 차폐</button>
+    </nav>
+    <div id="rt-last-route" class="lv-muted">의도·확장자 자동 라우팅 대기 중 (.hwpx -> Docs | .urdf -> 45s Speculative | .glb -> CoexistSim | /stage -> StagePinnedLock)</div>
+  </main>
+
+  <dialog id="lv-pair-modal" class="lv-glass-modal" aria-labelledby="pair-title">
+    <header class="lv-modal-head">
+      <h2 id="pair-title" style="margin:0;font-size:15px;">로컬 보안 단말 연결 (Zero-WAN · X25519 · Blockies)</h2>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span id="lan-subnet-badge" class="lv-pill">LAN 192.168.45.x : 9999</span>
+        <button id="btn-pair-close" type="button" class="lv-pill">✕</button>
+      </div>
+    </header>
+    <div class="lv-pair-grid">
+      <section class="lv-qr-card">
+        <div id="pair-qr-box" class="lv-qr-box" aria-label="사설망 페어링 QR">
+          <canvas id="pair-qr-canvas" width="144" height="144"></canvas>
+        </div>
+        <p class="lv-muted">동일 사설망 스마트폰 스캔 (WAN 차단)</p>
+      </section>
+      <section class="lv-role-card">
+        <label for="pair-role-select" style="font-size:12px;">단말 역할·스킨 지정</label>
+        <select id="pair-role-select">
+          <option value="personal_phone">사무·현장 개인 금고 (C/S/O)</option>
+          <option value="counter_kiosk">민원 창구 키오스크 (Open 감옥)</option>
+          <option value="wireless_camera_rig">Stage 무대 거치 무선 리그</option>
+          <option value="stage_cue_remote">Stage 연출가 큐 리모컨</option>
+        </select>
+        <div class="lv-seed-box">
+          <input id="pair-addr-input" type="text" value="192.168.45.12:9999" style="width:150px;" />
+          <input id="pair-seed-input" type="number" min="10" max="99" value="42" />
+          <button id="btn-lan-scan" class="lv-route-pill primary" type="button">사설망 검증</button>
+          <button id="btn-wan-reject" class="lv-route-pill warn" type="button">WAN 차단 시험</button>
+        </div>
+        <div id="pair-status" class="lv-muted">0xAbCd...AbCd Blockies-Haring 지문 동기화 대기</div>
+      </section>
+    </div>
+  </dialog>
 
   <div id="lv-omni-backdrop" class="lv-omni-backdrop" hidden>
     <div class="lv-omni-box" role="dialog" aria-label="Louis Omni-Bar">

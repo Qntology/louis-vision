@@ -71,6 +71,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
     let mut in_ins = false;
     let mut in_del = false;
     let mut in_strike = false;
+    let mut in_vanish = false;
     let mut run_vert: u8 = 0; // 0 = normal, 1 = superscript, 2 = subscript
     let mut in_text_el = false;
     let mut ins_buf = String::new();
@@ -141,7 +142,22 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     }
                     b"r" => {
                         in_strike = false;
+                        in_vanish = false;
                         run_vert = 0;
+                    }
+                    b"vanish" => {
+                        let off = w_val(&e).is_some_and(|v| v == "0" || v.eq_ignore_ascii_case("false"));
+                        if !off {
+                            in_vanish = true;
+                        }
+                    }
+                    b"sz" => {
+                        if w_val(&e)
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .is_some_and(|v| v <= 2)
+                        {
+                            in_vanish = true;
+                        }
                     }
                     b"strike" | b"dstrike" => {
                         let off = w_val(&e).is_some_and(|v| v == "0" || v.eq_ignore_ascii_case("false"));
@@ -169,6 +185,9 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                 }
             }
             Ok(Event::Text(e)) if in_text_el => {
+                if in_vanish {
+                    continue;
+                }
                 let s = String::from_utf8_lossy(e.as_ref());
                 let formatted = match run_vert {
                     1 if !s.trim().is_empty() => format!("^{}", s.trim()),
@@ -203,6 +222,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     }
                     struck_buf.clear();
                     in_strike = false;
+                    in_vanish = false;
                     run_vert = 0;
                 }
                 b"ins" => {
@@ -306,5 +326,38 @@ fn normalize_docx_table(col_widths: &[u32], raw_rows: &[Vec<(usize, Option<&'sta
         unit_multiplier: 1,
         carried_scale_from_prev: false,
         headers: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn docx_skips_vanish_and_zero_pt_runs() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Visible Contract Header</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:vanish/><w:sz w:val="0"/><w:color w:val="FFFFFF"/></w:rPr><w:t>COVERT_VANISH_TOKEN</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:sz w:val="2"/></w:rPr><w:t>COVERT_1PT_TOKEN</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:vanish w:val="0"/><w:sz w:val="22"/></w:rPr><w:ins w:id="1" w:author="ok"><w:t>Visible Inserted Clause</w:t></w:ins></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cur);
+            zw.start_file("word/document.xml", SimpleFileOptions::default()).unwrap();
+            zw.write_all(doc_xml.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+        let ir = parse_docx(&cur.into_inner()).unwrap();
+        assert!(ir.plain_text.contains("Visible Contract Header"));
+        assert!(ir.plain_text.contains("Visible Inserted Clause"));
+        assert!(!ir.plain_text.contains("COVERT_VANISH_TOKEN"));
+        assert!(!ir.plain_text.contains("COVERT_1PT_TOKEN"));
     }
 }

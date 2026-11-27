@@ -11,13 +11,15 @@
   <main class="studio-shell" id="studio-shell">
     <header class="studio-topbar">
       <div class="studio-nav">
+        <a class="lv-btn" href="./index.html">✦ 라우터</a>
         <strong>Louis Docs Studio</strong>
         <label for="studio-pack-select">도메인:</label>
         <select id="studio-pack-select" class="inp" style="width: auto;"></select>
         <span id="studio-domain-badge" class="lv-pill" data-term="domain_badge">DOM-01 공공·건설 정산</span>
         <button id="btn-run-cascade" type="button" class="lv-btn primary">[ ✦ ] 캐스케이드 검증</button>
-        <a id="link-field-3d" class="lv-btn" href="./field-lens.html">[3D 트윈 보기 ▸]</a>
-        <a class="lv-btn" href="./mobile.html">LAN 모바일 4-스킨</a>
+        <a id="link-field-3d" class="lv-btn" href="./field-lens.html">[3D 트윈 ▸]</a>
+        <a class="lv-btn" href="./mobile.html">LAN 모바일</a>
+        <a class="lv-btn" href="../../vision/ui/index.html">❖ Vision Sim/Stage</a>
       </div>
       <div class="studio-nav">
         <span id="dsli-badge" class="lv-pill">DSLI_18: 0.42 (OK)</span>
@@ -75,6 +77,16 @@
             <button type="button" class="lv-btn legend-sample" data-symbol="none">비심볼 none 방어 (&lt;=1%)</button>
           </div>
           <div id="legend-status" style="margin-top:6px;font-size:11px;">등록된 퓨샷 클래스: 없음</div>
+        </div>
+
+        <div id="sql-guard-card" class="lv-banner">
+          <strong>5중 DataFusion Text-to-SQL AST 가드</strong>
+          <div style="display:flex;gap:6px;margin-top:6px;">
+            <input id="sql-guard-input" class="inp" type="text" value="SELECT doc_id, amt_krw FROM docs_entities" />
+            <button id="btn-run-sql" type="button" class="lv-btn primary">실행</button>
+            <button id="btn-sql-attack" type="button" class="lv-btn danger">공격</button>
+          </div>
+          <div id="sql-guard-result" class="worm-log" style="margin-top:6px;">화이트리스트 Arrow 뷰 5종 · 단일 SELECT · LIMIT &lt;= 200 대기</div>
         </div>
       </section>
 
@@ -164,7 +176,32 @@
     </div>
   </main>
 
-  <aside id="lv-star-root"></aside>
+  <aside id="lv-star-root" data-stage="mini" data-shield="clear">
+    <ol id="lv-mini-feed" class="lv-mini-feed" aria-live="polite"></ol>
+    <button id="lv-star-btn" class="lv-star-btn" type="button" aria-label="Louis Assistant 열기">
+      <span class="lv-star-ring" aria-hidden="true"></span>
+      <span class="lv-star-glyph" aria-hidden="true">✦</span>
+      <span id="lv-star-badge" class="lv-star-badge" hidden>0</span>
+    </button>
+    <section id="lv-chat-popover" class="lv-chat-popover" hidden>
+      <header id="lv-chat-head" class="lv-chat-head drag-area">
+        <span id="lv-n2sf-dot" class="lv-n2sf-dot" data-grade="sensitive"></span>
+        <strong id="lv-chat-title">✦ Louis Studio Assistant</strong>
+        <div class="lv-head-actions">
+          <button id="lv-btn-collapse" type="button" data-tip="Collapse">[-]</button>
+        </div>
+      </header>
+      <div class="lv-chat-wrap">
+        <div id="lv-chat-scroll" class="lv-chat-scroll">
+          <div id="lv-chat-stream" class="lv-chat-stream"></div>
+        </div>
+      </div>
+      <form id="lv-chat-form" class="lv-chat-form" autocomplete="off">
+        <input id="lv-chat-input" type="text" placeholder="스튜디오 질의, /sim, /lens..." />
+        <button id="lv-btn-send" type="submit" aria-label="전송">Send</button>
+      </form>
+    </section>
+  </aside>
   <script type="module" src="./js/studio.js"></script>
 </body>
 </html>

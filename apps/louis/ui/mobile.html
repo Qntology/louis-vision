@@ -31,16 +31,47 @@
     </header>
 
     <section class="pane-glass" id="mobile-skin-stage" style="grid-column:1 / -1;">
-      <div id="mobile-qr-card" class="lv-banner ok">
-        <strong>LAN 사설망 전용 WebRTC QR 페어링 (공인 WAN 100% 차단)</strong>
-        <div id="mobile-skin-desc" style="margin-top:6px;">
-          활성 스킨: field_inspection — 안전장갑 56px 조작 · Field-3D 스트림 연결
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <div class="lv-qr-box" style="width:156px;height:156px;background:#fff;padding:6px;border-radius:10px;display:grid;place-items:center;">
+          <canvas id="mobile-qr-canvas" width="144" height="144" aria-label="Blockies-Haring LAN QR"></canvas>
+        </div>
+        <div id="mobile-qr-card" class="lv-banner ok" style="flex:1;min-width:260px;">
+          <strong>LAN 사설망 전용 WebRTC QR 페어링 (공인 WAN 100% 차단)</strong>
+          <div id="mobile-skin-desc" style="margin-top:6px;">
+            활성 스킨: field_inspection — 안전장갑 56px 조작 · Field-3D 스트림 연결
+          </div>
+          <div style="margin-top:6px;font-size:11px;opacity:0.85;">
+            Blockies Seed: <code>0xAbCDef012345678901234567890123456789AbCd</code> · Subnet: 192.168.45.x
+          </div>
         </div>
       </div>
+
       <div class="studio-nav" style="margin-top:8px;">
-        <button id="btn-wan-probe" type="button" class="lv-btn danger">공인 WAN(8.8.8.8:9999) 페어링 차단 테스트</button>
+        <button id="btn-wan-probe" type="button" class="lv-btn danger">공인 WAN(8.8.8.8:9999) 페어링 차단</button>
+        <button id="btn-lan-probe" type="button" class="lv-btn primary">RFC1918 LAN(192.168.45.12:9999) 허용</button>
+        <button id="btn-grace-zeroize" type="button" class="lv-btn">만료 zeroize (0 B) 검증</button>
         <span id="mobile-wan-msg" class="lv-pill">LAN Only (127.0.0.1 / RFC1918)</span>
       </div>
+
+      <div id="mobile-skin-panels" style="margin-top:8px;">
+        <div class="tab-content active lv-banner ok" data-skin-pane="field_inspection">
+          <strong>[Skin 1] 현장 3D 점검 (OperatorTablet · S 등급)</strong>
+          <div>56px 안전장갑 셔터 · 350ms Auto-Freeze · AOP-103 순차 LOTO 인터록</div>
+        </div>
+        <div class="tab-content lv-banner" data-skin-pane="docs_review">
+          <strong>[Skin 2] 서류 5-Gate 심사 (Auditor · C/S 등급)</strong>
+          <div>ApprovalNotice 강제 스냅 · +1원 차단 · Reverse-CDR 순수 재조립</div>
+        </div>
+        <div class="tab-content lv-banner warn" data-skin-pane="kiosk_intake">
+          <strong>[Skin 3] 민원 창구 접수 전용 (CounterKiosk · Open 감옥)</strong>
+          <div>Nano08B 전용 · 원장 복호화 · 3D AR · Base2B/Heavy4B 적재 영구 차단</div>
+        </div>
+        <div class="tab-content lv-banner" data-skin-pane="executive_audit">
+          <strong>[Skin 4] 사후 감사 브리핑 (Executive · DSLI_18 &amp; 5년 WORM)</strong>
+          <div>1,825일 이중 해시체인 무결성 감사 · 10% 표본 대조 리포트</div>
+        </div>
+      </div>
+
       <div id="esc-ime-log" class="worm-log" style="margin-top:12px;">
         8-단계 ESC/IME 스택 대기 중 (IME composing=229 보호 활성)
       </div>
