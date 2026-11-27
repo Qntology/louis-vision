@@ -1,0 +1,382 @@
+{
+  "avg_doc_bytes": 685531.1615691489,
+  "cases_per_domain": 16,
+  "docs_under_500kb": 0,
+  "domain_fit_audit": {
+    "doc_domain_affinity_accuracy": 1.0,
+    "domain_fit_top10_purity": 1.0,
+    "domain_fit_top1_accuracy": 1.0,
+    "domain_mismatch_top1_count": 0,
+    "domain_structural_pass_rate": 1.0
+  },
+  "domains": [
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-01_construction_settle",
+      "docs": 160,
+      "domain_id": "DOM-01",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "construction_settle",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-02_rnd_audit",
+      "docs": 160,
+      "domain_id": "DOM-02",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "rnd_audit",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-03_insolvency_legal",
+      "docs": 160,
+      "domain_id": "DOM-03",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "insolvency_legal",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-04_finance_3way",
+      "docs": 160,
+      "domain_id": "DOM-04",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "finance_3way",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-05_claims_med",
+      "docs": 160,
+      "domain_id": "DOM-05",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "claims_med",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-06_ra_qa_esg",
+      "docs": 160,
+      "domain_id": "DOM-06",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "ra_qa_esg",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-07_safety_hr",
+      "docs": 160,
+      "domain_id": "DOM-07",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "safety_hr",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-08_trade_customs_lc",
+      "docs": 160,
+      "domain_id": "DOM-08",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "trade_customs_lc",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-09_warehouse_hazmat_pod",
+      "docs": 160,
+      "domain_id": "DOM-09",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "warehouse_hazmat_pod",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-10_retail_srm_settle",
+      "docs": 160,
+      "domain_id": "DOM-10",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "retail_srm_settle",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-11_public_g2b_contract",
+      "docs": 160,
+      "domain_id": "DOM-11",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "public_g2b_contract",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-12_fin_kyc_loan",
+      "docs": 160,
+      "domain_id": "DOM-12",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "fin_kyc_loan",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-13_tax_evid_audit",
+      "docs": 160,
+      "domain_id": "DOM-13",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "tax_evid_audit",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-14_ip_patent_sec",
+      "docs": 160,
+      "domain_id": "DOM-14",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "ip_patent_sec",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-15_eng_ecn_bom",
+      "docs": 160,
+      "domain_id": "DOM-15",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "eng_ecn_bom",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-16_defense_ram_mro",
+      "docs": 160,
+      "domain_id": "DOM-16",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "defense_ram_mro",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-17_hr_comp_privacy",
+      "docs": 160,
+      "domain_id": "DOM-17",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "hr_comp_privacy",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/DOM-18_audit_board_gov",
+      "docs": 160,
+      "domain_id": "DOM-18",
+      "formats": {
+        "docx": 36,
+        "hwp": 12,
+        "hwpx": 28,
+        "mhtml": 12,
+        "pdf": 28,
+        "xls_html": 12,
+        "xlsx": 20,
+        "xml": 12
+      },
+      "pack_id": "audit_board_gov",
+      "queries": 152
+    },
+    {
+      "audio_wavs": 16,
+      "dir": "domains/XRC-TWIN_xrc_concert_twin",
+      "docs": 128,
+      "domain_id": "XRC-TWIN",
+      "formats": {
+        "docx": 32,
+        "hwp": 8,
+        "hwpx": 24,
+        "mhtml": 8,
+        "pdf": 24,
+        "xls_html": 8,
+        "xlsx": 16,
+        "xml": 8
+      },
+      "pack_id": "xrc_concert_twin",
+      "queries": 152
+    }
+  ],
+  "domains_covered": 19,
+  "e2e_answer_quality": {
+    "abstention_accuracy": 1.0,
+    "abstention_queries": 456,
+    "citation_precision": 0.9874588815789473,
+    "citizen_guard_clean_rate": 1.0,
+    "evaluated_queries": 2888,
+    "fact_recall": 0.9959566885964913,
+    "groundedness_rate": 1.0,
+    "numeric_exact_rate": 0.9962993421052632,
+    "positive_answered": 2432
+  },
+  "format_domain_cells_covered": 152,
+  "formats_covered": 8,
+  "langs_covered": 15,
+  "max_doc_bytes": 724456,
+  "median_doc_bytes": 672079,
+  "min_doc_bytes": 667645,
+  "queries_sha256_hex": "bd2b0ce9dd4270dc3c9344d94cd412ba3d79852fe70f0654454ad85be0d7f288",
+  "seed": 20260501,
+  "split": "diag",
+  "total_audio_wavs": 304,
+  "total_bytes": 2062077734,
+  "total_docs": 3008,
+  "total_queries": 2888,
+  "world_sha256_hex": "d7f768e530c3f730efd16f1493ad531f102a733c3c5592f9d95b7b5622d5988d"
+}

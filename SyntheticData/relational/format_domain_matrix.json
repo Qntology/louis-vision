@@ -1,0 +1,192 @@
+{
+  "DOM-01": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-02": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-03": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-04": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-05": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-06": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-07": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-08": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-09": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-10": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-11": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-12": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-13": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-14": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-15": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-16": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-17": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "DOM-18": {
+    "docx": 36,
+    "hwp": 12,
+    "hwpx": 28,
+    "mhtml": 12,
+    "pdf": 28,
+    "xls_html": 12,
+    "xlsx": 20,
+    "xml": 12
+  },
+  "XRC-TWIN": {
+    "docx": 32,
+    "hwp": 8,
+    "hwpx": 24,
+    "mhtml": 8,
+    "pdf": 24,
+    "xls_html": 8,
+    "xlsx": 16,
+    "xml": 8
+  }
+}

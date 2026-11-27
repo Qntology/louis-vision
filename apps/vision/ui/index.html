@@ -33,6 +33,7 @@
     <header class="corner-tl" id="corner-tl">
       <div class="corner-row">
         <span class="brand-mark">❖ vision sandbox</span>
+        <a class="ov-pill" id="link-louis-studio" href="../../louis/ui/studio.html" style="text-decoration:none;">◂ Louis Studio</a>
         <div id="vision-mode-switch" class="lv-seg" role="tablist" aria-label="공간 엔진 모드">
           <button type="button" class="ov-pill" id="mode-btn-sim" role="tab" data-mode="sim" aria-selected="true">Sim Sandbox</button>
           <button type="button" class="ov-pill" id="mode-btn-stage" role="tab" data-mode="stage" aria-selected="false">XR Stage Live</button>
@@ -254,6 +255,19 @@
       </div>
       <p class="hint" id="stage-interlock-status">전 채널 정상 — AutoTimecode 및 Cue Remote 허가됨</p>
       <button type="button" class="btn btn-danger" id="btn-stage-blackout" style="width:100%;margin-top:8px;">⏹ 비상 Blackout (F12 / Shift+Space)</button>
+      <button type="button" class="btn btn-outline" id="btn-stage-reset" style="width:100%;margin-top:6px;">↺ 인터록 · 암전 안전 복구</button>
+    </aside>
+
+    <!-- Stage 전용 HaringDancerRig 정사영 무대 프리뷰 (`Gate UI-HARING`) -->
+    <aside class="vp-glass stage-haring-panel" id="stage-haring-panel" aria-label="Gate UI-HARING 무대 리그" hidden>
+      <div class="bh-head">
+        <span class="bh-title">💃 HaringDancerRig (`Gate UI-HARING`)</span>
+      </div>
+      <canvas id="stage-haring-canvas" width="320" height="210" aria-label="해링 무대 3D 리그 정사영"></canvas>
+      <div class="pv-kv" style="margin-top:6px;">
+        <span class="k">Wallet Seed</span><span class="v" id="haring-seed-label">0xAbCD...AbCd</span>
+        <span class="k">Outline · Purity</span><span class="v lv-ok" id="haring-audit-badge">#000000 · &gt;=99.5% · 6 ticks</span>
+      </div>
     </aside>
 
     <!-- 하단 중앙 슬림 트랙 바 (#log-feed · 입력줄은 우하단 #lv-star-root 로 완전 이관됨) -->

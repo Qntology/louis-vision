@@ -41,21 +41,23 @@
     </header>
 
     <section class="field-viewfinder" id="field-viewfinder" aria-label="AR 카메라 뷰파인더">
-      <div id="reposition-banner" class="lv-banner warn" style="margin:10px;">
+      <canvas id="field-ar-canvas" width="840" height="480" style="position:absolute;inset:0;width:100%;height:100%;z-index:0;"></canvas>
+      <div id="reposition-banner" class="lv-banner warn" style="position:relative;z-index:2;margin:10px;">
         VLM 호출 0회: 해상도 부족 (1.55 &lt; 5.5 px/mm) - 표면 정면으로 2.38m 접근하세요
       </div>
 
-      <div id="verified-callouts-layer">
+      <div id="verified-callouts-layer" style="position:relative;z-index:2;">
         <div class="callout-badge" style="left:28%;top:32%;">KKS: 10LAB10AP001 (RMSE 8.2mm)</div>
         <div class="callout-badge" style="left:55%;top:44%;">ISO6346: MSCU1234566</div>
       </div>
 
-      <div id="privacy-quad-stamp" class="lv-banner ok" style="position:absolute;right:12px;top:64px;max-width:260px;">
+      <div id="privacy-quad-stamp" class="lv-banner ok" style="position:absolute;right:12px;top:64px;max-width:260px;z-index:2;">
         3D 모니터 45° 사각형 Fail-Closed zeroize: 비영 픽셀 0개 확인
       </div>
 
-      <aside id="rectified-pip" class="rectified-pip">
+      <aside id="rectified-pip" class="rectified-pip" style="z-index:2;">
         <strong>#rectified-pip 3×3 정사영 복원</strong>
+        <canvas id="pip-canvas" width="200" height="84" style="display:block;width:100%;margin-top:6px;border-radius:4px;border:1px solid #30363d;"></canvas>
         <div id="pip-text" style="margin-top:4px;">10LAB10AP001 | UN1263 | NaN 홀 18% 보완 완료</div>
         <div id="freeze-status" style="margin-top:4px;color:#3fb950;">대기 중</div>
       </aside>
@@ -94,7 +96,26 @@
     </footer>
   </main>
 
-  <aside id="lv-star-root"></aside>
+  <aside id="lv-star-root" data-stage="mini" data-shield="clear">
+    <ol id="lv-mini-feed" class="lv-mini-feed" aria-live="polite"></ol>
+    <button id="lv-star-btn" class="lv-star-btn" type="button" aria-label="Field-3D 어시스턴트 열기">
+      <span class="lv-star-glyph" aria-hidden="true">✦</span>
+    </button>
+    <section id="lv-chat-popover" class="lv-chat-popover" hidden>
+      <header id="lv-chat-head" class="lv-chat-head">
+        <span id="lv-n2sf-dot" class="lv-n2sf-dot" data-grade="sensitive"></span>
+        <strong>✦ Field-3D LOTO Assistant</strong>
+        <div class="lv-head-actions">
+          <button id="lv-btn-collapse" type="button">[-]</button>
+        </div>
+      </header>
+      <div class="lv-chat-wrap">
+        <div id="lv-chat-scroll" class="lv-chat-scroll">
+          <div id="lv-chat-stream" class="lv-chat-stream"></div>
+        </div>
+      </div>
+    </section>
+  </aside>
   <script type="module" src="./js/field-lens.js"></script>
 </body>
 </html>

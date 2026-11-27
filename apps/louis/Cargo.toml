@@ -97,6 +97,22 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.lv-doc]
 opt-level = 2
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.zip]
+opt-level = 3
+[profile.dev.package.cfb]
+opt-level = 3
+[profile.dev.package.calamine]
+opt-level = 3
+[profile.dev.package.scraper]
+opt-level = 3
+[profile.dev.package.pdf-extract]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

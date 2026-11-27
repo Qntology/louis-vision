@@ -248,6 +248,7 @@ function assertCleanStaticHtml() {
     path.join(APPS_ROOT, 'louis', 'ui', 'field-lens.html'),
     path.join(APPS_ROOT, 'louis', 'ui', 'mobile.html'),
     path.join(APPS_ROOT, 'vision', 'ui', 'index.html'),
+    path.join(APPS_ROOT, 'vision', 'web-console', 'index.html'),
   ];
   for (const f of htmlFiles) {
     const raw = fs.readFileSync(f, 'utf8');

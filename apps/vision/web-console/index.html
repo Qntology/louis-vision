@@ -62,32 +62,12 @@
     <h3>3. Director Cue Remote</h3>
     <p>Valid Stereo Ratio Floor: <code>&gt;= 0.85</code></p>
     <p>Target Track Count: <code>Unlimited (&gt; 16 IDs)</code></p>
+    <p><label for="oscTargetInput">OSC Loopback Target:</label> <input id="oscTargetInput" type="text" value="127.0.0.1:9000" style="background:#0B0D10;color:#D7DCE5;border:1px solid #242A34;border-radius:4px;padding:4px 8px;width:150px;" /></p>
     <button id="cueGoBtn" type="button">Fire Cue (/louis/cue/main)</button>
     <span id="cueFeedback" style="display:block; margin-top:8px; color: var(--muted);">Ready</span>
   </section>
 </div>
 
-<script>
-(function () {
-  var halted = false;
-  var haltBanner = document.getElementById("haltBanner");
-  var cueBtn = document.getElementById("cueGoBtn");
-  var toggleBtn = document.getElementById("toggleHaltBtn");
-  var feedback = document.getElementById("cueFeedback");
-
-  toggleBtn.addEventListener("click", function () {
-    halted = !halted;
-    haltBanner.classList.toggle("active", halted);
-    cueBtn.disabled = halted;
-    toggleBtn.textContent = halted ? "Clear Interlock" : "Simulate Interlock Halt";
-    feedback.textContent = halted ? "BLOCKED by SandboxInterlock" : "Ready";
-  });
-
-  cueBtn.addEventListener("click", function () {
-    if (halted) return;
-    feedback.textContent = "Dispatched /louis/cue/main to 127.0.0.1:9000";
-  });
-})();
-</script>
+<script type="module" src="./console.js"></script>
 </body>
 </html>

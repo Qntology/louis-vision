@@ -1,4 +1,4 @@
-// apps/louis/ui/js/field-lens.js — Field-3D viewfinder, CounterKiosk lock, 350ms pass freeze & LOTO req_depth.
+// apps/louis/ui/js/field-lens.js — Field-3D viewfinder canvas renderer, CounterKiosk lock, 350ms pass freeze & LOTO req_depth.
 import { invokeDual } from '../../../shared-ui/js/bridge-client.js';
 
 const GUIDE_TEXT = {
@@ -14,9 +14,100 @@ let step2Passed = false;
 let step3Signed = false;
 let freezeTimer = null;
 
+function drawFieldScene(reason) {
+  const canvas = document.getElementById('field-ar-canvas');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    const g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, '#0f1726');
+    g.addColorStop(1, '#182438');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    // Subtle AR depth grid
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= w; x += 40) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y <= h; y += 40) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // Industrial valve + piping backdrop
+    ctx.fillStyle = '#253248';
+    ctx.fillRect(110, 210, 260, 44);
+    ctx.fillStyle = '#31425e';
+    ctx.fillRect(210, 155, 68, 145);
+
+    // Equipment Nameplate Quad (transforms per readability condition)
+    ctx.save();
+    ctx.translate(reason === 'ClippedByFrameEdge' ? 765 : 285, 130);
+    if (reason === 'SteepViewingAngle') ctx.transform(0.55, 0.28, -0.18, 0.9, 0, 0);
+    else if (reason === 'LowEffectiveDpi') ctx.scale(0.62, 0.62);
+
+    ctx.fillStyle = '#d4dde8';
+    ctx.fillRect(0, 0, 210, 118);
+    ctx.strokeStyle = reason === 'Pass' ? '#22c55e' : '#f59e0b';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(0, 0, 210, 118);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 14px ui-monospace, monospace';
+    ctx.fillText('KKS: 10LAB10AP001', 12, 28);
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.fillText('MSCU1234566 | UN1263', 12, 52);
+    ctx.fillText('MAWP: 30.0 bar | AOP-103', 12, 74);
+    ctx.fillText(reason === 'Pass' ? '6.4 px/mm OK (RMSE 8.2mm)' : `GATE: ${reason}`, 12, 100);
+
+    if (reason === 'SpecularGlareHoles') {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.86)';
+      ctx.beginPath();
+      ctx.ellipse(125, 58, 72, 34, -0.35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // 45° Oblique 3D Display Screen Privacy Fail-Closed Zeroize Mask (strict #000000 0 non-zero bytes)
+    ctx.save();
+    ctx.translate(585, 220);
+    ctx.transform(1.0, -0.14, 0.16, 0.92, 0, 0);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, 190, 110);
+    ctx.strokeStyle = '#3fb950';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(0, 0, 190, 110);
+    ctx.fillStyle = '#3fb950';
+    ctx.font = 'bold 11px ui-monospace, monospace';
+    ctx.fillText('3D MONITOR REDACTED', 14, 48);
+    ctx.fillText('0 NON-ZERO BYTES', 14, 68);
+    ctx.restore();
+  }
+
+  const pip = document.getElementById('pip-canvas');
+  if (pip) {
+    const pctx = pip.getContext('2d');
+    pctx.fillStyle = '#0b1220';
+    pctx.fillRect(0, 0, pip.width, pip.height);
+    pctx.fillStyle = reason === 'Pass' ? '#163427' : '#2b2113';
+    pctx.fillRect(6, 6, pip.width - 12, pip.height - 12);
+    pctx.strokeStyle = reason === 'Pass' ? '#3fb950' : '#f59e0b';
+    pctx.lineWidth = 2;
+    pctx.strokeRect(6, 6, pip.width - 12, pip.height - 12);
+    pctx.fillStyle = '#e6edf3';
+    pctx.font = 'bold 11px ui-monospace, monospace';
+    pctx.fillText('10LAB10AP001 [3x3 UNWARP]', 14, 30);
+    pctx.fillStyle = reason === 'Pass' ? '#7ee787' : '#f2cc60';
+    pctx.fillText(reason === 'Pass' ? '6.4 px/mm · FROZEN READY' : `HOLD: ${reason}`, 14, 54);
+  }
+}
+
 function updateRepositionBanner(reason) {
   const banner = document.getElementById('reposition-banner');
   const freezeEl = document.getElementById('freeze-status');
+  drawFieldScene(reason);
   if (!banner) return;
   banner.textContent = GUIDE_TEXT[reason] || GUIDE_TEXT.LowEffectiveDpi;
   banner.className = reason === 'Pass' ? 'lv-banner ok' : 'lv-banner warn';
@@ -38,6 +129,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const kioskShield = document.getElementById('kiosk-shield');
   const reasonSel = document.getElementById('reposition-reason-select');
   const alertEl = document.getElementById('interlock-alert');
+
+  drawFieldScene(reasonSel?.value || 'LowEffectiveDpi');
 
   roleSel?.addEventListener('change', () => {
     if (kioskShield) {
@@ -112,6 +205,15 @@ window.addEventListener('DOMContentLoaded', () => {
     const elapsedUs = Math.max(120, Math.round((performance.now() - t0) * 1000));
     const lockEl = document.getElementById('field-lock-us');
     if (lockEl) lockEl.textContent = `원장 커밋 완료: ${elapsedUs} us (< 2,000 us)`;
+  });
+
+  const starBtn = document.getElementById('lv-star-btn');
+  const starPop = document.getElementById('lv-chat-popover');
+  starBtn?.addEventListener('click', () => {
+    if (starPop) starPop.hidden = !starPop.hidden;
+  });
+  document.getElementById('lv-btn-collapse')?.addEventListener('click', () => {
+    if (starPop) starPop.hidden = true;
   });
 
   window.addEventListener('keydown', (e) => {

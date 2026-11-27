@@ -123,7 +123,7 @@
 
 .lv-chat-popover {
   width: var(--lv-popover-w);
-  height: var(--lv-popover-h);
+  height: min(var(--lv-popover-h), calc(100vh - 96px));
   border-radius: 16px;
   background: var(--lv-bg-stage);
   border: 1px solid var(--glass-border);
@@ -261,4 +261,215 @@
   display: grid;
   place-items: center;
   pointer-events: none;
+}
+
+/* Desktop Overlay Router Canvas & Telemetry Deck */
+.lv-overlay-body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(56, 189, 248, 0.14), transparent 42%),
+    radial-gradient(circle at 82% 75%, rgba(96, 165, 250, 0.16), transparent 46%),
+    linear-gradient(155deg, #090d14 0%, #0f1623 55%, #0a0f18 100%);
+  color: var(--lv-text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+.lv-router-deck {
+  max-width: 780px;
+  margin: 34px 0 0 34px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+[data-shield="lockdown"] .lv-router-deck {
+  filter: blur(16px);
+  pointer-events: none;
+}
+
+.lv-deck-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lv-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lv-tel-card {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 12, 20, 0.56);
+  border: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lv-tel-k {
+  font-size: 11px;
+  color: var(--lv-text-muted);
+}
+
+.lv-tel-v {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lv-text-primary);
+  font-family: ui-monospace, monospace;
+}
+
+.lv-deck-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lv-route-pill {
+  min-height: var(--lv-hit-min);
+  padding: 7px 12px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  color: var(--lv-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lv-route-pill.primary {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.lv-route-pill.warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+#lv-omni-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(5, 8, 14, 0.72);
+  color: var(--lv-text-primary);
+  font-size: 14px;
+}
+
+.lv-muted {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--lv-text-muted);
+}
+
+.lv-chat-msg {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.lv-chat-msg.user {
+  align-self: flex-end;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.42);
+}
+
+.lv-chat-msg.assistant {
+  align-self: flex-start;
+  background: rgba(15, 22, 34, 0.85);
+}
+
+.lv-glass-modal {
+  max-width: 620px;
+  width: 92vw;
+  border-radius: 16px;
+  background: #101622;
+  color: var(--lv-text-primary);
+  border: 1px solid var(--glass-border);
+  padding: 16px;
+}
+
+.lv-glass-modal::backdrop {
+  background: rgba(4, 7, 12, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.lv-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lv-pair-grid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 14px;
+}
+
+.lv-qr-box {
+  width: 156px;
+  height: 156px;
+  padding: 6px;
+  border-radius: 12px;
+  background: #ffffff;
+  display: grid;
+  place-items: center;
+}
+
+.lv-role-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lv-role-card select,
+.lv-seed-box input {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(5, 8, 14, 0.75);
+  border: 1px solid var(--glass-border);
+  color: var(--lv-text-primary);
+}
+
+.lv-seed-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lv-seed-box input {
+  width: 78px;
+}
+
+.lv-link-btn {
+  background: none;
+  border: none;
+  color: var(--lv-accent);
+  text-align: left;
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 12px;
 }
