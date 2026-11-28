@@ -20,8 +20,9 @@ export const FORBIDDEN_SQL_FUNCTIONS = [
   'READ_FILE', 'WRITE_FILE', 'CSV_SCAN', 'PARQUET_SCAN', 'LOAD_EXTENSION',
 ];
 
-export function parseOmniQuery(raw) {
+export function parseOmniQuery(raw, droppedFiles = []) {
   const input = String(raw || '').trim();
+  const files = Array.isArray(droppedFiles) ? droppedFiles.map(String) : [];
   const tokens = input.split(/\s+/).filter(Boolean);
   const tags = {};
   let slashCmd = null;
@@ -46,10 +47,11 @@ export function parseOmniQuery(raw) {
 
   const timeKey = detectTimeGuideKey(input);
   const freeText = freeTokens.join(' ');
-  const intent = classifyIntentRoute(slashCmd, tags, freeText);
+  const intent = classifyIntentRoute(slashCmd, tags, freeText, files);
 
   return {
     raw: input,
+    files,
     slashCmd,
     tags,
     freeText,

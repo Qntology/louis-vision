@@ -173,19 +173,23 @@ test('headless Chromium E2E: State A/B/C, 2-axis scroll lock, filters, CRUD+Undo
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    // 1. State A (default collapsed) + UI-36 forbidden token check on rendered DOM
+    // 1. State A (default collapsed) + Sim defaults (×1, chase) + UI-36 forbidden token check on rendered DOM
     const sA = await cdp.evalExpr(sessionId, `({
       deck: window.__spatialDeck.getState(),
       hidden: document.getElementById('spatial-deck').hidden,
       forbidden: /\\bSAM\\b|MobileSAM|4종/.test(document.body.innerHTML),
-      starCount: document.querySelectorAll('#lv-star-root').length
+      starCount: document.querySelectorAll('#lv-star-root').length,
+      defaultView: document.getElementById('view-select')?.value,
+      defaultSpeed: document.getElementById('sim-speed')?.value,
     })`);
     assert.equal(sA.deck.state, 'collapsed');
     assert.equal(sA.hidden, true);
     assert.equal(sA.forbidden, false);
     assert.equal(sA.starCount, 1);
+    assert.equal(sA.defaultView, 'chase');
+    assert.equal(sA.defaultSpeed, '1');
 
-    // 2. State B (expanded) + PiP minimap visible + default 2 cards per slice
+    // 2. State B (expanded) + PiP minimap visible + default 2 cards per track (4 tracks × 2 = 8 cards)
     const sB = await cdp.evalExpr(sessionId, `(() => {
       document.getElementById('deck-toggle-btn').click();
       return {
@@ -202,18 +206,24 @@ test('headless Chromium E2E: State A/B/C, 2-axis scroll lock, filters, CRUD+Undo
     assert.equal(sB.deck.state, 'expanded');
     assert.equal(sB.deckHidden, false);
     assert.equal(sB.minimapHidden, false);
-    assert.equal(sB.cardCount, 2);
+    assert.equal(sB.cardCount, 8);
     assert.equal(sB.hasGhost, true);
     assert.equal(sB.lockH, 'h');
     assert.equal(sB.lockV, 'v');
     assert.equal(sB.lockNone, null);
 
-    // 3. [+] Ghost card add, filter chip, split + inheritance, mute / Shift+delete / Ctrl+Z undo
+    // 3. [+] Ghost card add, all 4 filter chips (2 baseline cards each), split + inheritance, mute / Shift+delete / Ctrl+Z undo
     const crud = await cdp.evalExpr(sessionId, `(() => {
       document.getElementById('deck-ghost-add').click();
       const afterAdd = document.querySelectorAll('#slide-h-track .deck-card').length;
       window.__spatialDeck.setDeckFilter('cam');
       const filteredCam = document.querySelectorAll('#slide-h-track .deck-card').length;
+      window.__spatialDeck.setDeckFilter('actor');
+      const filteredActor = document.querySelectorAll('#slide-h-track .deck-card').length;
+      window.__spatialDeck.setDeckFilter('light');
+      const filteredLight = document.querySelectorAll('#slide-h-track .deck-card').length;
+      window.__spatialDeck.setDeckFilter('set');
+      const filteredSet = document.querySelectorAll('#slide-h-track .deck-card').length;
       window.__spatialDeck.setDeckFilter('all');
       window.__spatialDeck.splitActiveSlice();
       const afterSplitSlices = window.__spatialDeck.getState().slices.length;
@@ -223,10 +233,13 @@ test('headless Chromium E2E: State A/B/C, 2-axis scroll lock, filters, CRUD+Undo
       const afterDeleteSlices = window.__spatialDeck.getState().slices.length;
       window.__spatialDeck.undoDeckAction();
       const afterUndoSlices = window.__spatialDeck.getState().slices.length;
-      return { afterAdd, filteredCam, afterSplitSlices, muted1, afterDeleteSlices, afterUndoSlices };
+      return { afterAdd, filteredCam, filteredActor, filteredLight, filteredSet, afterSplitSlices, muted1, afterDeleteSlices, afterUndoSlices };
     })()`);
-    assert.equal(crud.afterAdd, 3);
-    assert.equal(crud.filteredCam, 1);
+    assert.equal(crud.afterAdd, 9);
+    assert.equal(crud.filteredCam, 2);
+    assert.equal(crud.filteredActor, 2);
+    assert.equal(crud.filteredLight, 3);
+    assert.equal(crud.filteredSet, 2);
     assert.equal(crud.afterSplitSlices, 3);
     assert.equal(crud.muted1, true);
     assert.equal(crud.afterDeleteSlices, 2);

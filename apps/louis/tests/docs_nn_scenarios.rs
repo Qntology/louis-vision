@@ -19,7 +19,6 @@ use louis_docs::eval_nn::domains::{
     dom18_audit_internal_gov::{compute_rule395_ytd_totals, verify_dom18_audit_override, QuoteMethod2026},
     SUPPORTED_15_LANGS,
 };
-use louis_docs::eval_nn::holdout_zh::build_holdout_zh_36_specs;
 use louis_docs::eval_nn::mcp_bus::{bind_strict_loopback_mcp, ensure_strict_loopback};
 use louis_docs::eval_nn::schema::{derive_case_seed, DocsNnSuiteReport, EvalSplit as NnEvalSplit, SuiteSplit};
 use louis_docs::eval_nn::synth_6axes::audio_patch_synth::{
@@ -289,8 +288,18 @@ fn nn_08_burst_d7_and_shift_aggregate_d8() {
 }
 
 #[test]
-fn nn_09_holdout_zh36_sealed_guard_and_hygiene() {
+fn nn_09_holdout_unsealed_guard_and_defs_digest() {
+    // Rule 7 / X-04: Normal `cargo test` NEVER constructs or executes sealed ZH holdout specs.
     assert!(run_eval_nn_suite(EngineMode::RulesOnly, SuiteSplit::HoldoutSeal, false).is_err());
+    let hash_check = Sha256::digest(DOCS_NN_SCENARIOS_JSON.as_bytes());
+    assert_eq!(hash_check.len(), 32);
+}
+
+#[test]
+#[ignore = "Rule 7 sealed holdout: run only at Session 6 --release-seal"]
+fn nn_09_holdout_zh36_release_seal_only() {
+    use louis_docs::eval_nn::holdout_zh::build_holdout_zh_36_specs;
+
     let zh = build_holdout_zh_36_specs().unwrap();
     assert_eq!(zh.len(), 36);
     for s in &zh {
@@ -310,6 +319,4 @@ fn nn_09_holdout_zh36_sealed_guard_and_hygiene() {
             ));
         }
     }
-    let hash_check = Sha256::digest(DOCS_NN_SCENARIOS_JSON.as_bytes());
-    assert_eq!(hash_check.len(), 32);
 }

@@ -14,7 +14,7 @@ use crate::runtime::{label_ko, FrameView, Runtime, Submission};
 pub const MIN_CELLS: usize = 32;
 pub const MAX_CELLS: usize = 160;
 
-pub const COMMANDS: [&str; 74] = [
+pub const COMMANDS: [&str; 75] = [
     "act_status",
     "units_list",
     "unit_frame",
@@ -84,6 +84,7 @@ pub const COMMANDS: [&str; 74] = [
     "body_plan_set",
     "world_body",
     "tips_use",
+    "stereo_mode_use",
     "sam_use",
     "devices",
     "nn_status",
@@ -1762,7 +1763,7 @@ impl Runtime {
             "models_status" => self.api_models_status(),
             "depth_view" => self.api_depth_view(num(args, "quality").unwrap_or(80.0) as f32),
             "tips_use" => self.api_model_use("tips", args),
-            "sam_use" => self.api_model_use("sam", args),
+            "stereo_mode_use" | "sam_use" => self.api_model_use("sam", args),
             "devices" => Ok(device_json(&crate::ml_bridge::preferred())),
             "camera_rig" => self.api_camera_rig(args),
             "crew_status" => Ok(self.crew_json()),

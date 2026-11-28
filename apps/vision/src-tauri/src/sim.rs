@@ -107,7 +107,7 @@ pub async fn tips_use(state: App<'_>, enabled: Option<bool>) -> Result<Value, St
 }
 
 #[tauri::command]
-pub async fn sam_use(state: App<'_>, enabled: Option<bool>) -> Result<Value, String> {
+pub async fn stereo_mode_use(state: App<'_>, enabled: Option<bool>) -> Result<Value, String> {
     let shared: Arc<AppState> = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
         shared.with_world(|rt| {
@@ -121,6 +121,50 @@ pub async fn sam_use(state: App<'_>, enabled: Option<bool>) -> Result<Value, Str
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Backward-compatible internal forwarding alias for [`stereo_mode_use`].
+#[tauri::command]
+pub async fn sam_use(state: App<'_>, enabled: Option<bool>) -> Result<Value, String> {
+    stereo_mode_use(state, enabled).await
+}
+
+/// V-07: Direct Tauri link to `vision-sandbox::stage_render::FrameStepCycles` tiled CPU raycaster.
+#[tauri::command]
+pub async fn vision_stage_bake_adopted_cam(
+    slice_idx: u32,
+    adopted_cam_id: String,
+    candidate_cams: Vec<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    samples: Option<u32>,
+) -> Result<Value, String> {
+    let job = vision_sandbox::stage_render::CyclesBakeJob {
+        slice_idx,
+        adopted_cam_id,
+        candidate_cams,
+        width: width.unwrap_or(160).clamp(32, 640),
+        height: height.unwrap_or(90).clamp(32, 360),
+        tile_size: 32,
+        samples: samples.unwrap_or(8).clamp(1, 32),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let cycles = vision_sandbox::stage_render::FrameStepCycles::new();
+        let (report, rgba) = cycles.bake_adopted_cam(&job);
+        json!({
+            "report": report,
+            "rgba_bytes": rgba.len(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// V-07: Direct Tauri link to `vision-sandbox::validate_local_socket` (blocks public WAN IPs).
+#[tauri::command]
+pub fn vision_stage_validate_local_addr(addr: String) -> Result<bool, String> {
+    let parsed: std::net::SocketAddr = addr.parse().map_err(|e| format!("invalid socket addr: {e}"))?;
+    Ok(vision_sandbox::validate_local_socket(parsed, "Tauri show I/O").is_ok())
 }
 
 fn selected_device(state: &AppState) -> Result<candle_core::Device, String> {

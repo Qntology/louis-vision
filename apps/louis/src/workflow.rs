@@ -9,10 +9,15 @@ use lv_agent::gates::{check_citizen_text, judge_by_axes, AgentVerdict, Axis, Axi
 use lv_agent::policy::{AutomationPolicy, Disposition, OperatingMode, AUTO_CONFIDENCE_FLOOR, POST_AUDIT_MOD};
 use lv_doc::docs::parse_docs_bytes;
 use lv_doc::writer::{build_hwpx, fill_docx_template_text, NoticeSpec, WriterGuard};
-use lv_domain::{evaluate_pack, EngineMode, DocsDomainPack, PackCheckInput, PackCheckResult};
+use lv_domain::formats::{classify_domain_2depth, extract_domain_facts, DomainClassification, ExtractedDomainFacts};
+use lv_domain::registry::DomainPackRegistry;
+use lv_domain::{evaluate_pack, DocsDomainPack, EngineMode, PackCheckInput, PackCheckResult};
 use premium_discount_eval::gate_ab::{compare_gate_arms, ArmRunSummary, DetectionCounters, GateAbVerdict};
 use premium_discount_eval::rule::{judge, Rule};
+use premium_discount_relay::{claim, condition_disjoint, relay_keys, Sentence, Token};
 use serde::{Deserialize, Serialize};
+
+use crate::audit::{RetentionClass, SealedAuditPayload, WormAuditLogger};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackSuiteSummary {
@@ -115,6 +120,105 @@ impl LouisApprovalFlow {
             case_id,
         );
         Ok((decided, disp))
+    }
+
+    /// Domain-aware case evaluation (Decision #2 / D-03): resolves `DomainPackMeta::high_impact`
+    /// and 5-year (`1,825d`) retention policy, forcing `PendingOfficer` on all high-impact packs.
+    pub fn evaluate_case_for_pack(
+        &self,
+        pack_id_or_code: &str,
+        case_id: &str,
+        verdict: AgentVerdict,
+        axes: &[Axis],
+        scorer: Option<&dyn AxisScorer>,
+        all_gates_clear: bool,
+    ) -> Result<(Decided, Disposition, u32)> {
+        let reg = DomainPackRegistry::builtin_18();
+        let (high_impact, retention_days) = reg
+            .get(pack_id_or_code)
+            .map(|p| (p.high_impact, p.default_retention_days))
+            .unwrap_or((true, 1825));
+        let decided = judge_by_axes(verdict, AgentVerdict::G3InterceptForceHold_compat(verdict), axes, scorer)?;
+        let disp = self.policy.decide_disposition_for_domain(
+            verdict.nature(),
+            decided.judgement.confidence,
+            all_gates_clear,
+            case_id,
+            high_impact,
+        );
+        Ok((decided, disp, retention_days))
+    }
+
+    /// Wave 5 end-to-end product path:
+    /// 1. 2-Depth classification & fact extraction via Tier 1 `lv_domain::formats`
+    /// 2. Entity key & condition-disjoint relay check via `premium-discount-relay`
+    /// 3. High-impact 5-year retention & disposition enforcement
+    /// 4. WORM hash-chain audit sealing via `crate::audit::WormAuditLogger`
+    pub fn process_product_document(
+        &self,
+        case_id: &str,
+        filename: &str,
+        plain_text: &str,
+        prev_revision_text: Option<&str>,
+        verdict: AgentVerdict,
+        axes: &[Axis],
+        scorer: Option<&dyn AxisScorer>,
+        audit_logger: &mut WormAuditLogger,
+    ) -> Result<(DomainClassification, ExtractedDomainFacts, Disposition, bool)> {
+        let cls = classify_domain_2depth(plain_text, Some(filename));
+        let facts = extract_domain_facts(&cls.pack_code, plain_text);
+        let to_sentence = |s: &str| Sentence {
+            text: s.to_string(),
+            tokens: s
+                .split_whitespace()
+                .map(|tok| Token {
+                    text: tok.to_string(),
+                    lemma: tok.to_ascii_lowercase(),
+                    upos: if tok.chars().any(|c| c.is_ascii_digit()) {
+                        "NUM".into()
+                    } else {
+                        "NOUN".into()
+                    },
+                    deprel: String::new(),
+                    head: 0,
+                })
+                .collect(),
+        };
+        let cur_s = to_sentence(plain_text);
+        let _keys = relay_keys(&cur_s);
+        let disjoint_from_prev = prev_revision_text.is_some_and(|prev| {
+            let old_c = claim(&to_sentence(prev));
+            let new_c = claim(&cur_s);
+            condition_disjoint(&old_c, &new_c)
+        });
+
+        let all_gates_clear = !facts.raw_gov_id_detected;
+        let (decided, disp, _retention_days) = self.evaluate_case_for_pack(
+            &cls.pack_code,
+            case_id,
+            verdict,
+            axes,
+            scorer,
+            all_gates_clear,
+        )?;
+
+        let payload = SealedAuditPayload {
+            timestamp_utc: chrono::Utc::now().to_rfc3339(),
+            case_id: case_id.to_string(),
+            manifest_rev: DomainPackRegistry::builtin_18().builtin_packs_rev(),
+            docs_defs_rev: "prod_pipeline_v5".into(),
+            engine_mode: EngineMode::RulesOnly,
+            n2sf_grade: lv_doc::writer::guard::N2sfGrade::Sensitive,
+            verdict,
+            confidence: decided.judgement.confidence,
+            disposition: disp.clone(),
+            officer_id: self.policy.authorization().map(|a| a.approver_id.clone()),
+            justification: None,
+            retention_class: RetentionClass::HighImpactAi5Y,
+            subject_hmac_tag: None,
+        };
+        audit_logger.record(0, "product_workflow", &cls.pack_code, &payload)?;
+        Ok((cls, facts, disp, disjoint_from_prev))
     }
 
     pub fn emit_guarded_deliverables(
@@ -250,5 +354,50 @@ mod tests {
         )
         .unwrap();
         assert!(fact_ok);
+    }
+
+    #[test]
+    fn high_impact_packs_enforce_1825d_retention_and_block_auto_finalize() {
+        let mut flow = LouisApprovalFlow::default();
+        flow.policy.enable_auto("EMP-001", "행정절차법 제14조", Utc::now()).unwrap();
+        let axes = vec![Axis { name: "doc_match".into(), facts: vec![("sum".into(), "1000".into())] }];
+        let perfect = StaticAxisScorer { prob_rule: 1.0 };
+
+        for hi_code in ["DOM-03", "DOM-07", "DOM-11", "DOM-12", "DOM-14", "DOM-16", "DOM-17"] {
+            let (_, disp, retention) = flow
+                .evaluate_case_for_pack(hi_code, &format!("CASE-{hi_code}"), AgentVerdict::G3EligibleNormal, &axes, Some(&perfect), true)
+                .unwrap();
+            assert_eq!(retention, 1825, "{hi_code} must enforce 5-year retention");
+            assert!(
+                matches!(disp, Disposition::PendingOfficer { ref reason } if reason == "high_impact_domain_requires_officer"),
+                "{hi_code} must never AutoFinalize, got {disp:?}"
+            );
+        }
+
+        let (_, disp_norm, retention_norm) = flow
+            .evaluate_case_for_pack("DOM-01", "CASE-DOM-01", AgentVerdict::G3EligibleNormal, &axes, Some(&perfect), true)
+            .unwrap();
+        assert_eq!(retention_norm, 1825);
+        assert!(matches!(disp_norm, Disposition::AutoFinalize { .. }));
+
+        // Wave 5: end-to-end product path (2-Depth classify + extract + PD relay + WORM audit seal)
+        let mut audit = WormAuditLogger::in_memory();
+        let (cls, facts, disp, disjoint) = flow
+            .process_product_document(
+                "PROD-G2B-01",
+                "g2b_cost.hwpx",
+                "DOM-11 나라장터 공공입찰 원가계산 2페이즈 일반관리비 15,000,000원 primary_id=G2B-2026-01 [RRN_REDACTED]",
+                Some("DOM-11 나라장터 공공입찰 원가계산 1페이즈 일반관리비 12,000,000원"),
+                AgentVerdict::G3EligibleNormal,
+                &axes,
+                Some(&perfect),
+                &mut audit,
+            )
+            .unwrap();
+        assert_eq!(cls.pack_code, "DOM-11");
+        assert_eq!(facts.amount_krw, Some(15_000_000));
+        assert!(disjoint, "phase 1 vs phase 2 must trigger ConditionDisjointGuard");
+        assert!(matches!(disp, Disposition::PendingOfficer { .. }));
+        assert_eq!(audit.len(), 1);
     }
 }

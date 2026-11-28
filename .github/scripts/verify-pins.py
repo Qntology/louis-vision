@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -325,6 +326,24 @@ def main() -> int:
 
     check_roots = [lv_root] if mode in ("1", "2b") else [lv_root, pd_root, lc_root, ns_root]
     pd_revs, lv_revs = check_cross_repo_pins(check_roots, errs)
+
+    # X-01: Verify pinned commits are true git ancestors of local sibling repo HEADs in `--tier all`.
+    if mode == "all":
+        for repo_path, pinned_set, label in (
+            (pd_root, pd_revs, "premium-discount"),
+            (lv_root, lv_revs, "louis-vision"),
+        ):
+            if (repo_path / ".git").exists():
+                for rev in sorted(pinned_set):
+                    rc = subprocess.run(
+                        ["git", "-C", str(repo_path), "merge-base", "--is-ancestor", rev, "HEAD"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rc.returncode != 0:
+                        errs.append(
+                            f"Pin ancestor check failed for {label}: pinned rev {rev[:8]} is not an ancestor of {repo_path.name} HEAD"
+                        )
 
     if errs:
         for e in errs:

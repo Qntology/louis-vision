@@ -9,6 +9,7 @@ pub use lv_sds::N2sfGrade;
 use serde::{Deserialize, Serialize};
 
 pub mod bridge;
+pub mod formats;
 pub mod gov_fin_tax_audit;
 pub mod identify;
 pub mod registry;

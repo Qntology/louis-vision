@@ -11,7 +11,7 @@ const RT_CALL = new Set(['test_start', 'test_step', 'test_status', 'test_status_
   'crew_add', 'crew_clear', 'crew_mode', 'crew_status', 'camera_rig',
   'rig_presets', 'rig_design', 'rig_import', 'rig_keep_design', 'rig_validate', 'rig_apply', 'rig_delete',
   'units_list', 'unit_frame', 'unit_apply', 'rig_prompt', 'rig_commit', 'crew_remove',
-  'char_prompt', 'stage_cad_prompt', 'stage_slice_program', 'stage_mask_apply', 'stage_render_step', 'stage_render_abort']);
+  'char_prompt', 'stage_cad_prompt', 'stage_slice_program', 'stage_mask_apply', 'stage_render_step', 'stage_render_abort', 'stereo_mode_use']);
 
 export async function initApi() {
   const tauriInvoke = window.__TAURI__?.core?.invoke;

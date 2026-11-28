@@ -101,9 +101,9 @@ function syncDom() {
 async function handleRouteSubmission(rawText, files = []) {
   const text = String(rawText || '').trim();
   if (!text && files.length === 0) return;
-  const parsed = parseOmniQuery(text);
+  const parsed = parseOmniQuery(text, files);
   const intent = classifyIntentRoute(parsed.slashCmd, parsed.tags, parsed.freeText, files);
-  const res = await invokeDual('router_route_input', { text });
+  const res = await invokeDual('router_route_input', { text, files });
   const owner = res.surfaceOwner || res.owner || intent.route;
   const lease = res.gpuLeaseTier || intent.warmLeaseKind;
   const summary = files.length

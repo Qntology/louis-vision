@@ -73,7 +73,7 @@ impl DomainPackRegistry {
                 DomainPackMeta { code: "DOM-08", id: "trade_customs_lc", label_ko: "무역·신용장·통관", required_fields: &["po_no", "ci_amount", "bl_date", "lc_limit"], default_retention_days: 1825, high_impact: false },
                 DomainPackMeta { code: "DOM-09", id: "warehouse_hazmat_pod", label_ko: "물류창고·보세·위험물", required_fields: &["container_id", "bonded_cleared", "un_hazmat"], default_retention_days: 1825, high_impact: false },
                 DomainPackMeta { code: "DOM-10", id: "retail_srm_settle", label_ko: "유통·SRM 대금정산", required_fields: &["contract_kind", "promo_ratio", "payout_ymd"], default_retention_days: 1825, high_impact: false },
-                DomainPackMeta { code: "DOM-11", id: "public_g2b_contract", label_ko: "공공입찰·원가계산", required_fields: &["rule_kind", "admin_krw", "profit_krw"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-11", id: "public_g2b_contract", label_ko: "공공입찰·원가계산", required_fields: &["rule_kind", "admin_krw", "profit_krw"], default_retention_days: 1825, high_impact: true },
                 DomainPackMeta { code: "DOM-12", id: "fin_kyc_loan", label_ko: "여신·KYC·책무구조", required_fields: &["ubo_verified", "accountability_code", "shareholder_sum"], default_retention_days: 1825, high_impact: true },
                 DomainPackMeta { code: "DOM-13", id: "tax_evid_audit", label_ko: "세무증빙·접대비 감사", required_fields: &["etax_24_id", "transmit_ymd", "vat_credit"], default_retention_days: 1825, high_impact: false },
                 DomainPackMeta { code: "DOM-14", id: "ip_patent_sec", label_ko: "특허·국가핵심기술 보안", required_fields: &["n2sf_grade", "motie_approval_no", "clean_cdr"], default_retention_days: 1825, high_impact: true },

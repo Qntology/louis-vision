@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+vision-sandbox = { path = ".." }
 sandbox-core = { path = "../crates/sandbox-core" }
 sandbox-data = { path = "../crates/sandbox-data" }
 sandbox-runtime = { path = "../crates/sandbox-runtime" }

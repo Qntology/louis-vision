@@ -1,0 +1,380 @@
+{
+  "schema": "louis-vision-v18-video-manifest/v1",
+  "captured_at": "2026-11-28T01:24:09.676Z",
+  "viewport": "1280x720 + mobile 390x844",
+  "total_chapters": 6,
+  "total_shots": 28,
+  "estimated_clip_seconds": 59,
+  "http_errors": [],
+  "runtime_exceptions": [],
+  "telemetry": {
+    "deny": {
+      "cmd": "python louis-vision/.github/scripts/check_deny_toml.py",
+      "exit_code": 0,
+      "elapsed_ms": 455,
+      "stdout_lines": [
+        "[DENY-BAN PASS] 10 Tier 1 workspace crates checked against 20 banned crates: 0 violations"
+      ],
+      "stderr_lines": [
+        "warning: patch `candle-flash-attn v0.11.0 (https://github.com/Qntology/candle-rocm-vulkan?rev=f73415d4d149d7949e8a6a94911af670e4e10f7f#f73415d4)` was not used in the crate graph",
+        "help: Check that the patched package version and available features are compatible",
+        "      with the dependency requirements. If the patch has a different version from",
+        "      what is locked in the Cargo.lock file, run `cargo update` to use the new",
+        "      version. This may also occur with an optional dependency that is not enabled."
+      ]
+    },
+    "pins_lv": {
+      "cmd": "python louis-vision/.github/scripts/verify-pins.py --tier all",
+      "exit_code": 0,
+      "elapsed_ms": 2452,
+      "stdout_lines": [
+        "[VERIFY-PINS] PASS tier=all candle=f73415d4 pd_revs=['b024dbb5'] lv_revs=['5ea66a0f']"
+      ],
+      "stderr_lines": []
+    },
+    "pins_pd": {
+      "cmd": "python premium-discount/.github/scripts/verify-pins.py --tier all",
+      "exit_code": 0,
+      "elapsed_ms": 2200,
+      "stdout_lines": [
+        "[VERIFY-PINS] PASS tier=all candle=f73415d4 pd_revs=['b024dbb5'] lv_revs=['5ea66a0f']"
+      ],
+      "stderr_lines": []
+    },
+    "pins_lc": {
+      "cmd": "python logis-center/.github/scripts/verify-pins.py",
+      "exit_code": 0,
+      "elapsed_ms": 44,
+      "stdout_lines": [
+        "[VERIFY-PINS] PASS candle=f73415d4 pd=b024dbb5 lv=5ea66a0f"
+      ],
+      "stderr_lines": []
+    },
+    "pins_ns": {
+      "cmd": "python noto-sandbox/.github/scripts/verify-pins.py",
+      "exit_code": 0,
+      "elapsed_ms": 135,
+      "stdout_lines": [
+        "verify-pins OK: candle=f73415d4 pd=b024dbb5 lv=5ea66a0f"
+      ],
+      "stderr_lines": []
+    },
+    "shared_ui": {
+      "cmd": "node --test louis-vision/apps/shared-ui/tests/blockies_haring.test.mjs louis-vision/apps/shared-ui/tests/shared_ui_layer1.test.mjs louis-vision/apps/shared-ui/tests/window_geom.test.mjs",
+      "exit_code": 0,
+      "elapsed_ms": 178,
+      "stdout_lines": [
+        "# Subtest: StickyNumberer keeps stable 1~9 slots under minor jitter and clears immediately on privacy",
+        "ok 9 - StickyNumberer keeps stable 1~9 slots under minor jitter and clears immediately on privacy",
+        "  ---",
+        "  duration_ms: 0.6837",
+        "  ...",
+        "1..9",
+        "# tests 9",
+        "# suites 0",
+        "# pass 9",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 129.0341"
+      ],
+      "stderr_lines": []
+    },
+    "spatial_deck_e2e": {
+      "cmd": "node --test louis-vision/apps/vision/ui/tests/spatial_deck_e2e.mjs",
+      "exit_code": 0,
+      "elapsed_ms": 2833,
+      "stdout_lines": [
+        "# Subtest: headless Chromium E2E: State A/B/C, 2-axis scroll lock, filters, CRUD+Undo, drawers, mobile 4-stack",
+        "ok 2 - headless Chromium E2E: State A/B/C, 2-axis scroll lock, filters, CRUD+Undo, drawers, mobile 4-stack",
+        "  ---",
+        "  duration_ms: 1360.5113",
+        "  ...",
+        "1..2",
+        "# tests 2",
+        "# suites 0",
+        "# pass 2",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 2783.3008"
+      ],
+      "stderr_lines": []
+    },
+    "ui_nn_36": {
+      "cmd": "node louis-vision/apps/shared-ui/tests/run_playwright_ui_nn.mjs --split diag",
+      "exit_code": 0,
+      "elapsed_ms": 4722,
+      "stdout_lines": [
+        "{",
+        "  \"schema\": \"louis-ui-nn/v1\",",
+        "  \"ui_defs_rev\": \"f20712b0\",",
+        "  \"split\": \"diag\",",
+        "  \"release_seal\": false,",
+        "  \"passed\": 36,",
+        "  \"total\": 36,",
+        "  \"hard_gate_hits\": 0,",
+        "  \"failures\": []",
+        "}"
+      ],
+      "stderr_lines": []
+    },
+    "git_heads": [
+      {
+        "repo": "premium-discount",
+        "sha": "a318076",
+        "subject": "Merge pull request #24 from sungu-che/chore/sync-tier2a-v18-pins"
+      },
+      {
+        "repo": "louis-vision",
+        "sha": "5ea66a0",
+        "subject": "Merge pull request #10 from Qntology/feat/integrated-v18-embedding-vision-improvements"
+      },
+      {
+        "repo": "logis-center",
+        "sha": "57fa9245",
+        "subject": "Merge pull request #103 from sungu-che/chore/sync-cpu-embed-bench-pin"
+      },
+      {
+        "repo": "noto-sandbox",
+        "sha": "2a4c963",
+        "subject": "Merge pull request #34 from sungu-che/chore/sync-v18-pd-lv-pins"
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ch01_spatial_deck_core",
+      "title": "Chapter 1. Vision Sandbox v1.8 — 2축 공간 데크 & CRUD",
+      "subtitle": "아이소메트릭 3D · State A->B + PiP 미니맵 · 레이어 필터 · 상태 상속 분할(S) · 음소거/삭제/Undo",
+      "app": "Vision Sandbox v1.8 (Deck)",
+      "shots": [
+        {
+          "file": "frames\\ch01_01_state_a_iso.png",
+          "duration_s": 2.3,
+          "scenario_id": "v1.8 State A / ISO",
+          "caption": "State A 기본 깔끔한 전체 캔버스 + 신규 아이소메트릭(3D) 시점 전환 (#view-select=\"iso\")"
+        },
+        {
+          "file": "frames\\ch01_02_state_b_deck.png",
+          "duration_s": 2.6,
+          "scenario_id": "v1.8 State B / PiP",
+          "caption": "State B 2축 공간 데크 확장(max 720px 글래스 도크) + PiP 미니맵 자동 활성화 + 기본 2카드 + [+] 고스트 카드"
+        },
+        {
+          "file": "frames\\ch01_03_add_4_cards.png",
+          "duration_s": 2.4,
+          "scenario_id": "Ghost [+] & Budget",
+          "caption": "[+] 고스트 카드로 조명·DMX 및 무대·세트 카드 추가 -> 실시간 VRAM/프레임 예산 자동 갱신"
+        },
+        {
+          "file": "frames\\ch01_04_filter_light.png",
+          "duration_s": 2,
+          "scenario_id": "Layer Filter Chips",
+          "caption": "레이어 필터 칩 (전체 | 카메라 | 배우·유닛 | 조명·DMX | 무대·세트) 즉시 필터링"
+        },
+        {
+          "file": "frames\\ch01_05_split_reslice.png",
+          "duration_s": 2.4,
+          "scenario_id": "Split(S) & Inheritance",
+          "caption": "[분할 (S)]로 Slice k -> k+1 상태 상속 복제 + 15s 단위 재슬라이싱(0-15s / 15-30s / 30-45s)"
+        },
+        {
+          "file": "frames\\ch01_06_mute_slice.png",
+          "duration_s": 2,
+          "scenario_id": "Mute [X] / Shift+Del",
+          "caption": "Slice 2 음소거(점선 비활성화) — Shift+X 영구 삭제 후 Ctrl+Z로 즉시 복구 가능"
+        }
+      ]
+    },
+    {
+      "id": "ch02_drawers_mcp_ipc",
+      "title": "Chapter 2. 인라인 [▾] 드로어 · :8788 MCP · 4-Way IPC",
+      "subtitle": "char_prompt · lv_spatial 마스크 전파 · Cycles 단독 베이크/중단 · DMX 6계층 · SolidCraft CAD",
+      "app": "Vision Sandbox v1.8 (MCP/IPC)",
+      "shots": [
+        {
+          "file": "frames\\ch02_01_actor_char_prompt.png",
+          "duration_s": 2.7,
+          "scenario_id": "MCP char_prompt",
+          "caption": "배우 인라인 드로어 -> char_prompt (128 BPM · bboy_freeze · crown · Rule 6 순도 99.80% · 틱 8개)"
+        },
+        {
+          "file": "frames\\ch02_02_cam_mask_cycles.png",
+          "duration_s": 2.7,
+          "scenario_id": "Mask & Cycles Bake",
+          "caption": "카메라 드로어 -> lv_spatial 마스크 10프레임 전파 + 채택 카메라(cam_crane_02) 단독 Cycles 4/16 spp"
+        },
+        {
+          "file": "frames\\ch02_03_cam_instant_abort.png",
+          "duration_s": 2.2,
+          "scenario_id": "stage_render_abort",
+          "caption": "Cycles 베이크 즉시 중단 (stage_render_abort) -> <= 16.6ms 프레임 예산 내 안전 정지 검증"
+        },
+        {
+          "file": "frames\\ch02_04_light_set_cad.png",
+          "duration_s": 2.8,
+          "scenario_id": "DMX U64 & SolidCraft",
+          "caption": "DMX 조명(U64 파이로 격리 · Laser BAM 0%) + 무대 세트(SolidCraft URDF 오차 0.0m · 관절 별칭 정규화)"
+        },
+        {
+          "file": "frames\\ch02_05_polymorphic_bar.png",
+          "duration_s": 2.6,
+          "scenario_id": "4-Way IPC Polymorphic",
+          "caption": "우하단 ( ✦ ) 통합 명령창 다형성 바인딩 -> 포커스된 무대·세트 카드의 stage_cad_prompt로 직접 라우팅"
+        }
+      ]
+    },
+    {
+      "id": "ch03_theater_mobile",
+      "title": "Chapter 3. State C 마스터 시어터 & 모바일 4-스택",
+      "subtitle": "전체 재생/RGB·Alpha·Greenscreen 출력 · 390x844 4단 반응형 · WirelessCameraRig OLED 잠금",
+      "app": "Theater & Mobile 4-Stack",
+      "shots": [
+        {
+          "file": "frames\\ch03_01_theater_rgb.png",
+          "duration_s": 1.9,
+          "scenario_id": "State C (RGB)",
+          "caption": "State C 마스터 시어터 진입 — 풀스크린 타임라인 재생 (RGB 합성 출력)"
+        },
+        {
+          "file": "frames\\ch03_02_theater_alpha.png",
+          "duration_s": 1.9,
+          "scenario_id": "State C (ALPHA)",
+          "caption": "마스터 시어터 실시간 스크러빙 (11.5s -> Slice 2 진입) · Alpha 매트 출력 전환"
+        },
+        {
+          "file": "frames\\ch03_03_theater_greenscreen.png",
+          "duration_s": 1.9,
+          "scenario_id": "State C (GREENSCREEN)",
+          "caption": "마스터 시어터 (21.0s -> Slice 3) · Greenscreen 송출 모드 전환 (Space로 슬라이스 복귀)"
+        },
+        {
+          "file": "frames\\ch03_04_mobile_4stack.png",
+          "duration_s": 2.8,
+          "scenario_id": "Mobile <760px 4-Stack",
+          "caption": "모바일 390x844 4단 수직 Flex 레이아웃 — 뷰포트 >=45%, === 드래그 핸들, >=36px 터치 타겟",
+          "mobile_frame": true,
+          "mobile_notes": [
+            "뷰포트 390 x 844 px (DPR 2x)",
+            "상단 캔버스 높이 >= 45% 확보",
+            "중앙 === 드래그 핸들 + 필터 칩 >= 36px",
+            "2축 제스처 락 (12px 벡터 각도 분리)",
+            "Spatial Deck E2E 모바일 검증 PASS"
+          ]
+        },
+        {
+          "file": "frames\\ch03_05_mobile_oled_lock.png",
+          "duration_s": 2.2,
+          "scenario_id": "WirelessCam OLED Lock",
+          "caption": "모바일 WirelessCameraRig #000000 OLED 터치 잠금 활성화 (오조작·발열·배터리 소모 차단)",
+          "mobile_frame": true,
+          "mobile_notes": [
+            "WirelessCameraRig OLED 절전 잠금",
+            "#000000 배경 + pointer-events 차단",
+            "촬영 중 우발적 UI 터치 원천 방지",
+            "5% 저전력 탈리 램프 규격 정합"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ch04_xr_stage_fixes",
+      "title": "Chapter 4. XR Stage Live — V-01..V-09 버그 수정 실증",
+      "subtitle": "V-01 Blockies 패리티 · V-02 엄격 IPv4/IPv6 가드 · V-08 정직 배지 · V-09 진성 암전 & RAF 정지",
+      "app": "Vision XR Stage (Fixes)",
+      "shots": [
+        {
+          "file": "frames\\ch04_01_haring_0.png",
+          "duration_s": 0.42,
+          "scenario_id": "V-01 / V-08 Haring",
+          "caption": "XR Stage Live — V-01 바이트동일 Blockies-Haring (#000000·6 ticks) + V-08 정직한 preview 상태 배지"
+        },
+        {
+          "file": "frames\\ch04_01_haring_1.png",
+          "duration_s": 0.42,
+          "scenario_id": "V-01 / V-08 Haring",
+          "caption": "XR Stage Live — V-01 바이트동일 Blockies-Haring (#000000·6 ticks) + V-08 정직한 preview 상태 배지"
+        },
+        {
+          "file": "frames\\ch04_01_haring_2.png",
+          "duration_s": 0.42,
+          "scenario_id": "V-01 / V-08 Haring",
+          "caption": "XR Stage Live — V-01 바이트동일 Blockies-Haring (#000000·6 ticks) + V-08 정직한 preview 상태 배지"
+        },
+        {
+          "file": "frames\\ch04_01_haring_3.png",
+          "duration_s": 0.42,
+          "scenario_id": "V-01 / V-08 Haring",
+          "caption": "XR Stage Live — V-01 바이트동일 Blockies-Haring (#000000·6 ticks) + V-08 정직한 preview 상태 배지"
+        },
+        {
+          "file": "frames\\ch04_01_haring_4.png",
+          "duration_s": 0.42,
+          "scenario_id": "V-01 / V-08 Haring",
+          "caption": "XR Stage Live — V-01 바이트동일 Blockies-Haring (#000000·6 ticks) + V-08 정직한 preview 상태 배지"
+        },
+        {
+          "file": "frames\\ch04_02_v02_strict_wan.png",
+          "duration_s": 2.6,
+          "scenario_id": "V-02 Strict RFC1918",
+          "caption": "V-02 엄격한 IPv4/IPv6 옥텟 검증 — 172.32.0.1:9000 (비RFC1918 공인 IP) 접두사 우회 즉시 차단"
+        },
+        {
+          "file": "frames\\ch04_03_v09_blackout.png",
+          "duration_s": 2.5,
+          "scenario_id": "V-09 True Blackout",
+          "caption": "V-09 F12 진성 암전(brightness(0)) + Haring RAF 즉시 정지 + 3중 안전 인터록 HUD 상시 고정"
+        },
+        {
+          "file": "frames\\ch04_04_v09_recover.png",
+          "duration_s": 2,
+          "scenario_id": "V-09 Safe Recovery",
+          "caption": "인터록·암전 안전 복구 -> 전 채널 CLEAR 및 HaringDancerRig 애니메이션 정상 재기동"
+        }
+      ]
+    },
+    {
+      "id": "ch05_louis_security",
+      "title": "Chapter 5. Louis Docs Studio — 보안 가드 & 5-Gate 심사",
+      "subtitle": "D-01 SQL 우회 공격 차단 · D-12 무역/도메인 스킨 정합 · +1원 차단 · Reverse-CDR · WORM 감사",
+      "app": "Louis Docs Studio (Security)",
+      "shots": [
+        {
+          "file": "frames\\ch05_01_d01_sql_bypass_block.png",
+          "duration_s": 2.6,
+          "scenario_id": "D-01 Hardened SQL",
+          "caption": "D-01 강화된 SQL 5중 가드 — 주석 위장 파괴 구문(/*bypass*/ DROP TABLE) 즉시 차단"
+        },
+        {
+          "file": "frames\\ch05_02_d12_trade_5gate_worm.png",
+          "duration_s": 2.8,
+          "scenario_id": "D-12 / 5-Gate / WORM",
+          "caption": "DOM-08 무역·통관 SSOT 정합 + 정상 SELECT 통과 + +1원/Reverse-CDR/WORM 변조 적발 + DSLI_18 0.99 PASS"
+        }
+      ]
+    },
+    {
+      "id": "ch06_live_verification",
+      "title": "Chapter 6. 4-레포 핀 동기화 · E2E · Rust 실측 검증 결과",
+      "subtitle": "방금 실시간 실행된 4개 레포 verify-pins · deny.toml · UI N:N 36/36 · Spatial Deck E2E · 6개 PR 머지 현황",
+      "app": "Live Verification Telemetry",
+      "shots": [
+        {
+          "terminal_slide": "pins_and_prs",
+          "duration_s": 3.4,
+          "scenario_id": "4-Repo Sync & Hygiene",
+          "caption": "4개 저장소 6개 PR 머지 완료 (b024dbb5 / 5ea66a0f) · deny.toml 0 violations · 4-레포 verify-pins 전항목 PASS"
+        },
+        {
+          "terminal_slide": "e2e_and_rust",
+          "duration_s": 3.6,
+          "scenario_id": "Rust + Chromium E2E",
+          "caption": "UI N:N 36/36 · Spatial Deck E2E 2/2 · shared-ui 9/9 · lv-core 57/57 · sandbox-runtime 320/320 · pd-vision-eval 5/5 PASS"
+        }
+      ]
+    }
+  ]
+}

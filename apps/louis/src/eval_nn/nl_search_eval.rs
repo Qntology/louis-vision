@@ -995,6 +995,12 @@ pub fn run_nl_search_nn_eval_with_embedder(
     if e2e_ingest.parse_failures > 0 {
         hard_gate_failures.push(format!("e2e parse_failures={}", e2e_ingest.parse_failures));
     }
+    if e2e_ingest.ground_truth_fallback_fills > 0 {
+        hard_gate_failures.push(format!(
+            "e2e ground_truth_fallback_fills={} > 0 (E-02 hard gate)",
+            e2e_ingest.ground_truth_fallback_fills
+        ));
+    }
     if e2e_ingest.wav_alignment_failures > 0 {
         hard_gate_failures.push(format!(
             "e2e wav_alignment_failures={}",
@@ -1304,6 +1310,288 @@ pub fn run_nl_search_nn_eval_with_embedder(
     Ok(report)
 }
 
+/// Pure lexical zero-vector embedder used for Arm 1 (`rules_parser_bm25`) so scoring relies
+/// exclusively on parsed fields, BM25, and link-key relay without dense vector assistance.
+struct ZeroDenseEmbedder;
+
+impl DenseTextEmbedder for ZeroDenseEmbedder {
+    fn dim(&self) -> usize {
+        lv_core::gemma_embed::OUTPUT_DIM
+    }
+
+    fn model_id(&self) -> &str {
+        "zero-dense-lexical-only"
+    }
+
+    fn embed_query(&self, _text: &str) -> Result<Vec<f32>> {
+        Ok(vec![0.0f32; lv_core::gemma_embed::OUTPUT_DIM])
+    }
+
+    fn embed_document(&self, _title: Option<&str>, _text: &str) -> Result<Vec<f32>> {
+        Ok(vec![0.0f32; lv_core::gemma_embed::OUTPUT_DIM])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArmBenchmarkRow {
+    pub arm_id: String,
+    pub available: bool,
+    pub real_gemma_weights: bool,
+    pub embedder_id: String,
+    pub embed_mode: String,
+    pub elapsed_ms: f64,
+    pub ground_truth_fallback_fills: usize,
+    pub metrics: MetricSummary,
+    pub answer_quality: AnswerQualitySummary,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FourArmNlSearchReport {
+    pub split: EvalSplit,
+    pub total_docs: usize,
+    pub total_queries: usize,
+    pub ground_truth_fallback_fills: usize,
+    pub arms: Vec<ArmBenchmarkRow>,
+    pub hard_gate_failures: Vec<String>,
+    pub exit_code: i32,
+}
+
+/// E-03: Side-by-side 4-Arm honest evaluation harness (`rules_parser_bm25`, `gemma_embed_768d`,
+/// `local_lancedb` feature-gated, and `hybrid_rrf`) over the exact same E2E parsed corpus with
+/// real `Instant::now()` latency and `ground_truth_fallback_fills == 0` hard gate.
+pub fn run_4arm_nl_search_eval(
+    cfg: &NlSearchEvalConfig,
+    gemma_model_dir: Option<&std::path::Path>,
+) -> Result<FourArmNlSearchReport> {
+    use std::time::Instant;
+
+    if cfg.split == EvalSplit::Holdout && !cfg.release_seal {
+        bail!("--split holdout requires --release-seal flag (exit 2)");
+    }
+
+    let normalized_domains: Option<Vec<String>> = cfg.domains_filter.as_ref().and_then(|v| {
+        if v.is_empty()
+            || v.iter()
+                .any(|s| s.eq_ignore_ascii_case("ALL") || s == "*")
+        {
+            None
+        } else {
+            Some(v.clone())
+        }
+    });
+    let world = build_relational_world(
+        cfg.split,
+        cfg.cases_per_domain,
+        normalized_domains.as_deref(),
+        cfg.include_xr_twin,
+    )?;
+    let scenarios = generate_nl_scenarios(&world)?;
+    let world_doc_map: BTreeMap<String, &WorldDocRecord> = world
+        .docs
+        .iter()
+        .map(|d| (d.doc_id.clone(), d))
+        .collect();
+
+    // Arm 1: Rules/Parser + BM25 lexical only (zero dense vectors)
+    let t1 = Instant::now();
+    let zero_emb = ZeroDenseEmbedder;
+    let (idx_arm1, ingest_arm1) = index_world_e2e(&world, &zero_emb)?;
+    let eval_arm1 = evaluate_arm("arm1_rules_parser_bm25", &idx_arm1, &zero_emb, &scenarios, &world_doc_map)?;
+    let ms_arm1 = t1.elapsed().as_secs_f64() * 1000.0;
+
+    // Arm 2: Real GemmaEmbedder when weights exist, else honestly flagged deterministic 768d fallback
+    let t2 = Instant::now();
+    let resolved_dir = gemma_model_dir
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("EMBEDDINGGEMMA_DIR").ok().map(PathBuf::from));
+    let (gemma, real_gemma_weights, gemma_note) = match resolved_dir {
+        Some(ref dir) if lv_core::gemma_embed::weights_file(dir).is_some() => {
+            match lv_core::gemma_embed::GemmaEmbedder::load(dir) {
+                Ok(g) => (g, true, format!("real weights loaded from {}", dir.display())),
+                Err(e) => (
+                    lv_core::gemma_embed::GemmaEmbedder::deterministic_for_tests(DOCS_NN_DIAG_SEED),
+                    false,
+                    format!("weights load failed ({e}); honest deterministic 768d fallback"),
+                ),
+            }
+        }
+        _ => (
+            lv_core::gemma_embed::GemmaEmbedder::deterministic_for_tests(DOCS_NN_DIAG_SEED),
+            false,
+            "EMBEDDINGGEMMA_DIR not set; honest deterministic 768d fallback".to_string(),
+        ),
+    };
+    let gemma_adapter = super::nl_search_engine::GemmaDenseEmbedderAdapter(&gemma);
+    let (idx_arm2, ingest_arm2) = index_world_e2e(&world, &gemma_adapter)?;
+    let eval_arm2 = evaluate_arm("arm2_gemma_embed_768d", &idx_arm2, &gemma_adapter, &scenarios, &world_doc_map)?;
+    let ms_arm2 = t2.elapsed().as_secs_f64() * 1000.0;
+
+    // Arm 3: Optional local LanceDB backend (Decision #8: honest unavailable report when feature disabled)
+    let arm3 = {
+        #[cfg(feature = "local-lancedb")]
+        {
+            let t3 = Instant::now();
+            let hybrid = OfflineHybridEmbedder::new();
+            let (idx_l, ingest_l) = index_world_e2e(&world, &hybrid)?;
+            let eval_l = evaluate_arm("arm3_local_lancedb", &idx_l, &hybrid, &scenarios, &world_doc_map)?;
+            ArmBenchmarkRow {
+                arm_id: "arm3_local_lancedb".into(),
+                available: true,
+                real_gemma_weights: false,
+                embedder_id: hybrid.model_id().into(),
+                embed_mode: "lancedb_fts_vector".into(),
+                elapsed_ms: t3.elapsed().as_secs_f64() * 1000.0,
+                ground_truth_fallback_fills: ingest_l.ground_truth_fallback_fills,
+                metrics: eval_l.overall,
+                answer_quality: eval_l.answer_quality,
+                note: "feature local-lancedb enabled".into(),
+            }
+        }
+        #[cfg(not(feature = "local-lancedb"))]
+        {
+            ArmBenchmarkRow {
+                arm_id: "arm3_local_lancedb".into(),
+                available: false,
+                real_gemma_weights: false,
+                embedder_id: "lancedb-disabled".into(),
+                embed_mode: "disabled".into(),
+                elapsed_ms: 0.0,
+                ground_truth_fallback_fills: 0,
+                metrics: MetricSummary::default(),
+                answer_quality: AnswerQualitySummary::default(),
+                note: "feature local-lancedb disabled at compile time (Decision #8)".into(),
+            }
+        }
+    };
+
+    // Arm 4: Reciprocal Rank Fusion (k = 60) combining Arm 1 (BM25/parser) + Arm 2 (Gemma 768d)
+    let t4 = Instant::now();
+    let mut rrf_acc = Accum::default();
+    let mut rrf_ans = AnswerAccum::default();
+    let rrf_k = 60.0f64;
+    for (idx_q, sc) in scenarios.iter().enumerate() {
+        let r1 = &eval_arm1.rows[idx_q];
+        let r2 = &eval_arm2.rows[idx_q];
+        let mut rrf_scores: BTreeMap<String, f64> = BTreeMap::new();
+        for (rank, doc_id) in r1.ranked_doc_ids.iter().enumerate() {
+            *rrf_scores.entry(doc_id.clone()).or_insert(0.0) += 1.0 / (rrf_k + (rank as f64) + 1.0);
+        }
+        for (rank, doc_id) in r2.ranked_doc_ids.iter().enumerate() {
+            *rrf_scores.entry(doc_id.clone()).or_insert(0.0) += 1.0 / (rrf_k + (rank as f64) + 1.0);
+        }
+        let mut fused: Vec<(String, f64)> = rrf_scores.into_iter().collect();
+        fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        fused.truncate(10);
+
+        let hits: Vec<super::nl_search_engine::SearchHit> = fused
+            .into_iter()
+            .map(|(doc_id, score)| {
+                let w = world_doc_map.get(doc_id.as_str());
+                super::nl_search_engine::SearchHit {
+                    domain_id: w.map_or_else(String::new, |d| d.domain_id.clone()),
+                    form_code: w.map_or_else(String::new, |d| d.form_code.clone()),
+                    audio_spans_ms: Vec::new(),
+                    doc_id,
+                    score,
+                    relay_hop: 0,
+                }
+            })
+            .collect();
+        let synthetic_resp = SearchResponse {
+            hits,
+            sql_guard_passed: r1.sql_guard_passed && r2.sql_guard_passed,
+            sql_guard_error: None,
+            grounded_answer: super::nl_search_engine::GroundedAnswer {
+                answer_text: r2.answer_text.clone(),
+                citations: r2.citations.clone(),
+                evidence_snippets: r2.evidence_snippets.clone(),
+                cited_amount_krw: sc.expected_amount_krw.filter(|_| r2.numeric_exact == Some(true)),
+                cited_line_item_count: sc.expected_line_item_count.filter(|_| r2.numeric_exact == Some(true)),
+                abstained: r2.abstained,
+                factcheck_passed: r2.factcheck_passed,
+                citizen_guard_clean: r2.citizen_guard_clean,
+                gov_id_clean: true,
+            },
+        };
+        rrf_acc.record(sc, &synthetic_resp, &world_doc_map);
+        rrf_ans.record(sc, &synthetic_resp, &world_doc_map);
+    }
+    let ms_arm4 = t4.elapsed().as_secs_f64() * 1000.0;
+
+    let total_fallbacks = ingest_arm1
+        .ground_truth_fallback_fills
+        .max(ingest_arm2.ground_truth_fallback_fills)
+        .max(arm3.ground_truth_fallback_fills);
+
+    let arms = vec![
+        ArmBenchmarkRow {
+            arm_id: "arm1_rules_parser_bm25".into(),
+            available: true,
+            real_gemma_weights: false,
+            embedder_id: zero_emb.model_id().into(),
+            embed_mode: "none".into(),
+            elapsed_ms: ms_arm1,
+            ground_truth_fallback_fills: ingest_arm1.ground_truth_fallback_fills,
+            metrics: eval_arm1.overall,
+            answer_quality: eval_arm1.answer_quality,
+            note: "pure parsed-field + BM25 + link-key relay baseline".into(),
+        },
+        ArmBenchmarkRow {
+            arm_id: "arm2_gemma_embed_768d".into(),
+            available: true,
+            real_gemma_weights,
+            embedder_id: gemma_adapter.model_id().into(),
+            embed_mode: "canonical_full".into(),
+            elapsed_ms: ms_arm2,
+            ground_truth_fallback_fills: ingest_arm2.ground_truth_fallback_fills,
+            metrics: eval_arm2.overall,
+            answer_quality: eval_arm2.answer_quality,
+            note: gemma_note,
+        },
+        arm3,
+        ArmBenchmarkRow {
+            arm_id: "arm4_hybrid_rrf".into(),
+            available: true,
+            real_gemma_weights,
+            embedder_id: "rrf-k60(arm1+arm2)".into(),
+            embed_mode: "hybrid_rrf".into(),
+            elapsed_ms: ms_arm4,
+            ground_truth_fallback_fills: total_fallbacks,
+            metrics: rrf_acc.finish(),
+            answer_quality: rrf_ans.finish(),
+            note: "Reciprocal Rank Fusion (k=60) over Arm 1 + Arm 2".into(),
+        },
+    ];
+
+    let mut hard_gate_failures = Vec::new();
+    if total_fallbacks > 0 {
+        hard_gate_failures.push(format!(
+            "ground_truth_fallback_fills={total_fallbacks} > 0 (E-02 hard gate)"
+        ));
+    }
+    for arm in &arms {
+        if !arm.available {
+            continue;
+        }
+        let leaks = arm.metrics.security_leaks + arm.metrics.covert_leaks + arm.metrics.superseded_leaks;
+        if leaks > 0 {
+            hard_gate_failures.push(format!("{} leaks={leaks}", arm.arm_id));
+        }
+    }
+
+    let exit_code = if hard_gate_failures.is_empty() { 0 } else { 1 };
+    Ok(FourArmNlSearchReport {
+        split: cfg.split,
+        total_docs: world.docs.len(),
+        total_queries: scenarios.len(),
+        ground_truth_fallback_fills: total_fallbacks,
+        arms,
+        hard_gate_failures,
+        exit_code,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1390,5 +1678,28 @@ mod tests {
         assert!(dir_a.join("nl_search_nn_report.json").is_file());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn four_arm_side_by_side_eval_reports_honest_metrics_and_zero_fallbacks() {
+        let cfg = NlSearchEvalConfig {
+            split: EvalSplit::Diag,
+            release_seal: false,
+            cases_per_domain: 1,
+            domains_filter: Some(vec!["DOM-01".into(), "DOM-08".into()]),
+            include_xr_twin: false,
+            out_dir: None,
+            dump_synth: false,
+            structured_layout: false,
+        };
+        let rep = run_4arm_nl_search_eval(&cfg, None).unwrap();
+        assert_eq!(rep.arms.len(), 4);
+        assert_eq!(rep.ground_truth_fallback_fills, 0);
+        assert_eq!(rep.exit_code, 0, "4-arm hard gates failed: {:?}", rep.hard_gate_failures);
+        assert!(rep.arms[0].available && rep.arms[0].elapsed_ms >= 0.0);
+        assert!(rep.arms[1].available && rep.arms[1].elapsed_ms >= 0.0);
+        #[cfg(not(feature = "local-lancedb"))]
+        assert!(!rep.arms[2].available, "local-lancedb arm must honestly report unavailable when feature off");
+        assert!(rep.arms[3].available && rep.arms[3].metrics.mrr > 0.0);
     }
 }
