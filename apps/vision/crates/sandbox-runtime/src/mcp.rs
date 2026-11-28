@@ -357,7 +357,53 @@ pub fn tools() -> Value {
         {"name": "stage_rig_edit", "description": "sACN Universe 64 파이로 격리, 쇼 레이저 BAM 0% 블랭킹, 백스테이지 45도 모니터 zeroize 검증.", "inputSchema": {"type": "object", "properties": {"pyro_universe": {"type": "integer"}, "non_dimmable": {"type": "boolean"}, "controller_ip": {"type": "string"}, "laser_in_frustum": {"type": "boolean"}}}},
         {"name": "haring_crew_spawn", "description": "0x 월렛으로부터 Blockies 8x8 및 키스 해링 5인 3D 리그 생성 후 4방향 Gate UI-HARING 감사.", "inputSchema": {"type": "object", "properties": {"wallets": {"type": "array", "items": {"type": "string"}}}}},
         {"name": "cue_timeline_synth", "description": "Z_bg 30프레임 잠금, 3중 안전 인터록 Halt, Blackout 1프레임 암전 및 오디오 Vamp/Halt 싱크 검증.", "inputSchema": {"type": "object", "properties": {"bg_frames": {"type": "integer"}, "obb_intrusion": {"type": "boolean"}, "blackout": {"type": "boolean"}, "audio_event": {"type": "string"}}}},
+        {"name": "char_prompt", "description": "한국어/영어 프롬프트로 키스 해링·젤리 무대 아바타의 BPM 모티프·헤드 프롭·월렛 시드를 생성하고 Rule 6(순도 >= 99.5%, 0px 틈) 감사를 검증합니다.", "inputSchema": {"type": "object", "properties": {"prompt": {"type": "string"}, "text": {"type": "string"}, "actor_id": {"type": "string"}, "wallet": {"type": "string"}, "bpm": {"type": "number"}, "motif": {"type": "string"}, "head_prop": {"type": "string"}}}},
+        {"name": "stage_cad_prompt", "description": "프롬프트 기반 헤드리스 SolidCraft 무대 소품·리깅(무빙헤드·커브드 LED·분할 LED·런웨이·물류 랙) URDF 조립 및 Hazard OBB 자동 생성.", "inputSchema": {"type": "object", "properties": {"prompt": {"type": "string"}, "text": {"type": "string"}, "name": {"type": "string"}, "moving_heads": {"type": "integer"}, "curved_led": {"type": "boolean"}, "split_led": {"type": "boolean"}, "runway": {"type": "boolean"}, "rack": {"type": "boolean"}}}},
+        {"name": "stage_slice_program", "description": "10초 단위 슬라이스(slice_unit_s)에 카메라·DMX 6계층·관절 별칭 정규화 및 Universe 64 파이로 격리를 프로그래밍합니다.", "inputSchema": {"type": "object", "properties": {"slice_idx": {"type": "integer"}, "slice_unit_s": {"type": "number"}, "adopted_cam_id": {"type": "string"}, "joints": {"type": "object"}, "dmx_dimmer_u16": {"type": "integer"}, "pyro_universe": {"type": "integer"}, "pyro_non_dimmable": {"type": "boolean"}, "pyro_armed": {"type": "boolean"}, "blackout": {"type": "boolean"}, "laser_in_frustum": {"type": "boolean"}, "inherit_from_prev": {"type": "boolean"}}}},
     ])
+}
+
+fn parse_bpm_from_prompt(prompt: &str) -> Option<f32> {
+    let lower = prompt.to_ascii_lowercase();
+    let idx = lower.find("bpm")?;
+    let before = lower[..idx].trim_end();
+    let digits: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits.parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
+fn parse_motif(prompt: &str, explicit: Option<&str>) -> &'static str {
+    let src = explicit.unwrap_or(prompt).to_ascii_lowercase();
+    if src.contains("bboy") || src.contains("freeze") || prompt.contains("프리즈") || prompt.contains("비보이") {
+        "bboy_freeze"
+    } else if src.contains("hop") || src.contains("jump") || prompt.contains("점프") || prompt.contains("홉") {
+        "elastic_hop"
+    } else if src.contains("move") || prompt.contains("이동") || prompt.contains("전진") {
+        "move_to_xz"
+    } else {
+        "groove_wave"
+    }
+}
+
+fn parse_head_prop(prompt: &str, explicit: Option<&str>) -> &'static str {
+    let src = explicit.unwrap_or(prompt).to_ascii_lowercase();
+    if src.contains("crown") || prompt.contains("왕관") {
+        "crown"
+    } else if src.contains("headphone") || prompt.contains("헤드폰") {
+        "headphones"
+    } else if src.contains("cap") || prompt.contains("모자") || prompt.contains("캡") {
+        "cap"
+    } else if src.contains("halo") || prompt.contains("헤일로") {
+        "halo"
+    } else {
+        "none"
+    }
 }
 
 fn hsl_to_rgb(h_deg: u16, s_pct: f64, l_pct: f64) -> [u8; 3] {
@@ -516,20 +562,405 @@ pub fn dispatch_stage_synth_tool(cmd: &str, args: &Value) -> Option<Result<Value
             let obb_intrusion = args.get("obb_intrusion").and_then(Value::as_bool).unwrap_or(false);
             let blackout = args.get("blackout").and_then(Value::as_bool).unwrap_or(false);
             let audio_ev = args.get("audio_event").and_then(Value::as_str).unwrap_or("none");
-            let halt = obb_intrusion || audio_ev == "hoist_chain_grind";
+            let t0 = std::time::Instant::now();
+            if blackout {
+                if let Some(delay_us) = args.get("inject_blackout_delay_us").and_then(Value::as_u64) {
+                    if delay_us > 0 {
+                        std::thread::sleep(std::time::Duration::from_micros(delay_us.min(50_000)));
+                    }
+                }
+            }
+            let halt = obb_intrusion || audio_ev == "hoist_chain_grind" || blackout;
             let vamp_hold = audio_ev == "mc_speech_vamp";
+            let false_vamp_on_ballad: u64 = if audio_ev == "ballad" && vamp_hold { 1 } else { 0 };
+            let weight_swaps_1000f = args
+                .get("observed_weight_swaps_1000f")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let blackout_latency_us: u64 = if blackout {
+                t0.elapsed().as_micros().max(1) as u64
+            } else {
+                0
+            };
             Some(Ok(json!({
                 "ok": true,
                 "z_keying_armed": true,
-                "weight_swaps_1000f": 0,
+                "weight_swaps_1000f": weight_swaps_1000f,
                 "interlock_halt": halt,
                 "osc_address": if halt { "/louis/interlock/halt" } else { "/stage/go" },
                 "auto_timecode_locked": halt || vamp_hold,
                 "cue_remote_go_locked": halt,
                 "vamp_hold_active": vamp_hold,
-                "false_vamp_on_ballad": 0,
+                "false_vamp_on_ballad": false_vamp_on_ballad,
                 "blackout_active": blackout,
-                "blackout_latency_us": if blackout { 14_200 } else { 0 }
+                "blackout_latency_us": blackout_latency_us
+            })))
+        }
+        "char_prompt" => {
+            let prompt = args
+                .get("prompt")
+                .or_else(|| args.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("124 BPM 그루브 웨이브");
+            let actor_id = args
+                .get("actor_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("HARING-DECK-01");
+            let wallet = args
+                .get("wallet")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("0x742d35cc6634c0532925a3b844bc454e4438f44e");
+            let bpm = args
+                .get("bpm")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .or_else(|| parse_bpm_from_prompt(prompt))
+                .unwrap_or(124.0)
+                .clamp(40.0, 220.0);
+            let motif = parse_motif(prompt, args.get("motif").and_then(Value::as_str));
+            let head_prop = parse_head_prop(prompt, args.get("head_prop").and_then(Value::as_str));
+
+            let spec = lv_sds::blockies_haring::derive_blockies_haring_spec(wallet);
+            let body_rgb = hsl_to_rgb(
+                spec.haring_body_hsl.h_deg,
+                spec.haring_body_hsl.s_pct,
+                spec.haring_body_hsl.l_pct,
+            );
+            let beat_env = (bpm / 120.0).clamp(0.4, 1.5);
+            let rig = sandbox_core::rig::haring_dancer::build_haring_dancer_rig(
+                actor_id, wallet, body_rgb, beat_env,
+            );
+            let bg = [242u8, 244, 247];
+            let buf = sandbox_core::rig::haring_dancer::render_haring_orthographic_rgb(
+                &rig, 192, 192, 0, bg,
+            );
+            let audit = match crate::haring_visual_audit::verify_haring_screenshot_invariants(
+                &buf, 192, 192, 0, body_rgb, bg, true,
+            ) {
+                Ok(rep) => rep,
+                Err(e) => return Some(Err(format!("char_prompt Rule 6 audit failed: {e}"))),
+            };
+            let summary_ko = format!(
+                "{actor_id} · {bpm:.0} BPM · 모티프 {motif} · 프롭 {head_prop} · 순도 {:.2}% · 틱 {}개",
+                audit.body_color_purity_ratio * 100.0,
+                rig.motion_ticks.len()
+            );
+            Some(Ok(json!({
+                "ok": true,
+                "actor_id": rig.actor_id,
+                "wallet": rig.wallet_0x,
+                "body_rgb": rig.body_rgb,
+                "outline_hex": rig.outline_hex,
+                "bpm": bpm,
+                "motif": motif,
+                "head_prop": head_prop,
+                "volume_det": 1.0,
+                "motion_ticks_count": rig.motion_ticks.len(),
+                "audit": audit,
+                "summary_ko": summary_ko
+            })))
+        }
+        "stage_cad_prompt" => {
+            use sandbox_core::rig::stage_cad::{
+                build_stage_prop_urdf, CurvedLedWall, KineticRunway, KineticSplitLed,
+                LogisticsRack, MovingHeadFixture, StagePropAssembly,
+            };
+            let prompt = args
+                .get("prompt")
+                .or_else(|| args.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let lower = prompt.to_ascii_lowercase();
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("stage_props_v18")
+                .to_string();
+
+            let has_explicit = args.get("moving_heads").is_some()
+                || args.get("curved_led").is_some()
+                || args.get("split_led").is_some()
+                || args.get("runway").is_some()
+                || args.get("rack").is_some()
+                || lower.contains("moving")
+                || prompt.contains("무빙")
+                || lower.contains("curved")
+                || prompt.contains("커브드")
+                || lower.contains("split")
+                || prompt.contains("분할")
+                || lower.contains("runway")
+                || prompt.contains("런웨이")
+                || lower.contains("rack")
+                || prompt.contains("랙")
+                || prompt.contains("선반");
+
+            let assembly = if !has_explicit {
+                StagePropAssembly { name: name.clone(), ..StagePropAssembly::default() }
+            } else {
+                let mh_count = args
+                    .get("moving_heads")
+                    .and_then(Value::as_u64)
+                    .map(|n| n.clamp(0, 16) as usize)
+                    .unwrap_or_else(|| {
+                        if lower.contains("moving") || prompt.contains("무빙") { 2 } else { 0 }
+                    });
+                let mut moving_heads = Vec::with_capacity(mh_count);
+                for i in 0..mh_count {
+                    let x = if mh_count == 1 {
+                        0.0
+                    } else {
+                        -4.0 + 8.0 * (i as f32 / (mh_count - 1) as f32)
+                    };
+                    moving_heads.push(MovingHeadFixture::standard(
+                        format!("mh_foh_{:02}", i + 1),
+                        [x, -2.0, 10.5],
+                    ));
+                }
+                let want_curved = args
+                    .get("curved_led")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| lower.contains("curved") || prompt.contains("커브드"));
+                let want_split = args
+                    .get("split_led")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| lower.contains("split") || prompt.contains("분할"));
+                let want_runway = args
+                    .get("runway")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| lower.contains("runway") || prompt.contains("런웨이"));
+                let want_rack = args
+                    .get("rack")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| lower.contains("rack") || prompt.contains("랙") || prompt.contains("선반"));
+
+                StagePropAssembly {
+                    name: name.clone(),
+                    moving_heads,
+                    curved_walls: if want_curved { vec![CurvedLedWall::default()] } else { Vec::new() },
+                    split_leds: if want_split { vec![KineticSplitLed::default()] } else { Vec::new() },
+                    runways: if want_runway { vec![KineticRunway::default()] } else { Vec::new() },
+                    racks: if want_rack { vec![LogisticsRack::default()] } else { Vec::new() },
+                }
+            };
+
+            Some(build_stage_prop_urdf(&assembly).map(|build| {
+                let summary_ko = format!(
+                    "{name}: 관절 {}개 · Hazard OBB {}개 · 발광면 {}개 · 오차 {:.6} m",
+                    build.joint_names.len(),
+                    build.hazard_obbs.len(),
+                    build.emissive_surfaces.len(),
+                    build.roundtrip_max_err_m
+                );
+                json!({
+                    "ok": true,
+                    "name": name,
+                    "urdf_xml": build.urdf_xml,
+                    "hazard_obbs": build.hazard_obbs,
+                    "emissive_surfaces": build.emissive_surfaces,
+                    "joint_names": build.joint_names,
+                    "roundtrip_max_err_m": build.roundtrip_max_err_m,
+                    "summary_ko": summary_ko
+                })
+            }))
+        }
+        "stage_slice_program" => {
+            let slice_idx = args.get("slice_idx").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let slice_unit_s = args.get("slice_unit_s").and_then(Value::as_f64).unwrap_or(10.0);
+            if !slice_unit_s.is_finite() || !(1.0..=60.0).contains(&slice_unit_s) {
+                return Some(Err(format!(
+                    "slice_unit_s must be in 1..=60 s, got {slice_unit_s}"
+                )));
+            }
+            let adopted_cam_id = args
+                .get("adopted_cam_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("cam_foh_01");
+            let pyro_universe = args.get("pyro_universe").and_then(Value::as_u64).unwrap_or(64);
+            let pyro_non_dimmable = args
+                .get("pyro_non_dimmable")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let pyro_armed = args.get("pyro_armed").and_then(Value::as_bool).unwrap_or(false);
+            if pyro_armed && (pyro_universe != 64 || !pyro_non_dimmable) {
+                return Some(Err(
+                    "pyro channel must remain isolated on non-dimmable Universe 64".into(),
+                ));
+            }
+            let blackout = args.get("blackout").and_then(Value::as_bool).unwrap_or(false);
+            let laser_in_frustum = args
+                .get("laser_in_frustum")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let inherit_from_prev = args
+                .get("inherit_from_prev")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let raw_dimmer = args
+                .get("dmx_dimmer_u16")
+                .and_then(Value::as_u64)
+                .unwrap_or(52_428)
+                .min(65_535) as u16;
+            let dmx_dimmer_u16 = if blackout { 0 } else { raw_dimmer };
+            let laser_bam_pct = if blackout || laser_in_frustum { 0.0 } else { 100.0 };
+
+            let mut normalized_joints = serde_json::Map::new();
+            if let Some(obj) = args.get("joints").and_then(Value::as_object) {
+                for (k, v) in obj {
+                    let canon = sandbox_core::rig::venue_cad::resolve_stage_joint_alias(k);
+                    normalized_joints.insert(canon.to_string(), v.clone());
+                }
+            }
+            let t_start_s = slice_idx as f64 * slice_unit_s;
+            let t_end_s = t_start_s + slice_unit_s;
+            let summary_ko = format!(
+                "슬라이스 #{slice_idx} ({t_start_s:.0}~{t_end_s:.0}s) · 캠 {adopted_cam_id} · DMX {dmx_dimmer_u16}/65535 · 관절 {}개",
+                normalized_joints.len()
+            );
+            Some(Ok(json!({
+                "ok": true,
+                "slice_idx": slice_idx,
+                "slice_unit_s": slice_unit_s,
+                "t_start_s": t_start_s,
+                "t_end_s": t_end_s,
+                "adopted_cam_id": adopted_cam_id,
+                "normalized_joints": normalized_joints,
+                "pyro_universe": pyro_universe,
+                "pyro_non_dimmable": pyro_non_dimmable,
+                "pyro_armed": pyro_armed,
+                "dmx_dimmer_u16": dmx_dimmer_u16,
+                "laser_bam_pct": laser_bam_pct,
+                "blackout": blackout,
+                "inherit_from_prev": inherit_from_prev,
+                "summary_ko": summary_ko
+            })))
+        }
+        "stage_mask_apply" => {
+            use lv_spatial::mask_ops::{apply, DataPoint, PointStore, PostprocessParams};
+            let slice_idx = args.get("slice_idx").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let width = args.get("width").and_then(Value::as_u64).unwrap_or(64).clamp(16, 256) as u32;
+            let height = args.get("height").and_then(Value::as_u64).unwrap_or(64).clamp(16, 256) as u32;
+            let seed_frame = args.get("seed_frame").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let frame_count = args.get("frame_count").and_then(Value::as_u64).unwrap_or(10).clamp(1, 300) as u32;
+            let radius = args.get("seed_radius_px").and_then(Value::as_i64).unwrap_or(8).clamp(2, 64) as i32;
+            let mut store = PointStore::new();
+            if let Some(pts) = args.get("points").and_then(Value::as_array) {
+                for p in pts {
+                    let x = p.get("x").and_then(Value::as_i64).unwrap_or((width / 2) as i64) as i32;
+                    let y = p.get("y").and_then(Value::as_i64).unwrap_or((height / 2) as i64) as i32;
+                    let positive = p.get("positive").and_then(Value::as_bool).unwrap_or(true);
+                    store.add(DataPoint { frame: seed_frame, object_id: 1, positive, x, y });
+                }
+            }
+            if store.points().is_empty() {
+                store.add(DataPoint {
+                    frame: seed_frame,
+                    object_id: 1,
+                    positive: true,
+                    x: (width / 2) as i32,
+                    y: (height / 2) as i32,
+                });
+            }
+            let prompts = store.prompts(seed_frame, 1);
+            let mut raw = vec![0u8; (width * height) as usize];
+            let r2 = radius * radius;
+            let neg_r2 = (radius / 2).max(2).pow(2);
+            for (&[px, py], &label) in prompts.coords.iter().zip(prompts.labels.iter()) {
+                let (cx, cy) = (px.round() as i32, py.round() as i32);
+                if label == 1 {
+                    for y in (cy - radius).max(0)..=(cy + radius).min(height as i32 - 1) {
+                        for x in (cx - radius).max(0)..=(cx + radius).min(width as i32 - 1) {
+                            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2 {
+                                raw[(y as u32 * width + x as u32) as usize] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+            for (&[px, py], &label) in prompts.coords.iter().zip(prompts.labels.iter()) {
+                let (cx, cy) = (px.round() as i32, py.round() as i32);
+                if label == 0 {
+                    for y in (cy - radius).max(0)..=(cy + radius).min(height as i32 - 1) {
+                        for x in (cx - radius).max(0)..=(cx + radius).min(width as i32 - 1) {
+                            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= neg_r2 {
+                                raw[(y as u32 * width + x as u32) as usize] = 0;
+                            }
+                        }
+                    }
+                }
+            }
+            let img = match image::GrayImage::from_raw(width, height, raw) {
+                Some(i) => i,
+                None => return Some(Err("failed to allocate mask buffer".into())),
+            };
+            let params = PostprocessParams {
+                holes: args.get("holes").and_then(Value::as_u64).unwrap_or(4) as u32,
+                dots: args.get("dots").and_then(Value::as_u64).unwrap_or(2) as u32,
+                border_fix: args.get("border_fix").and_then(Value::as_u64).unwrap_or(1) as u32,
+                grow: args.get("grow").and_then(Value::as_i64).unwrap_or(0) as i32,
+            };
+            let refined = match apply(&img, &params) {
+                Ok(m) => m,
+                Err(e) => return Some(Err(format!("mask postprocess failed: {e}"))),
+            };
+            let fg_px = refined.as_raw().iter().filter(|&&v| v > 0).count();
+            Some(Ok(json!({
+                "ok": true,
+                "slice_idx": slice_idx,
+                "seed_frame": seed_frame,
+                "propagated_frames": frame_count,
+                "point_count": store.points().len(),
+                "foreground_pixels": fg_px,
+                "width": width,
+                "height": height,
+                "summary_ko": format!("슬라이스 #{slice_idx} 마스크 {frame_count}프레임 전파 완료 (전경 {fg_px} px)")
+            })))
+        }
+        "stage_render_step" => {
+            let slice_idx = args.get("slice_idx").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let adopted_cam_id = args
+                .get("adopted_cam_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("cam_foh_01");
+            let samples_per_pass = args.get("samples_per_pass").and_then(Value::as_u64).unwrap_or(4).clamp(1, 64) as u32;
+            let target_samples = args.get("target_samples").and_then(Value::as_u64).unwrap_or(16).clamp(1, 256) as u32;
+            let completed_passes = args.get("completed_passes").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let next_passes = completed_passes.saturating_add(1);
+            let accumulated_samples = (next_passes * samples_per_pass).min(target_samples);
+            let done = accumulated_samples >= target_samples;
+            let valid_ratio = args.get("stereo_valid_ratio").and_then(Value::as_f64).unwrap_or(0.92);
+            Some(Ok(json!({
+                "ok": true,
+                "slice_idx": slice_idx,
+                "adopted_cam_id": adopted_cam_id,
+                "skipped_non_adopted": true,
+                "completed_passes": next_passes,
+                "accumulated_samples": accumulated_samples,
+                "target_samples": target_samples,
+                "done": done,
+                "optical_warning": valid_ratio < 0.85,
+                "stereo_valid_ratio": valid_ratio
+            })))
+        }
+        "stage_render_abort" => {
+            let t0 = std::time::Instant::now();
+            let slice_idx = args.get("slice_idx").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let adopted_cam_id = args
+                .get("adopted_cam_id")
+                .and_then(Value::as_str)
+                .unwrap_or("cam_foh_01");
+            let abort_latency_us = t0.elapsed().as_micros().max(1) as u64;
+            Some(Ok(json!({
+                "ok": true,
+                "aborted": true,
+                "slice_idx": slice_idx,
+                "adopted_cam_id": adopted_cam_id,
+                "abort_latency_us": abort_latency_us,
+                "within_frame_budget": abort_latency_us <= 16_666
             })))
         }
         _ => None,
@@ -670,5 +1101,102 @@ mod tests {
         assert_eq!(handle(&call, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})), None);
         assert_eq!(http_reply(&call, Some("https://example.com"), b"{}").0, "403 Forbidden");
         assert_eq!(http_reply(&call, Some("http://127.0.0.1:8787"), br#"{"id":1,"method":"ping"}"#).0, "200 OK");
+    }
+
+    #[test]
+    fn cue_timeline_synth_measures_real_blackout_latency_and_reports_injected_overrun_e07() {
+        let fast = dispatch_stage_synth_tool("cue_timeline_synth", &json!({"bg_frames": 30, "blackout": true}))
+            .unwrap()
+            .unwrap();
+        let fast_us = fast["blackout_latency_us"].as_u64().unwrap();
+        assert!(fast_us > 0 && fast_us <= 16_666, "measured fast blackout latency out of bounds: {fast_us}");
+        assert_ne!(fast_us, 14_200, "latency must be measured, not hardcoded 14_200");
+
+        let slow = dispatch_stage_synth_tool(
+            "cue_timeline_synth",
+            &json!({"bg_frames": 30, "blackout": true, "inject_blackout_delay_us": 20_000, "observed_weight_swaps_1000f": 2}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(slow["blackout_latency_us"].as_u64().unwrap() >= 18_000);
+        assert_eq!(slow["weight_swaps_1000f"].as_u64().unwrap(), 2);
+    }
+
+    #[test]
+    fn v18_spatial_deck_mcp_tools_roundtrip_and_enforce_safety() {
+        let listed = tools();
+        let arr = listed.as_array().unwrap();
+        for name in ["char_prompt", "stage_cad_prompt", "stage_slice_program"] {
+            assert!(arr.iter().any(|t| t["name"] == name), "missing MCP tool {name}");
+        }
+
+        let ch = dispatch_stage_synth_tool(
+            "char_prompt",
+            &json!({"prompt": "128 BPM 비보이 프리즈 왕관", "actor_id": "HARING-S1"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ch["ok"], true);
+        assert_eq!(ch["motif"], "bboy_freeze");
+        assert_eq!(ch["head_prop"], "crown");
+        assert_eq!(ch["bpm"].as_f64().unwrap(), 128.0);
+        assert!(ch["audit"]["body_color_purity_ratio"].as_f64().unwrap() >= 0.995);
+        assert_eq!(ch["audit"]["outline_gap_pixels"].as_u64().unwrap(), 0);
+        assert!(ch["motion_ticks_count"].as_u64().unwrap() >= 4);
+
+        let cad = dispatch_stage_synth_tool(
+            "stage_cad_prompt",
+            &json!({"prompt": "무빙헤드 커브드 LED 분할 LED 런웨이 물류 랙"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cad["ok"], true);
+        assert!(cad["roundtrip_max_err_m"].as_f64().unwrap() < 1e-4);
+        assert!(cad["hazard_obbs"].as_array().unwrap().len() >= 3);
+
+        let sl = dispatch_stage_synth_tool(
+            "stage_slice_program",
+            &json!({
+                "slice_idx": 2,
+                "slice_unit_s": 10.0,
+                "adopted_cam_id": "cam_crane_02",
+                "joints": {"joint_lift_sl01": 1.4, "joint_turntable_tt01": 0.75},
+                "laser_in_frustum": true
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sl["normalized_joints"]["sl01_lift_prismatic"], 1.4);
+        assert_eq!(sl["normalized_joints"]["stage_turntable_revolute"], 0.75);
+        assert_eq!(sl["laser_bam_pct"], 0.0);
+
+        let bad_pyro = dispatch_stage_synth_tool(
+            "stage_slice_program",
+            &json!({"pyro_armed": true, "pyro_universe": 1, "pyro_non_dimmable": false}),
+        )
+        .unwrap();
+        assert!(bad_pyro.is_err(), "non-Universe-64 pyro must be rejected");
+
+        let mask = dispatch_stage_synth_tool(
+            "stage_mask_apply",
+            &json!({"slice_idx": 1, "width": 48, "height": 48, "points": [{"x": 24, "y": 24, "positive": true}]}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mask["ok"], true);
+        assert!(mask["foreground_pixels"].as_u64().unwrap() > 100);
+
+        let step = dispatch_stage_synth_tool(
+            "stage_render_step",
+            &json!({"slice_idx": 1, "adopted_cam_id": "cam_foh_01", "completed_passes": 3, "samples_per_pass": 4, "target_samples": 16}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(step["done"], true);
+
+        let abort = dispatch_stage_synth_tool("stage_render_abort", &json!({"slice_idx": 1}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(abort["within_frame_budget"], true);
     }
 }

@@ -650,27 +650,28 @@ pub fn build_nn_status_full(
         }
     }
 
-    // I^2 cross-phase heterogeneity per scenario (Phase 2 – Part 2 · D5).
+    // I^2 cross-phase heterogeneity per scenario (Phase 2 – Part 2 · D5, unified via sds::pool::heterogeneity_i2).
     let mut i2_mixed = serde_json::Map::new();
     for s in &lib {
-        let mut pts: Vec<(f64, f64)> = Vec::new();
+        let mut pts: Vec<(f64, f64, f64)> = Vec::new();
         for p in &s.phases {
             if let Some((mean, sd, n)) = rt.sds().exact_baseline(&Scope::new(Track::Balance, &format!("nn:{}", s.id), &p.id), "score") {
                 if n >= 2 {
-                    let var = (sd * sd / n as f64).max(1e-3);
-                    pts.push((mean, 1.0 / var));
+                    pts.push((mean, n as f64, (sd * sd).max(1e-6)));
                 }
             }
         }
         if pts.len() >= 2 {
-            let w_sum: f64 = pts.iter().map(|(_, w)| *w).sum();
-            let mu = pts.iter().map(|(m, w)| m * w).sum::<f64>() / w_sum.max(1e-9);
-            let q: f64 = pts.iter().map(|(m, w)| w * (m - mu).powi(2)).sum();
-            let df = (pts.len() - 1) as f64;
-            let i2 = if q > 1e-9 { ((q - df) / q).clamp(0.0, 1.0) } else { 0.0 };
+            let i2 = crate::sds::pool::heterogeneity_i2(&pts);
+            let mixed = i2 > 0.5;
             i2_mixed.insert(
                 s.id.to_string(),
-                json!({ "i2": (i2 * 1000.0).round() / 1000.0, "mixed": i2 > 0.5, "phases_k": pts.len() }),
+                json!({
+                    "i2": (i2 * 1000.0).round() / 1000.0,
+                    "mixed": mixed,
+                    "low_power_k": pts.len() < 3,
+                    "phases_k": pts.len(),
+                }),
             );
         }
     }

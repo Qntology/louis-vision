@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_CANDLE_REV = "f73415d4d149d7949e8a6a94911af670e4e10f7f"
-EXPECTED_PD_REV = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+EXPECTED_PD_REV = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 FORBIDDEN_CANDLE_REVS = ("ebaf93d", "3abdfab7")
 
 TIER1_BANNED_CRATES = (
@@ -23,6 +23,7 @@ TIER1_BANNED_CRATES = (
     "async-std",
     "tungstenite",
     "lancedb",
+    "sqlx",
     "tauri",
     "wry",
     "tao",
@@ -48,12 +49,21 @@ APPS_BANNED_WAN_CRATES = ("reqwest", "ureq", "sammie-sam3", "sammie-accel")
 VISION_BANNED_CRATES = ("lv-screen", "lv-agent", "lancedb", "louis-docs", "louis", "tauri")
 VISION_OFFICE_PARSER_CRATES = ("cfb", "calamine", "pdf-extract", "scraper", "html-pug", "hwp-writer")
 TIER1_EVAL_FORBIDDEN_LITERALS = (
-    '"docs_nn_scenarios"',
-    '"DOCS_NN_HOLDOUT_SEED"',
-    '"ZH-"',
-    '"ui_nn_scenarios"',
-    '"UI_NN_HOLDOUT_SEED"',
-    '"UI-ZH-"',
+    "docs_nn_scenarios",
+    "ui_nn_scenarios",
+    "DOCS_NN_HOLDOUT_SEED",
+    "MASTER_HOLDOUT_SEED",
+    "UI_NN_HOLDOUT_SEED",
+    "ZH-",
+    "XH-",
+    "CXH-",
+    "UI-ZH-",
+    "corpus_plan_manifest",
+    "docs_synth_mcp",
+    "ReleaseSeal",
+    "reference_report",
+    "exact_reference",
+    "composite_reference",
 )
 
 
@@ -144,25 +154,32 @@ def check_tier1_purity(lv_root: Path, errs: list[str]) -> None:
         if not has_no_default_lv_doc:
             errs.append("Tier 1 boundary violation in crates/lv-planar/Cargo.toml: lv-doc must set default-features = false")
 
+    scan_files: list[Path] = []
     crates_dir = lv_root / "crates"
     if crates_dir.exists():
-        for rs in sorted(crates_dir.glob("lv-*/src/**/*.rs")):
-            rel = rs.relative_to(lv_root).as_posix()
-            text = rs.read_text(encoding="utf-8", errors="replace")
-            for lineno, raw in enumerate(text.splitlines(), 1):
-                line = raw.strip()
-                if line.startswith("//"):
-                    continue
-                for pat, label in (
-                    (r"\buse\s+(?:reqwest|ureq|tokio|lancedb|tauri|webrtc|sammie_sam3|sammie_accel|noto_core|sandbox_core|sandbox_data|sandbox_world|sandbox_runtime)\b", "banned crate import"),
-                    (r"\bstd::net::", "std::net in zero-net library"),
-                    (r"\b(?:Sam3Keyframe|Sam3MultiplexLive|SamExecutionTier)\b", "removed SAM 3.1 symbol"),
-                ):
-                    if re.search(pat, line):
-                        errs.append(f"Tier 1 source violation in {rel}:{lineno}: {label}")
-                for lit in TIER1_EVAL_FORBIDDEN_LITERALS:
-                    if lit in line:
-                        errs.append(f"Tier 1 eval-literal leak in {rel}:{lineno}: forbidden literal {lit}")
+        scan_files.extend(sorted(crates_dir.glob("lv-*/src/**/*.rs")))
+    act_dir = lv_root / "apps" / "vision" / "crates" / "sandbox-core" / "src" / "act"
+    if act_dir.exists():
+        scan_files.extend(sorted(act_dir.glob("**/*.rs")))
+    for rs in scan_files:
+        rel = rs.relative_to(lv_root).as_posix()
+        text = rs.read_text(encoding="utf-8", errors="replace")
+        for lineno, raw in enumerate(text.splitlines(), 1):
+            line = raw.strip()
+            if line.startswith("//"):
+                continue
+            for pat, label in (
+                (r"\buse\s+(?:reqwest|ureq|tokio|lancedb|sqlx|tauri|webrtc|sammie_sam3|sammie_accel|noto_core|sandbox_core|sandbox_data|sandbox_world|sandbox_runtime)\b", "banned crate import"),
+                (r"\bstd::net::", "std::net in zero-net library"),
+                (r"\b(?:Sam3Keyframe|Sam3MultiplexLive|SamExecutionTier)\b", "removed SAM 3.1 symbol"),
+            ):
+                if re.search(pat, line):
+                    if label == "banned crate import" and "sandbox_core" in line and rel.startswith("apps/vision/crates/sandbox-core/src/act/"):
+                        continue
+                    errs.append(f"Tier 1 source violation in {rel}:{lineno}: {label}")
+            for lit in TIER1_EVAL_FORBIDDEN_LITERALS:
+                if lit in line:
+                    errs.append(f"Tier 1 eval-literal leak in {rel}:{lineno}: forbidden literal '{lit}'")
 
 
 def _scan_vision_lv_doc_no_default(manifest: Path, lv_root: Path, errs: list[str]) -> None:

@@ -10,7 +10,7 @@ use anyhow::Result;
 use candle_core::Device;
 use lv_agent::staged::{run_staged, Commit, StagedEngine, StagedSnapshot};
 use lv_core::residency::{Group, Loaded, ModelId, Phase, Residency, ResidencyMode};
-use lv_doc::docs::parse_docs_bytes;
+use lv_doc::docs::{parse_docs_bytes, sanitize_doc_ir};
 use lv_router::residency_router::{CacheAccessMode, ResidencyRouter, RouterError};
 use sha2::{Digest, Sha256};
 
@@ -144,8 +144,10 @@ impl StagedLouisPipeline {
                 Ok(snap)
             },
             |(_k, data)| {
-                let ir = parse_docs_bytes(&ext_s, data)?;
-                let lines: Vec<String> = ir.blocks.iter().map(|b| format!("{b:?}")).collect();
+                // D-05: Always sanitize parsed IR in real watcher ingestion (strip invisible/covert artifacts).
+                let raw_ir = parse_docs_bytes(&ext_s, data)?;
+                let sanitized = sanitize_doc_ir(raw_ir, Vec::new());
+                let lines: Vec<String> = sanitized.doc.blocks.iter().map(|b| format!("{b:?}")).collect();
                 Ok(lines)
             },
             |e, _snap_rev, lines| {

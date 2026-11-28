@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Result};
-use chrono::Utc;
 use lv_agent::factcheck::draft_or_fallback;
 use lv_agent::gates::{
     check_citizen_text, check_manual_amount, officer_approve, select_form_for_verdict,
@@ -170,7 +169,7 @@ pub fn run_track_a_d1_to_d6_probes() -> Result<()> {
 
     // [D6] Mandatory form snap + AutoFinalize permanent block on Adverse & Procedural
     let mut auto_pol = AutomationPolicy::default();
-    auto_pol.enable_auto("OFF-ADMIN-01", "행정절차 자동화 고시 제2026-4호", Utc::now())?;
+    auto_pol.enable_auto("OFF-ADMIN-01", "행정절차 자동화 고시 제2026-4호", crate::eval_nn::fixed_eval_utc())?;
 
     for (verdict, req_form, supp_cnt, simple_missing, want_form) in [
         (AgentVerdict::G1ExpiredMandatoryReject, OutputForm::ApprovalNotice, 0, false, OutputForm::RejectNotice),

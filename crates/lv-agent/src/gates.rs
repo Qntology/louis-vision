@@ -133,30 +133,47 @@ pub enum OfficerOutcome {
     Approved { special_audit_flag: bool },
 }
 
-/// Gate 3 guard: high-risk cases cannot be rubber-stamped without proof or cosigned law exception.
+/// Gate 3 guard: exhaustive 14-variant check — only favorable verdicts pass without justification;
+/// internal leak, interlock-order, and rubber-stamp intercepts can never be approved by an officer;
+/// all remaining adverse/procedural verdicts require proof or cosigned law exception (D-02).
 pub fn officer_approve(
     verdict: AgentVerdict,
     justification: Option<&Justification>,
 ) -> Result<OfficerOutcome, AgentVerdict> {
-    if !matches!(
-        verdict,
-        AgentVerdict::G3ViolationHighRisk | AgentVerdict::G3ViolationRelatedVendorSplit
-    ) {
-        return Ok(OfficerOutcome::Approved { special_audit_flag: false });
-    }
-    match justification {
-        None => Err(AgentVerdict::G3InterceptRubberStamp),
-        Some(Justification::CancelMistake) => Ok(OfficerOutcome::Reverted),
-        Some(Justification::ProveFalsePositive { evidence_scans }) if *evidence_scans > 0 => {
+    match verdict {
+        AgentVerdict::G3EligibleNormal | AgentVerdict::G3EligibleHomonymClear => {
             Ok(OfficerOutcome::Approved { special_audit_flag: false })
         }
-        Some(Justification::ProveFalsePositive { .. }) => Err(AgentVerdict::G3InterceptRubberStamp),
-        Some(Justification::ApplyLawException { team_lead_cosign: true, rule_ref })
-            if !rule_ref.trim().is_empty() =>
-        {
-            Ok(OfficerOutcome::Approved { special_audit_flag: true })
-        }
-        Some(Justification::ApplyLawException { .. }) => Err(AgentVerdict::G3InterceptRubberStamp),
+        AgentVerdict::G4BlockInternalLeak
+        | AgentVerdict::G3InterceptInterlockOrder
+        | AgentVerdict::G3InterceptRubberStamp => Err(verdict),
+        AgentVerdict::G1ExpiredMandatoryReject
+        | AgentVerdict::G1SignInvalidRetry
+        | AgentVerdict::G1InterceptForceHold
+        | AgentVerdict::G2RejectContradictionLock
+        | AgentVerdict::G2RequireRepairReceipt
+        | AgentVerdict::G2BlockUnprovenEdit
+        | AgentVerdict::G3HoldSimpleReceiptMissing
+        | AgentVerdict::G3ViolationHighRisk
+        | AgentVerdict::G3ViolationRelatedVendorSplit => match justification {
+            None => Err(AgentVerdict::G3InterceptRubberStamp),
+            Some(Justification::CancelMistake) => Ok(OfficerOutcome::Reverted),
+            Some(Justification::ProveFalsePositive { evidence_scans }) if *evidence_scans > 0 => {
+                Ok(OfficerOutcome::Approved { special_audit_flag: false })
+            }
+            Some(Justification::ProveFalsePositive { .. }) => {
+                Err(AgentVerdict::G3InterceptRubberStamp)
+            }
+            Some(Justification::ApplyLawException {
+                team_lead_cosign: true,
+                rule_ref,
+            }) if !rule_ref.trim().is_empty() => {
+                Ok(OfficerOutcome::Approved { special_audit_flag: true })
+            }
+            Some(Justification::ApplyLawException { .. }) => {
+                Err(AgentVerdict::G3InterceptRubberStamp)
+            }
+        },
     }
 }
 

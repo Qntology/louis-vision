@@ -30,8 +30,8 @@ lv-planar = { path = "../../../crates/lv-planar", optional = true, features = ["
 lv-router = { path = "../../../crates/lv-router", features = ["planar-2d"] }
 lv-domain = { path = "../../../crates/lv-domain" }
 lv-agent = { path = "../../../crates/lv-agent" }
-premium-discount-eval = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["hygiene"] }
-premium-discount-window = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-eval = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5", features = ["hygiene"] }
+premium-discount-window = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

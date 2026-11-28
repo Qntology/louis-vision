@@ -60,6 +60,7 @@ export const state = {
   modelCatalog: null,
 
   selectedUnit: null, // 월드에서 고른 유닛 id (없으면 null)
+  deckFocus: null, // v1.8 공간 데크에서 포커스된 슬라이드 카드 (없으면 null)
   units: [], // world_frame.units: 탑뷰 프레임 위 로봇 (u, v 는 프레임 안 0..1)
   unitInfo: new Map(), // units_list: id → 배터리·체형까지 든 항목
   draftBase: null, // 프리셋 Drop-up 에서 고른 발 (적용 전)

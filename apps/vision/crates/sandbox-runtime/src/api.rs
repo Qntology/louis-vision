@@ -14,7 +14,7 @@ use crate::runtime::{label_ko, FrameView, Runtime, Submission};
 pub const MIN_CELLS: usize = 32;
 pub const MAX_CELLS: usize = 160;
 
-pub const COMMANDS: [&str; 68] = [
+pub const COMMANDS: [&str; 74] = [
     "act_status",
     "units_list",
     "unit_frame",
@@ -23,6 +23,12 @@ pub const COMMANDS: [&str; 68] = [
     "rig_edit",
     "rig_params",
     "rig_commit",
+    "char_prompt",
+    "stage_cad_prompt",
+    "stage_slice_program",
+    "stage_mask_apply",
+    "stage_render_step",
+    "stage_render_abort",
     "crew_remove",
     "crew_add",
     "crew_clear",
@@ -2132,5 +2138,29 @@ mod tests {
         assert!(!rt.has_ttm());
         let again = rt.api_ts_forecast(&scope, "score").unwrap();
         assert!(!again["weights"].as_array().unwrap().iter().any(|w| w["method"] == "ttm"));
+    }
+
+    #[test]
+    fn v07_four_way_ipc_parity_for_spatial_deck_commands() {
+        let required = [
+            "char_prompt",
+            "stage_cad_prompt",
+            "stage_slice_program",
+            "stage_mask_apply",
+            "stage_render_step",
+            "stage_render_abort",
+        ];
+        let serve_rs = include_str!("../examples/serve.rs");
+        let api_js = include_str!("../../../ui/js/api.js");
+        let mock_backend_js = include_str!("../../../ui/js/mock-backend.js");
+        let mut rt = rt();
+        for cmd in required {
+            assert!(COMMANDS.contains(&cmd), "api.rs::COMMANDS missing '{cmd}'");
+            assert!(serve_rs.contains(&format!("'{cmd}'")), "examples/serve.rs WORLD missing '{cmd}'");
+            assert!(api_js.contains(&format!("'{cmd}'")), "ui/js/api.js RT_CALL missing '{cmd}'");
+            assert!(mock_backend_js.contains(cmd), "ui/js/mock-backend.js handlers missing '{cmd}'");
+            let res = rt.api_call(cmd, &json!({})).unwrap_or_else(|e| panic!("api_call({cmd}) failed: {e}"));
+            assert_eq!(res["ok"], true, "api_call({cmd}) returned non-ok: {res}");
+        }
     }
 }

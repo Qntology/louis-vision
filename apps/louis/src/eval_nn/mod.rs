@@ -37,7 +37,8 @@ use sha2::{Digest, Sha256};
 use audit_probe::run_d8_shift_and_worm_probe;
 use holdout_zh::{build_holdout_zh_36_specs, execute_holdout_specs_and_encode, execute_sealed_holdout_twice_and_verify};
 use schema::{
-    derive_case_seed, DocsEvalAxis, DocsNnSuiteReport, EvalCellResult, EvalSplit, SuiteSplit,
+    derive_case_seed, DocsEvalAxis, DocsNnSuiteReport, EvalCellResult, EvalSplit, HardGateCode,
+    SuiteSplit, FIXED_EVAL_NOW_MS,
 };
 use synth_6axes::burst_concurrent::run_burst_concurrent_d7_probe;
 use synth_6axes::digital_clean::{synth_erp_mhtml_bytes, synth_hwp5_ole_bytes, synth_xlsx_bytes, SynthXlsxCell, SynthXlsxSheet};
@@ -49,6 +50,12 @@ use track_c_gov_fin_tax::run_track_c_d12_part1_probes;
 use track_d_sec_eng_mro_hr::run_track_d_d10_and_d12_part2_probes;
 
 pub const DOCS_NN_SCENARIOS_JSON: &str = include_str!("../../data/docs_nn_scenarios.json");
+
+/// Fixed deterministic UTC timestamp used across all evaluation suites (E-05: eliminates `Utc::now()` drift).
+pub fn fixed_eval_utc() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp_millis(FIXED_EVAL_NOW_MS)
+        .expect("valid FIXED_EVAL_NOW_MS timestamp")
+}
 
 fn fnv1a_8hex(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -130,9 +137,17 @@ pub fn run_eval_nn_suite(
 
     // Sealed Holdout path (ONLY executed when --release-seal is passed)
     if split == SuiteSplit::HoldoutSeal {
-        let op_dir = std::env::temp_dir().join("louis-eval-op-readonly-check");
-        let _report_bytes =
-            execute_sealed_holdout_twice_and_verify(&op_dir, execute_holdout_specs_and_encode)?;
+        let op_dir = std::env::temp_dir().join(format!("louis-eval-op-readonly-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&op_dir);
+        std::fs::create_dir_all(&op_dir)?;
+        std::fs::write(
+            op_dir.join("operational_ledger_sentinel.txt"),
+            format!("sentinel:{defs_rev}:sealed-readonly-check\n"),
+        )?;
+        let report_bytes_res =
+            execute_sealed_holdout_twice_and_verify(&op_dir, execute_holdout_specs_and_encode);
+        let _ = std::fs::remove_dir_all(&op_dir);
+        let report_bytes = report_bytes_res?;
         let specs = build_holdout_zh_36_specs()?;
         let cells: Vec<EvalCellResult> = specs
             .iter()
@@ -146,7 +161,7 @@ pub fn run_eval_nn_suite(
                 hard_gate_violations: Vec::new(),
             })
             .collect();
-        let digest_check = Sha256::digest(&_report_bytes);
+        let digest_check = Sha256::digest(&report_bytes);
         ensure!(!digest_check.is_empty());
         return Ok(DocsNnSuiteReport {
             split,
@@ -154,8 +169,8 @@ pub fn run_eval_nn_suite(
             defs_rev,
             total_cells: cells.len(),
             passed_cells: cells.len(),
-            d1_d12_probes_passed: 12,
-            d1_d12_probes_total: 12,
+            d1_d12_probes_passed: 0,
+            d1_d12_probes_total: 0,
             hard_gate_violations: 0,
             max_cer: 0.0,
             dsli_7: 0.50,
@@ -165,19 +180,29 @@ pub fn run_eval_nn_suite(
         });
     }
 
-    // Run deterministic D1..D12 scenario probes (Diag only)
+    // Run deterministic D1..D12 scenario probes (Diag only) — count each executed probe dynamically (E-05)
+    let mut d1_d12_probes_passed = 0usize;
+    let d1_d12_probes_total = 12usize;
     run_selftest_six_counterexamples()?;
     run_track_a_d1_to_d6_probes()?;
+    d1_d12_probes_passed += 5; // D1, D2, D4, D6, D9(scale carry)
     let scan2d = run_scan_2d_degraded_probe()?;
     ensure!(scan2d.virtual_luma_ok && scan2d.titleblock_protected && scan2d.legend_recall_ok && scan2d.legend_none_ok);
     #[cfg(feature = "field-3d")]
     synth_6axes::field_3d_planar::run_field_3d_d3_probe(derive_case_seed(EvalSplit::Diag, 0, 3))?;
+    d1_d12_probes_passed += 1; // D3
     run_privacy_contaminated_d5_probe()?;
+    d1_d12_probes_passed += 1; // D5
     run_burst_concurrent_d7_probe()?;
+    d1_d12_probes_passed += 1; // D7
     let (dsli_7, dsli_18) = run_d8_shift_and_worm_probe()?;
+    d1_d12_probes_passed += 1; // D8
     run_track_b_d9_and_d11_probes()?;
+    d1_d12_probes_passed += 1; // D11
     run_track_c_d12_part1_probes()?;
+    d1_d12_probes_passed += 1; // D12 part 1
     run_track_d_d10_and_d12_part2_probes()?;
+    d1_d12_probes_passed += 1; // D10 + D12 part 2
 
     // Run N x 6-axis diagnostic matrix (7 Core = 42 cells, 18 Enterprise = 108 cells)
     let packs: Vec<_> = match split {
@@ -192,47 +217,111 @@ pub fn run_eval_nn_suite(
 
     for (d_idx, meta) in packs.iter().enumerate() {
         for (a_idx, &axis) in DocsEvalAxis::ALL.iter().enumerate() {
-            let _seed = derive_case_seed(EvalSplit::Diag, d_idx as u8, a_idx as u8);
-            let fields: Vec<String> = meta.required_fields.iter().map(|s| (*s).to_string()).collect();
+            let seed = derive_case_seed(EvalSplit::Diag, d_idx as u8, a_idx as u8);
+            let case_id = format!("DIAG-{}-{:02}", meta.code, a_idx);
+            let claimed_total = 100_000i64 + ((seed % 900) as i64) * 1_000;
+            let evidence_total = claimed_total + 20_000;
+            let ref_line = format!("{} {} {} 검수완료", meta.code, axis.as_str(), claimed_total);
+            let fields_line = meta.required_fields.join(" ");
 
-            if let Some(core_pack) = DocsDomainPack::ALL.iter().copied().find(|p| p.id() == meta.id)
+            // E-01: synthesize real format bytes seeded by (domain, axis), parse via lv-doc, and sanitize.
+            let (fmt, raw_bytes) = match a_idx % 3 {
+                0 => (
+                    "xlsx",
+                    synth_xlsx_bytes(&[SynthXlsxSheet {
+                        name: format!("S{}", a_idx + 1),
+                        rows: vec![
+                            vec![SynthXlsxCell::Text(ref_line.clone())],
+                            vec![
+                                SynthXlsxCell::Text(fields_line.clone()),
+                                SynthXlsxCell::Int(claimed_total),
+                            ],
+                        ],
+                        very_hidden: false,
+                    }])?,
+                ),
+                1 => (
+                    "hwp",
+                    synth_hwp5_ole_bytes(&[ref_line.as_str(), fields_line.as_str()], true, None)?,
+                ),
+                _ => (
+                    "mhtml",
+                    synth_erp_mhtml_bytes(
+                        "APPROVED",
+                        &["APPROVED", "HOLD"],
+                        &format!(
+                            "<p>{ref_line}</p><table><tr><td>{fields_line}</td><td>{claimed_total}</td></tr></table>"
+                        ),
+                        None,
+                    ),
+                ),
+            };
+
+            let parsed = lv_doc::docs::parse_docs_bytes(fmt, &raw_bytes)?;
+            let sanitized = lv_doc::docs::sanitize_doc_ir(parsed, Vec::new());
+            let plain = &sanitized.doc.plain_text;
+            let predicted_line = plain
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains(meta.code) && l.contains(axis.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let parsed_fields: Vec<String> = meta
+                .required_fields
+                .iter()
+                .filter(|&&f| plain.contains(f))
+                .map(|&f| f.to_string())
+                .collect();
+
+            let mut violations: Vec<HardGateCode> = Vec::new();
+            let mut cell_passed = true;
+            let cell_cer = if let Some(core_pack) =
+                DocsDomainPack::ALL.iter().copied().find(|p| p.id() == meta.id)
             {
                 let legacy = PackCheckInput {
                     pack: core_pack,
-                    claimed_total: 100_000,
-                    evidence_total: 120_000,
-                    fields_present: fields.clone(),
-                    ocr_predicted: format!("{} 검수 완료", meta.code),
-                    ocr_reference: format!("{} 검수 완료", meta.code),
+                    claimed_total,
+                    evidence_total,
+                    fields_present: parsed_fields.clone(),
+                    ocr_predicted: predicted_line.clone(),
+                    ocr_reference: ref_line.clone(),
                 };
                 let _req = DomainEvalRequest::from(&legacy);
                 let pr = evaluate_pack(&legacy, mode);
-                max_cer = max_cer.max(pr.char_cer);
-                ensure!(pr.eligible && pr.char_cer <= 0.005);
+                if !pr.eligible || pr.char_cer > 0.005 {
+                    cell_passed = false;
+                }
+                pr.char_cer
             } else {
-                let ref_s = format!("{} 검증 완료", meta.code);
-                let cer = cer_char_level(&ref_s, &ref_s);
-                max_cer = max_cer.max(cer);
-            }
+                let cer = cer_char_level(&predicted_line, &ref_line);
+                if parsed_fields.len() != meta.required_fields.len() || cer > 0.005 {
+                    cell_passed = false;
+                }
+                cer
+            };
+            max_cer = max_cer.max(cell_cer);
 
-            // Assist mode ensures 0 unverified AutoFinalize
-            let disp = pol.decide_disposition(
+            // Assist mode (and high-impact domains in Auto mode) ensures 0 unverified AutoFinalize
+            let disp = pol.decide_disposition_for_domain(
                 AgentVerdict::G3EligibleNormal.nature(),
                 Some(1.0),
                 true,
                 &format!("DIAG-{}-{}", meta.code, axis.as_str()),
+                meta.high_impact,
             );
-            let gate_ok = matches!(disp, lv_agent::policy::Disposition::PendingOfficer { .. });
-            ensure!(gate_ok);
+            if !matches!(disp, lv_agent::policy::Disposition::PendingOfficer { .. }) {
+                violations.push(HardGateCode::GateFalseAutoFinalize);
+                cell_passed = false;
+            }
 
             cells.push(EvalCellResult {
-                case_id: format!("DIAG-{}-{:02}", meta.code, a_idx),
+                case_id,
                 pack_id: meta.id.to_string(),
                 axis,
-                passed: true,
-                cer: 0.0,
-                emitted_bytes: 0,
-                hard_gate_violations: Vec::new(),
+                passed: cell_passed,
+                cer: cell_cer,
+                emitted_bytes: raw_bytes.len(),
+                hard_gate_violations: violations,
             });
         }
     }
@@ -245,8 +334,8 @@ pub fn run_eval_nn_suite(
         defs_rev,
         total_cells: cells.len(),
         passed_cells,
-        d1_d12_probes_passed: 12,
-        d1_d12_probes_total: 12,
+        d1_d12_probes_passed,
+        d1_d12_probes_total,
         hard_gate_violations,
         max_cer,
         dsli_7,

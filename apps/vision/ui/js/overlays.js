@@ -4,9 +4,9 @@ import { bus } from './state.js';
 import { $ } from './util.js';
 
 // ESC 는 맨 위 판부터 하나씩 닫고, 닫을 판이 없으면 유닛 선택을 푼다('escape' 이벤트, unit-select.js).
-const STACK = ['cctv-zoom', 'analysis-modal', 'show-io-popover', 'stage-calib-popover', 'world-popover', 'nn-dropup', 'preset-dropup', 'quest-dropup'];
+const STACK = ['cctv-zoom', 'analysis-modal', 'show-io-popover', 'stage-calib-popover', 'world-popover', 'spatial-deck', 'nn-dropup', 'preset-dropup', 'quest-dropup'];
 const DROPUPS = ['nn-dropup', 'preset-dropup', 'quest-dropup'];
-const OPENER = { 'world-popover': 'world-pill', 'stage-calib-popover': 'btn-stage-calib', 'show-io-popover': 'btn-show-io', 'quest-dropup': 'quest-bar', 'preset-dropup': 'preset-toggle', 'nn-dropup': 'nn-open-btn' };
+const OPENER = { 'world-popover': 'world-pill', 'stage-calib-popover': 'btn-stage-calib', 'show-io-popover': 'btn-show-io', 'spatial-deck': 'deck-toggle-btn', 'quest-dropup': 'quest-bar', 'preset-dropup': 'preset-toggle', 'nn-dropup': 'nn-open-btn' };
 
 export const isOpen = (id) => !!$(id) && !$(id).hidden;
 
@@ -46,6 +46,7 @@ export function initOverlays() {
     if (isOpen('world-popover') && !e.target.closest?.('#world-popover, #world-pill')) closePanel('world-popover');
   });
   document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     const top = STACK.find(isOpen);
     if (top) closePanel(top);

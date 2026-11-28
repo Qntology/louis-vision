@@ -5,7 +5,6 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
-use chrono::Utc;
 use lv_agent::gates::{
     check_citizen_text, officer_approve, select_form_for_verdict, AgentVerdict, OutputForm,
 };
@@ -165,7 +164,7 @@ pub fn build_holdout_zh_36_specs() -> Result<Vec<SynthCaseSpec>> {
 
 pub fn execute_holdout_specs_and_encode(specs: &[SynthCaseSpec]) -> Result<Vec<u8>> {
     let mut pol = AutomationPolicy::default();
-    pol.enable_auto("OFF-SEAL-01", "행정절차법 제14조", Utc::now())?;
+    pol.enable_auto("OFF-SEAL-01", "행정절차법 제14조", crate::eval_nn::fixed_eval_utc())?;
     let mut digest_rows = Vec::with_capacity(specs.len());
 
     for spec in specs {

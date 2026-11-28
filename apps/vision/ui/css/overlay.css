@@ -185,7 +185,7 @@ button.ov-pill:hover, .ov-pill[aria-expanded="true"] { background: var(--glass-s
 
 /* ── Sim<->Stage 테마, Provenance 배지, 인터록 HUD & 우하단 ( ✦ ) ── */
 body[data-theme="stage-dark"] { --bg-darkest: #0b0d10; --bg-plot: #07090b; --glass: rgba(11, 13, 16, 0.88); --glass-strong: rgba(11, 13, 16, 0.96); }
-body[data-blackout="true"] #world-wrap { filter: brightness(0.05); }
+body[data-blackout="true"] #world-wrap { filter: brightness(0); }
 .lv-seg { display: inline-flex; gap: 4px; align-items: center; }
 .lv-seg .ov-pill[aria-selected="true"] { background: var(--bg-active); border-color: var(--border-hover); color: var(--text-bright); }
 .prov-spec { border-color: var(--success); color: var(--success); }

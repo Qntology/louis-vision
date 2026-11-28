@@ -5,6 +5,7 @@
 //! Any violation trips `/louis/interlock/halt`, blocks both `AutoTimecode` and `SandboxCueRemote`,
 //! and appends to a hash-chained `AuditLog`.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -78,11 +79,19 @@ pub struct InterlockDispatch {
     pub decision: InterlockDecision,
 }
 
+/// Steady-state Clear heartbeat cadence (600 ticks ≈ 10 s at 60 Hz) so 60 Hz polling
+/// does not amplify disk I/O while preserving immediate transition & Halt audit logging (V-09).
+pub const STEADY_CLEAR_HEARTBEAT_TICKS: u64 = 600;
+const CLEAR_RING_CAP: usize = 128;
+
 pub struct SandboxInterlock {
     pub hazards: Vec<SandboxHazardObb>,
     gate_cfg: GateConfig,
     audit: AuditLog,
     tick: u64,
+    last_was_clear: bool,
+    suppressed_steady_clears: u64,
+    recent_clear_ticks: VecDeque<(u64, Option<f64>)>,
 }
 
 impl SandboxInterlock {
@@ -92,6 +101,9 @@ impl SandboxInterlock {
             gate_cfg: GateConfig::default(),
             audit: AuditLog::memory(audit_capacity.max(8)),
             tick: 0,
+            last_was_clear: false,
+            suppressed_steady_clears: 0,
+            recent_clear_ticks: VecDeque::with_capacity(CLEAR_RING_CAP),
         }
     }
 
@@ -107,7 +119,14 @@ impl SandboxInterlock {
             gate_cfg: GateConfig::default(),
             audit,
             tick: 0,
+            last_was_clear: false,
+            suppressed_steady_clears: 0,
+            recent_clear_ticks: VecDeque::with_capacity(CLEAR_RING_CAP),
         })
+    }
+
+    pub fn recent_clear_ring_len(&self) -> usize {
+        self.recent_clear_ticks.len()
     }
 
     pub fn audit_path(&self) -> Option<PathBuf> {
@@ -186,20 +205,49 @@ impl SandboxInterlock {
         }
 
         if reasons.is_empty() {
-            self.audit.log_with_tick(
-                "interlock",
-                Level::Info,
-                "sandbox_interlock_clear",
-                Some(json!({
-                    "fusion_residual_m": inputs.fusion_residual_m,
-                    "temporal_outcome": format!("{:?}", verdict.outcome),
-                })),
-                Some(self.tick),
-            );
+            if self.recent_clear_ticks.len() >= CLEAR_RING_CAP {
+                self.recent_clear_ticks.pop_front();
+            }
+            self.recent_clear_ticks.push_back((self.tick, inputs.fusion_residual_m));
+            let transition_to_clear = !self.last_was_clear;
+            if transition_to_clear {
+                self.last_was_clear = true;
+                self.suppressed_steady_clears = 0;
+                self.audit.log_with_tick(
+                    "interlock",
+                    Level::Info,
+                    "sandbox_interlock_clear",
+                    Some(json!({
+                        "fusion_residual_m": inputs.fusion_residual_m,
+                        "temporal_outcome": format!("{:?}", verdict.outcome),
+                    })),
+                    Some(self.tick),
+                );
+            } else {
+                self.suppressed_steady_clears += 1;
+                if self.suppressed_steady_clears >= STEADY_CLEAR_HEARTBEAT_TICKS {
+                    let suppressed = self.suppressed_steady_clears;
+                    self.suppressed_steady_clears = 0;
+                    self.audit.log_with_tick(
+                        "interlock",
+                        Level::Info,
+                        "sandbox_interlock_clear_heartbeat",
+                        Some(json!({
+                            "fusion_residual_m": inputs.fusion_residual_m,
+                            "temporal_outcome": format!("{:?}", verdict.outcome),
+                            "steady_clear_ticks": suppressed,
+                        })),
+                        Some(self.tick),
+                    );
+                }
+            }
             InterlockDecision::Clear {
                 temporal_outcome: format!("{:?}", verdict.outcome),
             }
         } else {
+            let suppressed = self.suppressed_steady_clears;
+            self.last_was_clear = false;
+            self.suppressed_steady_clears = 0;
             self.audit.log_with_tick(
                 "interlock",
                 Level::Info,
@@ -207,6 +255,7 @@ impl SandboxInterlock {
                 Some(json!({
                     "osc": INTERLOCK_HALT_OSC,
                     "reasons": reasons,
+                    "prior_steady_clear_ticks": suppressed,
                 })),
                 Some(self.tick),
             );
@@ -330,6 +379,31 @@ mod tests {
         let path = il.audit_path().expect("persistent log path");
         let verified_lines = verify_audit_chain(&path).expect("hash-chained audit log must verify");
         assert!(verified_lines >= 12);
+        drop(il);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn steady_state_clear_ticks_avoid_per_frame_disk_amplification_v09() {
+        let dir = std::env::temp_dir().join(format!("vision_interlock_v09_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut il = SandboxInterlock::new_persistent(Vec::new(), &dir, "interlock_v09", 128).unwrap();
+        let steady = steady_inputs();
+        for _ in 0..1_000 {
+            assert!(matches!(il.evaluate(&steady), InterlockDecision::Clear { .. }));
+        }
+        // First clear + at most 1 heartbeat (600 ticks) = 2 lines on disk, ring capped at 128.
+        assert_eq!(il.recent_clear_ring_len(), CLEAR_RING_CAP);
+        let path = il.audit_path().unwrap();
+        let clear_lines = verify_audit_chain(&path).unwrap();
+        assert!(clear_lines <= 3, "expected <= 3 disk lines for 1000 steady clear ticks, got {clear_lines}");
+
+        // Immediate halt must flush directly to disk.
+        let mut bad = steady;
+        bad.fusion_residual_m = Some(0.05);
+        assert!(matches!(il.evaluate(&bad), InterlockDecision::Halt { .. }));
+        let after_halt = verify_audit_chain(&path).unwrap();
+        assert_eq!(after_halt, clear_lines + 1);
         drop(il);
         let _ = std::fs::remove_dir_all(&dir);
     }

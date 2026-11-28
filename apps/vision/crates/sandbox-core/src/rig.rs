@@ -20,6 +20,7 @@ use crate::parts::Segment;
 
 pub mod edit;
 pub mod haring_dancer;
+pub mod stage_cad;
 pub mod urdf;
 pub mod venue_cad;
 

@@ -2,11 +2,15 @@
 //! Zero SAM 3.1 / MobileSAM / `lv-doc` / `lv-screen` / `lv-agent` / `lancedb` / WAN HTTP crates.
 
 pub mod calibration;
+pub mod dmx_engine;
 pub mod interlock;
+pub mod jelly_stage;
 pub mod live_loop;
+pub mod mask_bridge;
 pub mod rig_capture;
 pub mod sandbox_stereo;
 pub mod show_io;
+pub mod stage_render;
 
 use std::net::{IpAddr, SocketAddr};
 

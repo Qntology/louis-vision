@@ -20,13 +20,13 @@ pub const ROLLOUT_SAMPLE_CAP: usize = 64;
 pub const CHANNELS: &[ChannelSpec] = &[
     // N:N evaluation channels (display/eval only — never readable by DECISION_FILES).
     ChannelSpec { id: "nn.score", kind: ChannelKind::Score, unit: "", period: 0, hold: 0, cross_phase: false, decision_ok: false, crew: false },
-    ChannelSpec { id: "nn.min_margin", kind: ChannelKind::Trough, unit: "m", period: 0, hold: 0, cross_phase: false, decision_ok: false, crew: false },
+    ChannelSpec { id: "nn.min_margin", kind: ChannelKind::Trough, unit: "ratio", period: 0, hold: 0, cross_phase: false, decision_ok: false, crew: false },
     ChannelSpec { id: "nn.peak_ratio", kind: ChannelKind::Peak, unit: "ratio", period: 0, hold: 0, cross_phase: false, decision_ok: false, crew: false },
     ChannelSpec { id: "nn.sustained_effort", kind: ChannelKind::Gauge, unit: "ratio", period: 0, hold: 0, cross_phase: false, decision_ok: false, crew: false },
     // Whole-body balance channels (2-tick cadence).
-    ChannelSpec { id: "bal.margin", kind: ChannelKind::Gauge, unit: "m", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
-    ChannelSpec { id: "bal.margin_x", kind: ChannelKind::Gauge, unit: "m", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
-    ChannelSpec { id: "bal.margin_y", kind: ChannelKind::Gauge, unit: "m", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
+    ChannelSpec { id: "bal.margin", kind: ChannelKind::Gauge, unit: "ratio", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
+    ChannelSpec { id: "bal.margin_x", kind: ChannelKind::Gauge, unit: "ratio", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
+    ChannelSpec { id: "bal.margin_y", kind: ChannelKind::Gauge, unit: "ratio", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
     ChannelSpec { id: "bal.head_pitch", kind: ChannelKind::Gauge, unit: "deg", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
     ChannelSpec { id: "bal.trunk_lean", kind: ChannelKind::Gauge, unit: "deg", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
     ChannelSpec { id: "bal.effort_sum", kind: ChannelKind::Gauge, unit: "ratio", period: 2, hold: 6, cross_phase: false, decision_ok: true, crew: false },
@@ -42,7 +42,7 @@ pub const CHANNELS: &[ChannelSpec] = &[
     // Odometry belief error vs truth (5-tick, always-on, eval-only).
     ChannelSpec { id: "nav.belief_err_m", kind: ChannelKind::Gauge, unit: "m", period: 5, hold: 15, cross_phase: true, decision_ok: false, crew: true },
     // Sub-tick dynamics rollout (20 ms, capped per rollout).
-    ChannelSpec { id: "roll.margin", kind: ChannelKind::Gauge, unit: "m", period: 0, hold: 0, cross_phase: false, decision_ok: true, crew: false },
+    ChannelSpec { id: "roll.margin", kind: ChannelKind::Gauge, unit: "ratio", period: 0, hold: 0, cross_phase: false, decision_ok: true, crew: false },
     ChannelSpec { id: "roll.ratio_max", kind: ChannelKind::Gauge, unit: "ratio", period: 0, hold: 0, cross_phase: false, decision_ok: true, crew: false },
     // Drive wheel/track slip (10-tick while driving).
     ChannelSpec { id: "drive.slip", kind: ChannelKind::Gauge, unit: "ratio", period: 10, hold: 30, cross_phase: false, decision_ok: true, crew: false },

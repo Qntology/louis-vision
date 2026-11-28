@@ -14,37 +14,52 @@ impl Runtime {
         self.record_world_event_sds(events);
     }
 
-    /// WorldEvent physics adapter (Phase 2 – Part 3 · D3): Report-only Track::Act scopes.
+    /// WorldEvent physics adapter (Phase 2 – Part 3 · D3, V-04 per-worker form resolution):
+    /// Report-only Track::Act scopes keyed by the acting worker's own body `form_id`.
     pub(crate) fn record_world_event_sds(&mut self, events: &[TimedEvent]) {
-        let form = sandbox_core::bench::form_id(&self.world.body);
+        let primary_form = sandbox_core::bench::form_id(&self.world.body);
+        let crew_forms: Vec<(u32, String)> = self
+            .world
+            .crew
+            .iter()
+            .map(|w| (w.id, sandbox_core::bench::form_id(&w.body)))
+            .collect();
+        let form_for = |worker: u32| -> &str {
+            if worker > 1 {
+                if let Some((_, f)) = crew_forms.iter().find(|(id, _)| *id == worker) {
+                    return f.as_str();
+                }
+            }
+            primary_form.as_str()
+        };
         let sds = self.active_sds_mut();
         for e in events {
             match &e.event {
-                WorldEvent::Bump { peak_n, a_g, fell, .. } => {
-                    let sc = Scope::new(Track::Act, "world:bump", &form);
+                WorldEvent::Bump { worker, peak_n, a_g, fell, .. } => {
+                    let sc = Scope::new(Track::Act, "world:bump", form_for(*worker));
                     sds.record_baseline(&sc, "peak_n", *peak_n as f64);
                     sds.record_baseline(&sc, "a_g", *a_g as f64);
                     sds.record_agreement(&sc, "ok", !*fell);
                 }
-                WorldEvent::Hold { gap_m, .. } => {
-                    let sc = Scope::new(Track::Act, "world:hold", &form);
+                WorldEvent::Hold { worker, gap_m, .. } => {
+                    let sc = Scope::new(Track::Act, "world:hold", form_for(*worker));
                     sds.record_baseline(&sc, "gap_m", *gap_m as f64);
                 }
-                WorldEvent::CargoSlip { shift_m, use_ratio, .. } => {
-                    let sc = Scope::new(Track::Act, "world:cargo_slip", &form);
+                WorldEvent::CargoSlip { worker, shift_m, use_ratio, .. } => {
+                    let sc = Scope::new(Track::Act, "world:cargo_slip", form_for(*worker));
                     sds.record_baseline(&sc, "shift_m", *shift_m as f64);
                     sds.record_baseline(&sc, "use_ratio", *use_ratio as f64);
                 }
-                WorldEvent::CargoLost { .. } => {
-                    let sc = Scope::new(Track::Act, "world:cargo_lost", &form);
+                WorldEvent::CargoLost { worker, .. } => {
+                    let sc = Scope::new(Track::Act, "world:cargo_lost", form_for(*worker));
                     sds.record_agreement(&sc, "ok", false);
                 }
-                WorldEvent::StepSeen { height_m, .. } => {
-                    let sc = Scope::new(Track::Act, "world:step_seen", &form);
+                WorldEvent::StepSeen { worker, height_m, .. } => {
+                    let sc = Scope::new(Track::Act, "world:step_seen", form_for(*worker));
                     sds.record_baseline(&sc, "height_m", *height_m as f64);
                 }
-                WorldEvent::StepTaken { height_m, a_z, .. } => {
-                    let sc = Scope::new(Track::Act, "world:step_taken", &form);
+                WorldEvent::StepTaken { worker, height_m, a_z, .. } => {
+                    let sc = Scope::new(Track::Act, "world:step_taken", form_for(*worker));
                     sds.record_baseline(&sc, "height_m", *height_m as f64);
                     sds.record_baseline(&sc, "a_z", *a_z as f64);
                     sds.record_agreement(&sc, "ok", true);
@@ -132,5 +147,53 @@ mod tests {
         let run: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(run).unwrap()).unwrap();
         assert_eq!(run["engine_rev"], sandbox_core::bench::ENGINE_REV);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sub_worker_world_events_record_under_own_form_id_v04() {
+        let mut rt = rt();
+        // Primary worker defaults to wheel/humanoid; add a forklift sub-worker whose body differs.
+        rt.crew_add(1, "forklift", None).expect("add forklift crew");
+        let w2 = &rt.world().crew[0];
+        let w2_id = w2.id;
+        let primary_form = sandbox_core::bench::form_id(&rt.world().body);
+        let w2_form = sandbox_core::bench::form_id(&w2.body);
+        // Only if the two forms differ can we assert strict non-pollution; ensure different base when needed.
+        if primary_form == w2_form {
+            rt.crew_add(1, "humanoid", None).expect("add humanoid crew");
+        }
+        let target = rt
+            .world()
+            .crew
+            .iter()
+            .find(|w| sandbox_core::bench::form_id(&w.body) != primary_form)
+            .expect("distinct sub-worker form");
+        let target_id = target.id;
+        let target_form = sandbox_core::bench::form_id(&target.body);
+        let _ = w2_id;
+
+        let ev = TimedEvent {
+            tick: 5,
+            time_s: 0.5,
+            event: WorldEvent::Bump {
+                worker: target_id,
+                what: "crate".into(),
+                peak_n: 420.0,
+                a_g: 1.8,
+                speed_mps: 0.9,
+                fell: false,
+                label: "crew bump".into(),
+            },
+        };
+        rt.record_bench_sds(&[ev]);
+        let st = rt.sds().status(500);
+        assert!(
+            st.axes.iter().any(|a| a.scope == format!("act|world:bump|{target_form}") && a.axis == "peak_n"),
+            "sub-worker event must record under {target_form}"
+        );
+        assert!(
+            !st.axes.iter().any(|a| a.scope == format!("act|world:bump|{primary_form}")),
+            "sub-worker event must not pollute primary worker form {primary_form}"
+        );
     }
 }

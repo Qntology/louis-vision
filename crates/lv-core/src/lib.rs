@@ -1,6 +1,7 @@
 //! Layer 1 zero-network unified vision & inference core for `louis-vision`.
 
 pub mod device;
+pub mod gemma_audio;
 pub mod gemma_embed;
 pub mod gemma_vision;
 pub mod qcache;

@@ -31,23 +31,40 @@ pub struct WarehouseCheckInput {
     pub vent_loto_complete: bool,
 }
 
-/// Canonical trade relay pairs preventing alias self-loops (`INS<->IP`, `CA<->COA`, `PHYTO<->PC`, `BC<->BK`).
-pub fn trading_relay_pair(a: &str, b: &str) -> Option<(&'static str, &'static str)> {
-    let ua = a.trim().to_ascii_uppercase();
-    let ub = b.trim().to_ascii_uppercase();
-    if matches!(
-        (ua.as_str(), ub.as_str()),
-        ("INS", "IP")
-            | ("IP", "INS")
-            | ("CA", "COA")
-            | ("COA", "CA")
-            | ("PHYTO", "PC")
-            | ("PC", "PHYTO")
-            | ("BC", "BK")
-            | ("BK", "BC")
-    ) {
+/// Maps a canonical trade document code to its reference field name (D-13 single source of truth).
+pub fn trade_reference_field_of(doc_type: &str) -> Option<&'static str> {
+    match doc_type.trim().to_ascii_uppercase().as_str() {
+        "PO" => Some("reference_po"),
+        "LC" => Some("reference_lc"),
+        "CI" => Some("reference_invoice"),
+        "PL" => Some("reference_packing"),
+        "BL" => Some("reference_bl"),
+        "BC" | "BK" => Some("reference_booking"),
+        "CO" => Some("reference_origin"),
+        "CNM" => Some("reference_non_manipulation"),
+        "CA" | "COA" => Some("reference_analysis"),
+        "PHYTO" | "PC" => Some("reference_phyto"),
+        "INS" | "IP" => Some("reference_policy"),
+        _ => None,
+    }
+}
+
+/// Unified `(my_field, peer_field)` trade relay pair preventing alias self-loops
+/// (`INS<->IP`, `CA<->COA`, `PHYTO<->PC`, `BC<->BK`) where `mine == foreign` (D-13).
+pub fn trading_relay_pair_fields(from_type: &str, to_type: &str) -> Option<(&'static str, &'static str)> {
+    if from_type.trim().eq_ignore_ascii_case(to_type.trim()) {
         return None;
     }
+    let mine = trade_reference_field_of(to_type)?;
+    let foreign = trade_reference_field_of(from_type)?;
+    (mine != foreign).then_some((mine, foreign))
+}
+
+/// Canonical trade relay pairs preventing alias self-loops (`INS<->IP`, `CA<->COA`, `PHYTO<->PC`, `BC<->BK`).
+pub fn trading_relay_pair(a: &str, b: &str) -> Option<(&'static str, &'static str)> {
+    let _ = trading_relay_pair_fields(a, b)?;
+    let ua = a.trim().to_ascii_uppercase();
+    let ub = b.trim().to_ascii_uppercase();
     match (ua.as_str(), ub.as_str()) {
         ("PO", "CI") | ("CI", "PO") => Some(("PO", "CI")),
         ("CI", "BL") | ("BL", "CI") => Some(("CI", "BL")),

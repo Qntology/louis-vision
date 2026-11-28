@@ -6,7 +6,7 @@ import { bus, state } from './state.js';
 import { $, fmt, storageGet, storageSet } from './util.js';
 import { refreshQuests, setPlaying } from './sim.js';
 import { cmdToast, setStatus } from './toast.js';
-import { submitRigPrompt } from './rig-mcp.js';
+import { submitDeckCardPrompt, submitRigPrompt } from './rig-mcp.js';
 
 const HISTORY_KEY = 'vision-sandbox.cmd-history';
 const ACTION_KO = {
@@ -145,6 +145,7 @@ export function initCommandBar() {
   $('command-bar').addEventListener('submit', (e) => {
     e.preventDefault();
     if (state.selectedUnit != null) submitFrom(rig, (text) => submitRigPrompt(state.selectedUnit, text));
+    else if (state.deckFocus != null) submitFrom(input, (text) => submitDeckCardPrompt(state.deckFocus, text));
     else submitFrom(input, submitCommand);
   });
   // 게임처럼 Enter 나 / 로 입력줄에 바로 포커스

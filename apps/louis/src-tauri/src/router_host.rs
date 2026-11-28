@@ -163,11 +163,28 @@ pub fn route_intent(
         })
     };
 
+    let is_doc_ext = has_ext(&[".hwpx", ".hwp", ".docx", ".xlsx", ".xls", ".csv", ".pdf", ".xml", ".mhtml"]);
+    let is_doc_noun = ["기성내역서", "청구서", "계약서", "명세서", "송장", "세금계산서", "보고서", "증빙", "내역서"]
+        .iter()
+        .any(|k| lower.contains(k));
+
     if lower.starts_with("/stage") || lower.contains("본공연") || lower.contains("stage live") {
         return RouteDecision {
             owner: ActiveSurfaceOwner::VisionXrStageLive,
             warm_lease: WarmLeaseKind::ActiveUse,
             gpu_lease: GpuLeaseTier::StagePinnedLock,
+            show_vision_chip: false,
+            blocked_kiosk: false,
+        };
+    }
+
+    // D-11: Explicit document signals (extension, /docs, or doc-form nouns when not explicitly /sim)
+    // take precedence over generic Sim keywords ("로봇 용접 설비 기성내역서 찾아줘" -> LouisDocsStudio).
+    if lower.starts_with("/docs") || is_doc_ext || (is_doc_noun && !lower.starts_with("/sim")) {
+        return RouteDecision {
+            owner: ActiveSurfaceOwner::LouisDocsStudio,
+            warm_lease: WarmLeaseKind::LocalOnly,
+            gpu_lease: GpuLeaseTier::LouisExclusive,
             show_vision_chip: false,
             blocked_kiosk: false,
         };

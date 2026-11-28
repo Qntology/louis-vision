@@ -8,7 +8,7 @@ import { state } from './state.js';
 import { $ } from './util.js';
 import { openPanel, togglePanel } from './overlays.js';
 import { setStatus } from './toast.js';
-import { deriveBlockiesHaringSpec } from '../../../shared-ui/js/blockies-haring.js';
+import { deriveBlockiesHaringSpec } from './blockies-haring.js';
 
 let zbgFrames = 0;
 let zkeyLocked = false;
@@ -121,10 +121,17 @@ function renderHaringDancerFrame(phase = haringPhase) {
   }
 }
 
+function stopHaringAnim() {
+  if (haringRaf !== null) {
+    cancelAnimationFrame(haringRaf);
+    haringRaf = null;
+  }
+}
+
 function startHaringAnim() {
-  if (haringRaf !== null) return;
+  if (haringRaf !== null || blackoutActive) return;
   const loop = () => {
-    if (state.visionMode !== 'stage') {
+    if (state.visionMode !== 'stage' || blackoutActive) {
       haringRaf = null;
       return;
     }
@@ -135,17 +142,70 @@ function startHaringAnim() {
   haringRaf = requestAnimationFrame(loop);
 }
 
-function isLocalOrRfc1918Host(raw) {
-  const host = String(raw || '').trim().split(':')[0].replace(/^\[|\]$/g, '').toLowerCase();
-  if (!host) return false;
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
-  if (host.startsWith('10.') || host.startsWith('192.168.') || host.startsWith('169.254.')) return true;
-  const m = /^172\.(\d+)\./.exec(host);
-  if (m) {
-    const second = Number(m[1]);
-    return second >= 16 && second <= 31;
+function extractHostPart(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    if (end <= 1) return '';
+    const rest = trimmed.slice(end + 1);
+    if (rest && !/^:\d{1,5}$/.test(rest)) return '';
+    return trimmed.slice(1, end).toLowerCase();
   }
-  return host.startsWith('fc') || host.startsWith('fd');
+  const firstColon = trimmed.indexOf(':');
+  const lastColon = trimmed.lastIndexOf(':');
+  if (firstColon !== -1 && firstColon === lastColon) {
+    // host:port (IPv4 or hostname)
+    const port = trimmed.slice(firstColon + 1);
+    if (!/^\d{1,5}$/.test(port)) return '';
+    return trimmed.slice(0, firstColon).toLowerCase();
+  }
+  return trimmed.toLowerCase();
+}
+
+function isValidIpv4Octets(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const octets = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return octets;
+}
+
+function isValidIpv6Literal(host) {
+  if (!host.includes(':') || !/^[0-9a-f:]+$/.test(host)) return false;
+  if (host.includes(':::')) return false;
+  const parts = host.split('::');
+  if (parts.length > 2) return false;
+  const groups = parts.flatMap((p) => (p ? p.split(':') : []));
+  if (groups.some((g) => g.length === 0 || g.length > 4)) return false;
+  return parts.length === 2 ? groups.length <= 7 : groups.length === 8;
+}
+
+export function isLocalOrRfc1918Host(raw) {
+  const host = extractHostPart(raw);
+  if (!host) return false;
+  if (host === 'localhost') return true;
+  const v4 = isValidIpv4Octets(host);
+  if (v4) {
+    const [a, b] = v4;
+    if (a === 127) return true;
+    if (a === 10) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+  if (isValidIpv6Literal(host)) {
+    if (host === '::1') return true;
+    const firstHex = host.split(':')[0];
+    if (firstHex.length >= 2) {
+      const topByte = parseInt(firstHex.padStart(4, '0').slice(0, 2), 16);
+      // RFC 4193 Unique Local Address fc00::/7 (0xfc..=0xfd)
+      if (topByte === 0xfc || topByte === 0xfd) return true;
+    }
+    return false;
+  }
+  return false;
 }
 
 function syncInterlockHud() {
@@ -218,6 +278,7 @@ export async function switchVisionMode(mode) {
 export function triggerEmergencyBlackout() {
   const t0 = performance.now();
   blackoutActive = true;
+  stopHaringAnim();
   document.body.dataset.blackout = 'true';
   syncInterlockHud();
   const latencyMs = Math.max(0.1, performance.now() - t0);
@@ -339,6 +400,7 @@ export function initStageMode() {
       interlocks.temporal = true;
       document.body.dataset.blackout = 'false';
       syncInterlockHud();
+      if (state.visionMode === 'stage') startHaringAnim();
     },
   };
 

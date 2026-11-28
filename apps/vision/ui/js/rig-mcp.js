@@ -51,3 +51,49 @@ export async function submitRigPrompt(unit, text) {
     return { ok: false };
   }
 }
+
+/** v1.8 Spatial Deck 다형성 슬라이드 프롬프트 라우팅 (actor / set / light / cam). */
+export async function submitDeckCardPrompt(deckFocus, text) {
+  const { kind, sliceIdx, card, slice } = deckFocus ?? {};
+  try {
+    let res;
+    if (kind === 'actor') {
+      cmdToast('info', `💃 슬라이스 #${sliceIdx + 1} 아바타 프롬프트 적용 중…`);
+      res = await call('char_prompt', { prompt: text, actor_id: card?.actor_id, wallet: card?.wallet }, { quiet: true });
+      if (card && res?.ok) {
+        card.bpm = res.bpm;
+        card.motif = res.motif;
+        card.head_prop = res.head_prop;
+        card.body_rgb = res.body_rgb;
+      }
+    } else if (kind === 'set') {
+      cmdToast('info', `🏗 슬라이스 #${sliceIdx + 1} SolidCraft 무대 기구 조립 중…`);
+      res = await call('stage_cad_prompt', { prompt: text }, { quiet: true });
+    } else {
+      cmdToast('info', `🎬 슬라이스 #${sliceIdx + 1} DMX · 카메라 프로그래밍 중…`);
+      res = await call('stage_slice_program', {
+        slice_idx: sliceIdx ?? 0,
+        slice_unit_s: slice?.unit_s ?? 10,
+        adopted_cam_id: card?.adopted_cam_id ?? slice?.adopted_cam_id ?? 'cam_foh_01',
+        blackout: /암전|blackout/i.test(text),
+        laser_in_frustum: /레이저\s*차단|bam\s*0/i.test(text),
+      }, { quiet: true });
+    }
+    if (res?.ok) {
+      if (card) {
+        card.last_summary = res.summary_ko ?? text;
+        card.rev = (card.rev ?? 0) + 1;
+      }
+      logLocal('mcp', 'info', `공간 데크 [${kind}] ${res.summary_ko ?? text}`, res);
+      cmdToast('ok', `✓ ${res.summary_ko ?? '적용 완료'}`);
+      window.__spatialDeck?.renderDeck?.();
+      return { ok: true };
+    }
+    cmdToast('err', `✕ ${res?.error_ko ?? '공간 데크 명령을 적용하지 못했습니다'}`);
+    return { ok: false };
+  } catch (e) {
+    logLocal('mcp', 'error', `공간 데크 프롬프트 오류: ${e.message}`);
+    cmdToast('err', `✕ ${e.message}`);
+    return { ok: false };
+  }
+}

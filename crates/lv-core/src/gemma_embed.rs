@@ -22,11 +22,15 @@ use safetensors::Dtype as SafeDtype;
 use tokenizers::Tokenizer;
 
 use crate::device::{accel_op_ok, device_from_env_or_cpu, AccelOp};
+use crate::gemma_audio::AudioTower;
 use crate::gemma_vision::{
     RgbImage, VisionTower, IMAGE_MAX_SOFT_TOKENS, VIDEO_MAX_SOFT_TOKENS,
 };
 use crate::qcache::{cache_path, Fingerprint, QCache};
-use crate::quant::{load_lin, Bits, Kernel, Lin, Proj, QuantRecipe, TowerQuant};
+use crate::quant::{
+    load_lin_with_encoder, Bits, Kernel, Lin, Proj, QuantEncoder, QuantRecipe, TowerQuant,
+    TowerQuantPlan,
+};
 
 pub const WEIGHTS_FILE: &str = "model.safetensors";
 pub const TEXT_WEIGHTS_FILE: &str = "model-text.safetensors";
@@ -62,6 +66,10 @@ pub const BOS_ID: u32 = 2;
 pub const EOS_ID: u32 = 1;
 pub const BOI_ID: u32 = 255_999;
 pub const EOI_ID: u32 = 258_882;
+pub const BOA_ID: u32 = 256_000;
+pub const EOA_ID: u32 = 258_883;
+/// 장문 텍스트 천공 기준 토큰 수 (`LocalPerforated` 모드에서 초과 시 문단 고정 + 인접 확장 적용)
+pub const LONG_DOC_PERFORATE_THRESHOLD: usize = 512;
 
 pub const PROMPT_QUERY: &str = "task: search result | query: ";
 pub const PROMPT_DOCUMENT: &str = "title: none | text: ";
@@ -115,18 +123,34 @@ pub enum GemmaQuantCache {
     Unwritable,
 }
 
+/// 임베딩 실행 모드.
+/// - `CanonicalFull` (기본): 색인·검색·정규 벡터와 100% 동일한 전체 경로.
+/// - `LocalPerforated`: 장문(`> 512`토큰) 문단 고정+확장, 오디오 유성 연속 청크(`HALO_LEFT_TOKENS=16`) 적용.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmbedMode {
+    #[default]
+    CanonicalFull,
+    LocalPerforated,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GemmaLoadOptions {
     pub quant: QuantRecipe,
     pub kernel: Kernel,
+    pub encoder: QuantEncoder,
     pub tower_bits: Option<Bits>,
+    pub vision_quant: Option<TowerQuantPlan>,
+    pub audio_quant: Option<TowerQuantPlan>,
     pub load_vision_on_init: bool,
+    pub load_audio_on_init: bool,
 }
 
 pub enum GemmaPart<'a> {
     Text(&'a str),
     Image(&'a RgbImage),
     Video(&'a [RgbImage]),
+    /// 16 kHz mono f32 PCM audio (40 ms per token, capped at 30 s = 480,000 samples).
+    Audio(&'a [f32]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -397,8 +421,72 @@ struct SelfAttention {
     head_dim: usize,
 }
 
+/// Zero-allocation CPU F32 streaming bidirectional sliding-window attention (`|qi - ki| <= window`).
+/// Eliminates `[t, t]` score/mask allocation (256 MB at `t = 8192`) while matching dense masked softmax.
+fn stream_sliding_window_attention_f32(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    seq_len: usize,
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    window: usize,
+    out: &mut [f32],
+) {
+    let reps = (heads / kv_heads.max(1)).max(1);
+    let q_stride = heads * head_dim;
+    let kv_stride = kv_heads * head_dim;
+    out.fill(0.0);
+
+    for qi in 0..seq_len {
+        let k_start = qi.saturating_sub(window);
+        let k_end = (qi + window + 1).min(seq_len);
+        for h in 0..heads {
+            let kvh = h / reps;
+            let q_off = qi * q_stride + h * head_dim;
+            let q_row = &q[q_off..q_off + head_dim];
+            let o_row = &mut out[q_off..q_off + head_dim];
+
+            let mut m = f32::NEG_INFINITY;
+            let mut l = 0.0f32;
+            for ki in k_start..k_end {
+                let kv_off = ki * kv_stride + kvh * head_dim;
+                let s = premium_discount_cpu_kernels::dot_f32_simd(q_row, &k[kv_off..kv_off + head_dim]);
+                let v_row = &v[kv_off..kv_off + head_dim];
+                if s > m {
+                    let corr = if m.is_finite() { (m - s).exp() } else { 0.0 };
+                    l = l * corr + 1.0;
+                    for d in 0..head_dim {
+                        o_row[d] = o_row[d] * corr + v_row[d];
+                    }
+                    m = s;
+                } else {
+                    let w = (s - m).exp();
+                    l += w;
+                    for d in 0..head_dim {
+                        o_row[d] += w * v_row[d];
+                    }
+                }
+            }
+            if l > 0.0 {
+                let inv_l = 1.0 / l;
+                for d in 0..head_dim {
+                    o_row[d] *= inv_l;
+                }
+            }
+        }
+    }
+}
+
 impl SelfAttention {
-    fn forward(&self, x: &Tensor, rope: &RopeCacheEntry, mask: Option<&Tensor>) -> candle_core::Result<Tensor> {
+    fn forward(
+        &self,
+        x: &Tensor,
+        rope: &RopeCacheEntry,
+        mask: Option<&Tensor>,
+        sliding_window: Option<usize>,
+    ) -> candle_core::Result<Tensor> {
         let (b, t, _) = x.dims3()?;
         let q = self.q_proj.forward(x)?.reshape((b, t, self.heads, self.head_dim))?;
         let q = apply_rope(&self.q_norm.forward(&q)?, rope)?;
@@ -407,22 +495,43 @@ impl SelfAttention {
         let v = self.v_proj.forward(x)?.reshape((b, t, self.kv_heads, self.head_dim))?;
         let v = self.v_norm.forward(&v)?;
 
-        if mask.is_none() && b == 1 && x.device().is_cpu() && x.dtype() == DType::F32 {
-            let q_vec = q.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
-            let k_vec = k.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
-            let v_vec = v.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
-            let mut out = vec![0.0f32; t * self.heads * self.head_dim];
-            let cfg = premium_discount_cpu_kernels::CpuStreamAttnCfg {
-                num_heads: self.heads,
-                num_kv_heads: self.kv_heads,
-                head_dim: self.head_dim,
-                scale: 1.0,
-                causal: false,
-                past_offset: 0,
-            };
-            premium_discount_cpu_kernels::stream_attention_f32(&q_vec, &k_vec, &v_vec, t, t, &cfg, &mut out);
-            let out = Tensor::from_vec(out, (1, t, self.heads * self.head_dim), x.device())?;
-            return self.o_proj.forward(&out);
+        if b == 1 && x.device().is_cpu() && x.dtype() == DType::F32 {
+            if mask.is_none() && sliding_window.is_none() {
+                let q_vec = q.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let k_vec = k.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let v_vec = v.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let mut out = vec![0.0f32; t * self.heads * self.head_dim];
+                let cfg = premium_discount_cpu_kernels::CpuStreamAttnCfg {
+                    num_heads: self.heads,
+                    num_kv_heads: self.kv_heads,
+                    head_dim: self.head_dim,
+                    scale: 1.0,
+                    causal: false,
+                    past_offset: 0,
+                };
+                premium_discount_cpu_kernels::stream_attention_f32(&q_vec, &k_vec, &v_vec, t, t, &cfg, &mut out);
+                let out = Tensor::from_vec(out, (1, t, self.heads * self.head_dim), x.device())?;
+                return self.o_proj.forward(&out);
+            }
+            if let Some(win) = sliding_window {
+                let q_vec = q.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let k_vec = k.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let v_vec = v.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+                let mut out = vec![0.0f32; t * self.heads * self.head_dim];
+                stream_sliding_window_attention_f32(
+                    &q_vec,
+                    &k_vec,
+                    &v_vec,
+                    t,
+                    self.heads,
+                    self.kv_heads,
+                    self.head_dim,
+                    win,
+                    &mut out,
+                );
+                let out = Tensor::from_vec(out, (1, t, self.heads * self.head_dim), x.device())?;
+                return self.o_proj.forward(&out);
+            }
         }
 
         let q = q.transpose(1, 2)?.contiguous()?;
@@ -473,9 +582,16 @@ struct GemmaLayer {
 }
 
 impl GemmaLayer {
-    fn forward(&self, h: &Tensor, ple: &Tensor, rope: &RopeCacheEntry, mask: Option<&Tensor>) -> candle_core::Result<Tensor> {
+    fn forward(
+        &self,
+        h: &Tensor,
+        ple: &Tensor,
+        rope: &RopeCacheEntry,
+        mask: Option<&Tensor>,
+        sliding_window: Option<usize>,
+    ) -> candle_core::Result<Tensor> {
         let x = self.input_norm.forward(h)?;
-        let x = self.attn.forward(&x, rope, mask)?;
+        let x = self.attn.forward(&x, rope, mask, sliding_window)?;
         let x = self.post_attn_norm.forward(&x)?;
         let (h, x) = if let Some(ref w) = self.pre_ff_norm.weight {
             if !h.device().is_cpu() && accel_op_ok(h.device(), AccelOp::DecoderOps) {
@@ -605,6 +721,31 @@ impl GemmaTextModel {
         bidirectional: bool,
         recipe: &QuantRecipe,
         kernel: Kernel,
+        cache: Option<&mut QCache>,
+    ) -> candle_core::Result<Self> {
+        Self::from_vb_with_config_and_encoder(
+            cfg,
+            vb,
+            tokens,
+            device,
+            bidirectional,
+            recipe,
+            kernel,
+            QuantEncoder::CandleFast,
+            cache,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_vb_with_config_and_encoder(
+        cfg: GemmaTextConfig,
+        vb: &VarBuilder,
+        tokens: GemmaTokenTable,
+        device: &Device,
+        bidirectional: bool,
+        recipe: &QuantRecipe,
+        kernel: Kernel,
+        encoder: QuantEncoder,
         mut cache: Option<&mut QCache>,
     ) -> candle_core::Result<Self> {
         let lm = vb.pp("language_model");
@@ -641,10 +782,10 @@ impl GemmaTextModel {
             let q_dim = cfg.num_heads * head_dim;
             let kv_dim = kv_heads * head_dim;
             let attn = SelfAttention {
-                q_proj: load_lin(&a.pp("q_proj"), (q_dim, cfg.hidden_size), recipe.bits(i, Proj::Q), kernel, &mut cache, layer_key(i, "q_proj"))?,
-                k_proj: load_lin(&a.pp("k_proj"), (kv_dim, cfg.hidden_size), recipe.bits(i, Proj::K), kernel, &mut cache, layer_key(i, "k_proj"))?,
-                v_proj: load_lin(&a.pp("v_proj"), (kv_dim, cfg.hidden_size), recipe.bits(i, Proj::V), kernel, &mut cache, layer_key(i, "v_proj"))?,
-                o_proj: load_lin(&a.pp("o_proj"), (cfg.hidden_size, q_dim), recipe.bits(i, Proj::O), kernel, &mut cache, layer_key(i, "o_proj"))?,
+                q_proj: load_lin_with_encoder(&a.pp("q_proj"), (q_dim, cfg.hidden_size), recipe.bits(i, Proj::Q), kernel, encoder, &mut cache, layer_key(i, "q_proj"))?,
+                k_proj: load_lin_with_encoder(&a.pp("k_proj"), (kv_dim, cfg.hidden_size), recipe.bits(i, Proj::K), kernel, encoder, &mut cache, layer_key(i, "k_proj"))?,
+                v_proj: load_lin_with_encoder(&a.pp("v_proj"), (kv_dim, cfg.hidden_size), recipe.bits(i, Proj::V), kernel, encoder, &mut cache, layer_key(i, "v_proj"))?,
+                o_proj: load_lin_with_encoder(&a.pp("o_proj"), (cfg.hidden_size, q_dim), recipe.bits(i, Proj::O), kernel, encoder, &mut cache, layer_key(i, "o_proj"))?,
                 q_norm: RmsNorm {
                     weight: Some(a.pp("q_norm").get(head_dim, "weight")?),
                 },
@@ -666,26 +807,28 @@ impl GemmaTextModel {
             layers.push(GemmaLayer {
                 kind,
                 attn,
-                gate: load_lin(&m.pp("gate_proj"), (cfg.intermediate_size, cfg.hidden_size), recipe.bits(i, Proj::Gate), kernel, &mut cache, layer_key(i, "gate_proj"))?,
-                up: load_lin(&m.pp("up_proj"), (cfg.intermediate_size, cfg.hidden_size), recipe.bits(i, Proj::Up), kernel, &mut cache, layer_key(i, "up_proj"))?,
-                down: load_lin(&m.pp("down_proj"), (cfg.hidden_size, cfg.intermediate_size), recipe.bits(i, Proj::Down), kernel, &mut cache, layer_key(i, "down_proj"))?,
+                gate: load_lin_with_encoder(&m.pp("gate_proj"), (cfg.intermediate_size, cfg.hidden_size), recipe.bits(i, Proj::Gate), kernel, encoder, &mut cache, layer_key(i, "gate_proj"))?,
+                up: load_lin_with_encoder(&m.pp("up_proj"), (cfg.intermediate_size, cfg.hidden_size), recipe.bits(i, Proj::Up), kernel, encoder, &mut cache, layer_key(i, "up_proj"))?,
+                down: load_lin_with_encoder(&m.pp("down_proj"), (cfg.hidden_size, cfg.intermediate_size), recipe.bits(i, Proj::Down), kernel, encoder, &mut cache, layer_key(i, "down_proj"))?,
                 input_norm: hidden_norm("input_layernorm")?,
                 post_attn_norm: hidden_norm("post_attention_layernorm")?,
                 pre_ff_norm: hidden_norm("pre_feedforward_layernorm")?,
                 post_ff_norm: hidden_norm("post_feedforward_layernorm")?,
-                ple_gate: load_lin(
+                ple_gate: load_lin_with_encoder(
                     &p.pp("per_layer_input_gate"),
                     (cfg.ple_dim, cfg.hidden_size),
                     recipe.bits(i, Proj::PleGate),
                     kernel,
+                    encoder,
                     &mut cache,
                     layer_key(i, "per_layer_input_gate"),
                 )?,
-                ple_proj: load_lin(
+                ple_proj: load_lin_with_encoder(
                     &p.pp("per_layer_projection"),
                     (cfg.hidden_size, cfg.ple_dim),
                     recipe.bits(i, Proj::PleProj),
                     kernel,
+                    encoder,
                     &mut cache,
                     layer_key(i, "per_layer_projection"),
                 )?,
@@ -801,7 +944,10 @@ impl GemmaTextModel {
         let ple = self.ple_norm.forward(&ple)?;
 
         let (rope_s, rope_f) = self.cached_ropes(t)?;
-        let mask_sliding = if self.bidirectional && t <= BIDIRECTIONAL_SLIDING_WINDOW + 1 {
+        let use_cpu_streaming_window =
+            self.bidirectional && t > BIDIRECTIONAL_SLIDING_WINDOW + 1 && dev.is_cpu();
+        let sliding_window = use_cpu_streaming_window.then_some(BIDIRECTIONAL_SLIDING_WINDOW);
+        let mask_sliding = if self.bidirectional && (t <= BIDIRECTIONAL_SLIDING_WINDOW + 1 || use_cpu_streaming_window) {
             None
         } else {
             Some(attention_mask(t, true, self.bidirectional, dev)?)
@@ -815,11 +961,15 @@ impl GemmaTextModel {
         for (i, layer) in self.layers.iter().enumerate() {
             let ple_i = ple.i((.., .., i, ..))?;
             h = match layer.kind {
-                GemmaAttention::Full => layer.forward(&h, &ple_i, &rope_f, mask_full.as_ref())?,
-                GemmaAttention::Sliding => layer.forward(&h, &ple_i, &rope_s, mask_sliding.as_ref())?,
+                GemmaAttention::Full => layer.forward(&h, &ple_i, &rope_f, mask_full.as_ref(), None)?,
+                GemmaAttention::Sliding => layer.forward(&h, &ple_i, &rope_s, mask_sliding.as_ref(), sliding_window)?,
             };
         }
         self.norm.forward(&h)
+    }
+
+    pub fn embedding_projection_weight(&self) -> &Tensor {
+        self.projection.weight()
     }
 
     pub fn embed(&self, ids: &[u32]) -> candle_core::Result<Vec<f32>> {
@@ -841,8 +991,10 @@ enum EmbedderBackend {
         weights: PathBuf,
         device: Device,
         vision: Mutex<Option<Arc<VisionTower>>>,
+        audio: Mutex<Option<Arc<AudioTower>>>,
         quant_cache: GemmaQuantCache,
-        tower_bits: Option<Bits>,
+        vision_plan: TowerQuantPlan,
+        audio_plan: TowerQuantPlan,
         kernel: Kernel,
     },
     /// Explicit deterministic 768d unit-vector projection backend for zero-checkpoint Tier 1 & diag unit tests.
@@ -874,13 +1026,15 @@ impl GemmaEmbedder {
         let fp = options.quant.key("text").and_then(|k| Fingerprint::of(&weights, "text", &k).ok());
         let mut cache = fp.as_ref().and_then(|f| QCache::load(&cache_path(&weights, f), f, &device));
         let cached = cache.as_ref().map_or(0, |c| c.len());
-        let mut model = GemmaTextModel::from_vb(
+        let mut model = GemmaTextModel::from_vb_with_config_and_encoder(
+            GemmaTextConfig::default(),
             &vb,
             tokens,
             &device,
             true,
             &options.quant,
             options.kernel,
+            options.encoder,
             cache.as_mut(),
         )?;
         let quant_cache = match &fp {
@@ -896,7 +1050,7 @@ impl GemmaEmbedder {
                 }
             }
         };
-        let mut pin_ids = vec![BOS_ID, EOS_ID, BOI_ID, EOI_ID];
+        let mut pin_ids = vec![BOS_ID, EOS_ID, BOI_ID, EOI_ID, BOA_ID, EOA_ID];
         for prompt in [PROMPT_QUERY, PROMPT_DOCUMENT, PROMPT_SIMILARITY] {
             if let Ok(enc) = tokenizer.encode(prompt, false) {
                 pin_ids.extend_from_slice(enc.get_ids());
@@ -906,13 +1060,26 @@ impl GemmaEmbedder {
         pin_ids.dedup();
         model.pin_tokens(&pin_ids)?;
 
+        let vision_plan = options.vision_quant.clone().unwrap_or_else(|| TowerQuantPlan {
+            default_bits: options.tower_bits,
+            keep_f32_layers: TowerQuant::default_keep("vision"),
+            group_overrides: Vec::new(),
+            encoder: options.encoder,
+        });
+        let audio_plan = options.audio_quant.clone().unwrap_or_else(|| TowerQuantPlan {
+            default_bits: options.tower_bits,
+            keep_f32_layers: TowerQuant::default_keep("audio"),
+            group_overrides: Vec::new(),
+            encoder: options.encoder,
+        });
+
         let vision_opt = if options.load_vision_on_init {
-            Some(Arc::new(load_vision_tower(
-                &weights,
-                &device,
-                options.tower_bits,
-                options.kernel,
-            )?))
+            Some(Arc::new(load_vision_tower(&weights, &device, &vision_plan, options.kernel)?))
+        } else {
+            None
+        };
+        let audio_opt = if options.load_audio_on_init {
+            Some(Arc::new(load_audio_tower(&weights, &device, &audio_plan, options.kernel)?))
         } else {
             None
         };
@@ -924,8 +1091,10 @@ impl GemmaEmbedder {
                 weights,
                 device,
                 vision: Mutex::new(vision_opt),
+                audio: Mutex::new(audio_opt),
                 quant_cache,
-                tower_bits: options.tower_bits,
+                vision_plan,
+                audio_plan,
                 kernel: options.kernel,
             },
         })
@@ -964,6 +1133,10 @@ impl GemmaEmbedder {
         self.embed_parts(&[GemmaPart::Image(img)])
     }
 
+    pub fn embed_audio(&self, pcm_16khz: &[f32]) -> Result<Vec<f32>> {
+        self.embed_parts(&[GemmaPart::Audio(pcm_16khz)])
+    }
+
     pub fn token_count(&self, text: &str) -> Result<usize> {
         match &self.backend {
             EmbedderBackend::Model { tokenizer, .. } => {
@@ -976,7 +1149,13 @@ impl GemmaEmbedder {
         }
     }
 
+    /// Canonical full-fidelity 768d embedding (default for index/query consistency).
     pub fn embed_parts(&self, parts: &[GemmaPart<'_>]) -> Result<Vec<f32>> {
+        self.embed_parts_with_mode(parts, EmbedMode::CanonicalFull)
+    }
+
+    /// Embeds arbitrary combinations of text, image, video, and 16 kHz audio parts under the chosen [`EmbedMode`].
+    pub fn embed_parts_with_mode(&self, parts: &[GemmaPart<'_>], mode: EmbedMode) -> Result<Vec<f32>> {
         if parts.is_empty() {
             bail!("embed_parts requires at least one part");
         }
@@ -988,7 +1167,9 @@ impl GemmaEmbedder {
                 weights,
                 device,
                 vision,
-                tower_bits,
+                audio,
+                vision_plan,
+                audio_plan,
                 kernel,
                 ..
             } => {
@@ -999,17 +1180,36 @@ impl GemmaEmbedder {
                     if let Some(v) = guard.as_ref() {
                         return Ok(Arc::clone(v));
                     }
-                    let tower = Arc::new(load_vision_tower(weights, device, *tower_bits, *kernel)?);
+                    let tower = Arc::new(load_vision_tower(weights, device, vision_plan, *kernel)?);
+                    *guard = Some(Arc::clone(&tower));
+                    Ok(tower)
+                };
+                let get_audio = || -> Result<Arc<AudioTower>> {
+                    let mut guard = audio.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(a) = guard.as_ref() {
+                        return Ok(Arc::clone(a));
+                    }
+                    let tower = Arc::new(load_audio_tower(weights, device, audio_plan, *kernel)?);
                     *guard = Some(Arc::clone(&tower));
                     Ok(tower)
                 };
                 for part in parts {
                     match part {
                         GemmaPart::Text(text) => {
-                            let enc = tokenizer
+                            let enc_full = tokenizer
                                 .encode(*text, false)
                                 .map_err(|e| anyhow!("tokenization failed: {e}"))?;
-                            segments.push(model.token_embeddings(enc.get_ids())?);
+                            if mode == EmbedMode::LocalPerforated
+                                && enc_full.get_ids().len() > LONG_DOC_PERFORATE_THRESHOLD
+                            {
+                                let perf = select_perforated_document_text(text, 0.65);
+                                let enc_perf = tokenizer
+                                    .encode(perf.as_str(), false)
+                                    .map_err(|e| anyhow!("tokenization failed: {e}"))?;
+                                segments.push(model.token_embeddings(enc_perf.get_ids())?);
+                            } else {
+                                segments.push(model.token_embeddings(enc_full.get_ids())?);
+                            }
                         }
                         GemmaPart::Image(image) => {
                             let feat = get_vision()?.encode_image(image, IMAGE_TOKENS)?;
@@ -1025,6 +1225,16 @@ impl GemmaEmbedder {
                                 let close = model.token_embeddings(&[EOI_ID])?;
                                 segments.push(Tensor::cat(&[open, feat, close], 0)?);
                             }
+                        }
+                        GemmaPart::Audio(pcm) => {
+                            let aud = get_audio()?;
+                            let feat = match mode {
+                                EmbedMode::CanonicalFull => aud.encode_pcm(pcm)?,
+                                EmbedMode::LocalPerforated => aud.encode_pcm_voiced(pcm, 0.015)?.0,
+                            };
+                            let open = model.token_embeddings(&[BOA_ID])?;
+                            let close = model.token_embeddings(&[EOA_ID])?;
+                            segments.push(Tensor::cat(&[open, feat, close], 0)?);
                         }
                     }
                 }
@@ -1044,19 +1254,14 @@ impl GemmaEmbedder {
 fn load_vision_tower(
     weights: &Path,
     device: &Device,
-    tower_bits: Option<Bits>,
+    plan: &TowerQuantPlan,
     kernel: Kernel,
 ) -> Result<VisionTower> {
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, device)? };
-    let fp = tower_bits.and_then(|b| Fingerprint::of(weights, "vision", &format!("eg2_vision_{}_v1", b.name())).ok());
+    let fp = plan.recipe_key("vision").and_then(|k| Fingerprint::of(weights, "vision", &k).ok());
     let mut cache = fp.as_ref().and_then(|f| QCache::load(&cache_path(weights, f), f, device));
     let cached = cache.as_ref().map_or(0, |c| c.len());
-    let quant = TowerQuant {
-        bits: tower_bits,
-        kernel,
-        cache: cache.as_mut(),
-        keep_f32: TowerQuant::default_keep("vision"),
-    };
+    let quant = TowerQuant::from_plan(plan, kernel, cache.as_mut());
     let tower = VisionTower::load_with(&vb, device, quant)?;
     if let Some(f) = &fp {
         let t = tower.quantized_tensors();
@@ -1065,6 +1270,77 @@ fn load_vision_tower(
         }
     }
     Ok(tower)
+}
+
+fn load_audio_tower(
+    weights: &Path,
+    device: &Device,
+    plan: &TowerQuantPlan,
+    kernel: Kernel,
+) -> Result<AudioTower> {
+    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, device)? };
+    let fp = plan.recipe_key("audio").and_then(|k| Fingerprint::of(weights, "audio", &k).ok());
+    let mut cache = fp.as_ref().and_then(|f| QCache::load(&cache_path(weights, f), f, device));
+    let cached = cache.as_ref().map_or(0, |c| c.len());
+    let quant = TowerQuant::from_plan(plan, kernel, cache.as_mut());
+    let tower = AudioTower::load_with(&vb, device, quant)?;
+    if let Some(f) = &fp {
+        let t = tower.quantized_tensors();
+        if cached == 0 || cached != t.len() {
+            let _ = QCache::save(&cache_path(weights, f), f, &t);
+        }
+    }
+    Ok(tower)
+}
+
+/// 장문 문서(`> 512`토큰) 천공용 문단 고정 + `±1` 인접 확장.
+/// 머리말(0번 문단) + 부정/예외/단서/조건/금액/식별자 문단을 필수로 고정하고,
+/// 선택 비율이 `max_ratio`(기본 0.65)를 초과하면 원본 전문을 그대로 반환(FallbackFull)한다.
+pub fn select_perforated_document_text(text: &str, max_ratio: f32) -> String {
+    let paras: Vec<&str> = text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paras.len() <= 3 {
+        return text.to_string();
+    }
+    let mut pinned = vec![false; paras.len()];
+    pinned[0] = true; // Header / title paragraph always pinned
+    for (idx, p) in paras.iter().enumerate() {
+        let low = p.to_ascii_lowercase();
+        let has_negation_or_condition = [
+            "단서", "예외", "제외", "불가", "금지", "아닌", "아니", "미만", "초과", "이하", "이상",
+            "경우", "조건", "한하여", "unless", "except", "not ", "never", "prohibited", "provided that",
+            "only if", "subject to", "excluded", "void",
+        ]
+        .iter()
+        .any(|k| low.contains(k));
+        let has_numeric_or_id = p.chars().filter(|c| c.is_ascii_digit()).count() >= 4
+            || p.contains("원")
+            || p.contains("KRW")
+            || p.contains("USD");
+        if has_negation_or_condition || has_numeric_or_id {
+            pinned[idx] = true;
+            if idx > 0 {
+                pinned[idx - 1] = true;
+            }
+            if idx + 1 < paras.len() {
+                pinned[idx + 1] = true;
+            }
+        }
+    }
+    let kept = pinned.iter().filter(|&&b| b).count();
+    if (kept as f32 / paras.len() as f32) > max_ratio {
+        return text.to_string();
+    }
+    paras
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| pinned[*i])
+        .map(|(_, p)| *p)
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub fn check_total_tokens(total: usize) -> Result<usize> {
@@ -1118,10 +1394,23 @@ fn synthetic_embed_parts(parts: &[GemmaPart<'_>], seed: u64) -> Vec<f32> {
                     accumulate_image_signature(f, seed, &mut out);
                 }
             }
+            GemmaPart::Audio(pcm) => accumulate_audio_signature(pcm, seed, &mut out),
         }
     }
     normalize_l2(&mut out);
     out
+}
+
+fn accumulate_audio_signature(pcm: &[f32], seed: u64, dst: &mut [f32]) {
+    let step = (pcm.len() / 64).max(1);
+    for (idx, chunk) in pcm.chunks(step).take(64).enumerate() {
+        let rms = (chunk.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>()
+            / chunk.len().max(1) as f64)
+            .sqrt();
+        let bucket = (rms * 16.0).round().clamp(0.0, 16.0) as u32;
+        let key = format!("aud:{idx}:{bucket}");
+        accumulate_char_ngrams(&key, seed, dst);
+    }
 }
 
 fn accumulate_char_ngrams(text: &str, seed: u64, dst: &mut [f32]) {
@@ -1261,5 +1550,66 @@ mod tests {
         let full = (0..TEXT_NUM_LAYERS).filter(|&i| attention_kind(i) == Some(GemmaAttention::Full)).count();
         assert_eq!(full, 4);
         assert_eq!(with_prompt(Role::Query, "abc"), "task: search result | query: abc");
+        assert_eq!((BOA_ID, EOA_ID), (256_000, 258_883));
+
+        // 3-modality deterministic embedder handles Audio cleanly in both CanonicalFull and LocalPerforated
+        let det = GemmaEmbedder::deterministic_for_tests(42);
+        let pcm: Vec<f32> = (0..16_000).map(|i| 0.2 * ((i as f32) * 0.05).sin()).collect();
+        let e_aud = det.embed_audio(&pcm).unwrap();
+        assert_eq!(e_aud.len(), OUTPUT_DIM);
+        let e_multi = det
+            .embed_parts_with_mode(&[GemmaPart::Text("sound check"), GemmaPart::Audio(&pcm)], EmbedMode::LocalPerforated)
+            .unwrap();
+        assert_eq!(e_multi.len(), OUTPUT_DIM);
+    }
+
+    #[test]
+    fn streaming_sliding_window_matches_dense_masked_attention_above_258_tokens() {
+        let t = 300usize; // > BIDIRECTIONAL_SLIDING_WINDOW + 1 (258)
+        let heads = 2usize;
+        let kv_heads = 1usize;
+        let hd = 8usize;
+        let win = 257usize;
+        let q: Vec<f32> = (0..t * heads * hd).map(|i| ((i as f32) * 0.13).sin() * 0.4).collect();
+        let k: Vec<f32> = (0..t * kv_heads * hd).map(|i| ((i as f32) * 0.17).cos() * 0.4).collect();
+        let v: Vec<f32> = (0..t * kv_heads * hd).map(|i| ((i as f32) * 0.23).sin() * 0.5).collect();
+
+        let mut streamed = vec![0.0f32; t * heads * hd];
+        stream_sliding_window_attention_f32(&q, &k, &v, t, heads, kv_heads, hd, win, &mut streamed);
+
+        // Reference via dense masked Candle matmul
+        let dev = Device::Cpu;
+        let qt = Tensor::from_vec(q, (1, t, heads, hd), &dev).unwrap().transpose(1, 2).unwrap().contiguous().unwrap();
+        let kt = repeat_kv(Tensor::from_vec(k, (1, t, kv_heads, hd), &dev).unwrap().transpose(1, 2).unwrap().contiguous().unwrap(), heads / kv_heads).unwrap();
+        let vt = repeat_kv(Tensor::from_vec(v, (1, t, kv_heads, hd), &dev).unwrap().transpose(1, 2).unwrap().contiguous().unwrap(), heads / kv_heads).unwrap();
+        let mask = attention_mask(t, true, true, &dev).unwrap();
+        let scores = qt.matmul(&kt.transpose(2, 3).unwrap().contiguous().unwrap()).unwrap().broadcast_add(&mask).unwrap();
+        let ref_out = ops::softmax_last_dim(&scores).unwrap().matmul(&vt).unwrap().transpose(1, 2).unwrap().contiguous().unwrap().flatten_all().unwrap().to_vec1::<f32>().unwrap();
+
+        let max_err = streamed
+            .iter()
+            .zip(ref_out.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_err < 1e-5, "sliding window streaming attention drifted: max_err={max_err}");
+    }
+
+    #[test]
+    fn long_doc_paragraph_pinning_preserves_negations_neighbors_and_respects_budget() {
+        let mut paras = vec!["제목: 계약 총칙".to_string()];
+        for i in 1..=10 {
+            if i == 5 {
+                paras.push("제5조 단서 예외: 본 항목은 지급 대상에서 제외되며 불가함".to_string());
+            } else {
+                paras.push(format!("일반 안내 문단 {i}호 설명 텍스트입니다."));
+            }
+        }
+        let doc = paras.join("\n\n");
+        let selected = select_perforated_document_text(&doc, 0.65);
+        assert!(selected.contains("제목: 계약 총칙"), "header must be pinned");
+        assert!(selected.contains("제5조 단서 예외"), "negation/exception paragraph must be pinned");
+        assert!(selected.contains("일반 안내 문단 4호"), "-1 neighbor must be expanded");
+        assert!(selected.contains("일반 안내 문단 6호"), "+1 neighbor must be expanded");
+        assert!(!selected.contains("일반 안내 문단 9호"), "unpinned distant paragraph should be omitted");
     }
 }

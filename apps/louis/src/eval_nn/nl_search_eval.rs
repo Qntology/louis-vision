@@ -823,10 +823,20 @@ pub fn run_nl_search_nn_eval_with_embedder(
         bail!("--split holdout requires --release-seal flag (exit 2)");
     }
 
+    let normalized_domains: Option<Vec<String>> = cfg.domains_filter.as_ref().and_then(|v| {
+        if v.is_empty()
+            || v.iter()
+                .any(|s| s.eq_ignore_ascii_case("ALL") || s == "*")
+        {
+            None
+        } else {
+            Some(v.clone())
+        }
+    });
     let world = build_relational_world(
         cfg.split,
         cfg.cases_per_domain,
-        cfg.domains_filter.as_deref(),
+        normalized_domains.as_deref(),
         cfg.include_xr_twin,
     )?;
     let scenarios = generate_nl_scenarios(&world)?;

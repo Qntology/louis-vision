@@ -1,0 +1,429 @@
+/* vision-sandbox v1.8 — 2-Axis Spatial Deck (Desktop 5-Slot Glass Dock + Mobile <760px 4-Stack + Master Theater) */
+
+/* ── Spatial Deck Container (State B, Desktop Floating Bottom Dock) ── */
+.spatial-deck {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  z-index: 14;
+  width: min(720px, calc(100% - 32px));
+  max-height: min(48vh, 430px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  background: var(--glass-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.deck-drag-handle {
+  align-self: center;
+  width: 56px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  cursor: ns-resize;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.deck-drag-handle:hover { color: var(--text-bright); }
+
+.deck-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-light);
+}
+.deck-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-right: 4px;
+}
+.deck-filter-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.deck-chip {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+.deck-chip.active,
+.deck-chip[aria-pressed="true"] {
+  background: var(--bg-active-hover);
+  border-color: var(--border-hover);
+  color: var(--text-bright);
+  font-weight: 600;
+}
+
+.deck-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.deck-head-actions select {
+  min-height: 24px;
+  font-size: 0.66rem;
+  background: var(--bg-input);
+  color: var(--text-bright);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+}
+.deck-budget-pill {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+/* ── 2-Axis Body: Vertical Slice Scroller + Horizontal Slide Track ── */
+.deck-body {
+  display: grid;
+  grid-template-columns: 158px minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.slice-v-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  border-right: 1px solid var(--border-light);
+  touch-action: pan-y;
+}
+
+.slice-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.slice-row.active {
+  background: var(--bg-active);
+  border-color: var(--border-hover);
+}
+.slice-row.muted {
+  opacity: 0.48;
+  border-style: dashed;
+}
+.slice-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+.slice-row-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slice-row-meta {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-muted);
+}
+.slice-row-mute {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+.slice-row-mute:hover {
+  background: var(--bg-hover);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.slide-h-track {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: auto;
+  padding-bottom: 4px;
+  touch-action: pan-x;
+}
+
+.deck-card {
+  flex: 0 0 218px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+}
+.deck-card.focused {
+  border-color: var(--success);
+  box-shadow: 0 0 0 1px rgba(95, 185, 140, 0.35);
+}
+.deck-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.deck-card-kind {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  color: var(--text-bright);
+}
+.deck-card-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-drawer-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.deck-drawer-btn:hover { color: var(--text-bright); border-color: var(--border-hover); }
+.deck-card-thumb {
+  width: 100%;
+  height: 58px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-plot);
+  display: block;
+}
+.deck-card-summary {
+  font-size: 0.64rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+.deck-card-warn {
+  font-size: 0.6rem;
+  color: var(--warning);
+  background: rgba(214, 182, 94, 0.12);
+  border: 1px solid rgba(214, 182, 94, 0.45);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+
+.deck-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+  font-size: 0.64rem;
+}
+.deck-drawer label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-dim);
+}
+.deck-drawer input[type="text"],
+.deck-drawer input[type="number"],
+.deck-drawer select {
+  min-height: 24px;
+  font-size: 0.66rem;
+  background: var(--bg-input);
+  color: var(--text-bright);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+.deck-drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.deck-drawer-out {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--success);
+  word-break: break-word;
+}
+
+/* Ghost Add Card [➕] */
+.deck-ghost-card {
+  flex: 0 0 132px;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: var(--radius);
+  border: 1px dashed var(--border-strong);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.deck-ghost-card:hover {
+  border-color: var(--border-hover);
+  color: var(--text-bright);
+  background: var(--bg-hover);
+}
+.deck-ghost-delta {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-muted);
+}
+
+/* ── Master Scrubber & Theater Footer ── */
+.deck-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+}
+.master-scrubber {
+  flex: 1 1 auto;
+  min-width: 80px;
+}
+.deck-time-readout {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--text-bright);
+  white-space: nowrap;
+}
+
+/* ── State C: Master Theater Fullscreen Bar ── */
+.master-theater-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 42px;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(760px, calc(100vw - 24px));
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--glass-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.68);
+}
+body[data-deck-state="theater"] #hub,
+body[data-deck-state="theater"] #spatial-deck,
+body[data-deck-state="theater"] .corner-tl .ov-bar {
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+/* WirelessCameraRig OLED Touch-Lock Mode */
+body.wireless-cam-lock {
+  background: #000000 !important;
+}
+body.wireless-cam-lock #world-wrap,
+body.wireless-cam-lock #spatial-deck,
+body.wireless-cam-lock #hub,
+body.wireless-cam-lock .corner-tl,
+body.wireless-cam-lock .corner-tr {
+  opacity: 0.04;
+  pointer-events: none;
+}
+
+/* ── Mobile (< 760px): 4-Stack Vertical Flex Layout ── */
+@media (max-width: 759px) {
+  body {
+    height: 100dvh;
+  }
+  .stage {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--statusbar-h));
+  }
+  .viewport-canvas-wrap {
+    flex: 1 1 48%;
+    min-height: 45%;
+    position: relative;
+  }
+  .spatial-deck {
+    position: static;
+    transform: none;
+    width: 100%;
+    max-height: 46dvh;
+    border-radius: 12px 12px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    z-index: 16;
+  }
+  .deck-body {
+    grid-template-columns: 112px minmax(0, 1fr);
+  }
+  .deck-chip,
+  .slice-row-mute,
+  .deck-drawer-btn,
+  .deck-head-actions .vt-btn,
+  .deck-foot .vt-btn {
+    min-height: 36px;
+    min-width: 36px;
+  }
+  .hub-slim {
+    width: calc(100% - 16px);
+  }
+}

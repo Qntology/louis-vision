@@ -97,6 +97,14 @@ pub struct GroundingVerdict {
     pub reason: String,
 }
 
+impl GroundingVerdict {
+    /// Returns `true` only when visually confirmed (`VerdictGate::Accepted`), excluding `Held`
+    /// verdicts that remain `accepted == true` for backward compatibility (D-14).
+    pub fn is_confirmed(&self) -> bool {
+        self.accepted && self.gate == VerdictGate::Accepted
+    }
+}
+
 pub fn gumbel_expected_z(k: usize) -> f32 {
     if k <= 1 {
         return 0.0;

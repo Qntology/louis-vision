@@ -81,11 +81,16 @@ pub fn repair_hangul_false_kerning(input: &str) -> String {
 }
 
 pub fn parse_xlsx(bytes: &[u8]) -> Result<DocIr> {
+    let hidden_sheets = detect_xlsx_hidden_sheets(bytes).unwrap_or_default();
     let mut wb: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes)).context("cannot open XLSX workbook")?;
     let mut blocks = Vec::new();
     let mut plain_lines = Vec::new();
 
     for name in wb.sheet_names().to_vec() {
+        // D-05: Exclude hidden / veryHidden sheets from active visible body; retain names in metadata.
+        if hidden_sheets.iter().any(|h| h == &name) {
+            continue;
+        }
         let Ok(range) = wb.worksheet_range(&name) else { continue };
         let (rows, cols) = range.get_size();
         let mut cells = Vec::new();
@@ -113,6 +118,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<DocIr> {
             unit_multiplier: 1,
             carried_scale_from_prev: false,
             headers: Vec::new(),
+            cell_changes: Vec::new(),
         };
         plain_lines.extend(tbl.to_plain_rows().into_iter().filter(|l| !l.trim().is_empty()));
         blocks.push(DocBlock::Table(tbl));
@@ -128,7 +134,50 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<DocIr> {
     );
     ir.blocks = blocks;
     ir.plain_text = plain_lines.join("\n");
+    ir.hidden_sheets = hidden_sheets;
     Ok(ir.finalize())
+}
+
+/// Inspects `xl/workbook.xml` and returns sheet names marked `state="hidden"` or `state="veryHidden"`.
+pub fn detect_xlsx_hidden_sheets(bytes: &[u8]) -> Result<Vec<String>> {
+    let mut arc = ZipArchive::new(Cursor::new(bytes)).context("cannot open XLSX zip container")?;
+    let mut xml = String::new();
+    if let Ok(mut f) = arc.by_name("xl/workbook.xml") {
+        f.read_to_string(&mut xml)?;
+    } else {
+        return Ok(Vec::new());
+    }
+    let mut reader = XmlReader::from_str(&xml);
+    let mut buf = Vec::new();
+    let mut hidden = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.local_name().as_ref() == b"sheet" => {
+                let mut name: Option<String> = None;
+                let mut state: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.local_name().as_ref() {
+                        b"name" => name = std::str::from_utf8(&attr.value).ok().map(str::to_string),
+                        b"state" => state = std::str::from_utf8(&attr.value).ok().map(str::to_string),
+                        _ => {}
+                    }
+                }
+                if state
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("veryHidden") || s.eq_ignore_ascii_case("hidden"))
+                {
+                    if let Some(n) = name {
+                        hidden.push(n);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(hidden)
 }
 
 pub fn parse_csv(bytes: &[u8]) -> Result<DocIr> {
@@ -153,6 +202,7 @@ pub fn parse_csv(bytes: &[u8]) -> Result<DocIr> {
         unit_multiplier: 1,
         carried_scale_from_prev: false,
         headers: Vec::new(),
+        cell_changes: Vec::new(),
     };
     let plain_text = tbl.to_plain_rows().join("\n");
     let mut ir = DocIr::new(
@@ -170,13 +220,30 @@ pub fn parse_csv(bytes: &[u8]) -> Result<DocIr> {
 
 pub fn parse_pdf(bytes: &[u8]) -> Result<DocIr> {
     let extracted = pdf_extract::extract_text_from_mem(bytes).unwrap_or_default();
-    let repaired = extracted
-        .lines()
-        .map(|l| repair_hangul_false_kerning(l.trim()))
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>();
-    let fallback = if repaired.iter().map(String::len).sum::<usize>() < 16 {
+    // D-09: Classify PDF OCR fallback per page instead of whole-file fallback.
+    let raw_pages: Vec<&str> = extracted.split('\x0c').collect();
+    let mut page_fallbacks = Vec::with_capacity(raw_pages.len().max(1));
+    let mut repaired = Vec::new();
+    for page in &raw_pages {
+        let lines: Vec<String> = page
+            .lines()
+            .map(|l| repair_hangul_false_kerning(l.trim()))
+            .filter(|l| !l.is_empty())
+            .collect();
+        let chars_len: usize = lines.iter().map(String::len).sum();
+        page_fallbacks.push(if chars_len < 16 {
+            VisionFallbackNeed::FullPage
+        } else {
+            VisionFallbackNeed::None
+        });
+        repaired.extend(lines);
+    }
+    let all_full = !page_fallbacks.is_empty() && page_fallbacks.iter().all(|&f| f == VisionFallbackNeed::FullPage);
+    let any_full = page_fallbacks.iter().any(|&f| f == VisionFallbackNeed::FullPage);
+    let fallback = if repaired.iter().map(String::len).sum::<usize>() < 16 || all_full {
         VisionFallbackNeed::FullPage
+    } else if any_full {
+        VisionFallbackNeed::EmbeddedOnly
     } else {
         VisionFallbackNeed::None
     };
@@ -187,6 +254,7 @@ pub fn parse_pdf(bytes: &[u8]) -> Result<DocIr> {
     let mut ir = DocIr::new("pdf", fallback);
     ir.blocks = blocks;
     ir.plain_text = repaired.join("\n");
+    ir.page_fallbacks = page_fallbacks;
     Ok(ir.finalize())
 }
 

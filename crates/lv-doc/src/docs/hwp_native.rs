@@ -10,7 +10,10 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
-use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange, VisionFallbackNeed};
+use super::ir::{
+    CellIr, CellTrackChange, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange,
+    VisionFallbackNeed,
+};
 
 const HWPTAG_PARA_TEXT: u16 = 67;
 
@@ -194,7 +197,7 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
     let mut run_vert: u8 = 0; // 0 = normal, 1 = superscript (^), 2 = subscript (_)
     let mut para_text = String::new();
     let mut para_struck: Vec<TrackChange> = Vec::new();
-    let mut cell_struck: Vec<TrackChange> = Vec::new();
+    let mut cell_struck: Vec<CellTrackChange> = Vec::new();
 
     let attr_usize = |e: &quick_xml::events::BytesStart<'_>, keys: &[&[u8]]| -> Option<usize> {
         for a in e.attributes().flatten() {
@@ -229,6 +232,7 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                         tbl_rows = attr_usize(&e, &[b"rowCnt"]).unwrap_or(0);
                         tbl_cols = attr_usize(&e, &[b"colCnt"]).unwrap_or(0);
                         cells.clear();
+                        cell_struck.clear();
                     }
                     b"tc" if in_table => {
                         in_tc = true;
@@ -286,7 +290,11 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     let t = s.trim();
                     if !t.is_empty() {
                         if in_tc {
-                            cell_struck.push(TrackChange::Struck(t.to_string()));
+                            cell_struck.push(CellTrackChange {
+                                row: cur_row,
+                                col: cur_col,
+                                change: TrackChange::Struck(t.to_string()),
+                            });
                         } else {
                             para_struck.push(TrackChange::Struck(t.to_string()));
                         }
@@ -334,11 +342,26 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     in_table = false;
                     // Flatten 1x1 decorative framing box into regular paragraphs.
                     if tbl_rows == 1 && tbl_cols == 1 && cells.len() == 1 {
-                        for line in cells[0].text.lines().filter(|l| !l.trim().is_empty()) {
+                        let flat_changes: Vec<TrackChange> =
+                            std::mem::take(&mut cell_struck).into_iter().map(|c| c.change).collect();
+                        let lines: Vec<String> = cells[0]
+                            .text
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| l.trim().to_string())
+                            .collect();
+                        if lines.is_empty() && !flat_changes.is_empty() {
                             blocks.push(DocBlock::Paragraph {
-                                text: line.trim().to_string(),
-                                track_changes: Vec::new(),
+                                text: String::new(),
+                                track_changes: flat_changes,
                             });
+                        } else {
+                            for (idx, line) in lines.into_iter().enumerate() {
+                                blocks.push(DocBlock::Paragraph {
+                                    text: line,
+                                    track_changes: if idx == 0 { flat_changes.clone() } else { Vec::new() },
+                                });
+                            }
                         }
                     } else {
                         blocks.push(DocBlock::Table(TableIr {
@@ -349,6 +372,7 @@ fn parse_hwpx_section_xml(xml: &str) -> Result<Vec<DocBlock>> {
                             unit_multiplier: 1,
                             carried_scale_from_prev: false,
                             headers: Vec::new(),
+                            cell_changes: std::mem::take(&mut cell_struck),
                         }));
                     }
                 }

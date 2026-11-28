@@ -69,8 +69,14 @@ fn router_state(state: tauri::State<'_, LouisAppState>) -> HostRouterState {
 }
 
 #[tauri::command]
-fn router_route_input(text: String, state: tauri::State<'_, LouisAppState>) -> RouteDecision {
-    router_host::route_intent(&text, &[], state.role)
+fn router_route_input(
+    text: String,
+    files: Option<Vec<String>>,
+    state: tauri::State<'_, LouisAppState>,
+) -> RouteDecision {
+    let owned = files.unwrap_or_default();
+    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+    router_host::route_intent(&text, &refs, state.role)
 }
 
 #[tauri::command]
