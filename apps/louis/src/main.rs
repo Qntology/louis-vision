@@ -1,7 +1,9 @@
 //! CLI entry point for `louis-docs` (Tier 2-B1 air-gapped docs automation engine).
 
 use anyhow::Result;
-use louis_docs::eval_nn::nl_search_eval::{run_nl_search_nn_eval, NlSearchEvalConfig};
+use louis_docs::eval_nn::nl_search_eval::{
+    run_4arm_nl_search_eval, run_nl_search_nn_eval, NlSearchEvalConfig,
+};
 use louis_docs::eval_nn::schema::EvalSplit as NlEvalSplit;
 use louis_docs::run_selftest;
 use louis_docs::workflow::{evaluate_all_packs, evaluate_docs_nn_suite, EvalSplit};
@@ -129,6 +131,54 @@ fn main() -> Result<()> {
             structured_layout,
         };
         let report = run_nl_search_nn_eval(&cfg)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        if report.exit_code != 0 {
+            std::process::exit(report.exit_code);
+        }
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--eval-4arm") {
+        let split_arg = args
+            .windows(2)
+            .find(|w| w[0] == "--split")
+            .map(|w| w[1].as_str())
+            .unwrap_or("diag");
+        let release_seal = args.iter().any(|a| a == "--release-seal");
+        let split = match split_arg {
+            "holdout" => {
+                if !release_seal {
+                    eprintln!("[LOUIS-DOCS] ERROR: --split holdout requires --release-seal");
+                    std::process::exit(2);
+                }
+                NlEvalSplit::Holdout
+            }
+            "diag" => NlEvalSplit::Diag,
+            other => {
+                eprintln!("[LOUIS-DOCS] ERROR: unknown --split '{other}'");
+                std::process::exit(2);
+            }
+        };
+        let cases_per_domain = args
+            .windows(2)
+            .find(|w| w[0] == "--cases-per-domain")
+            .and_then(|w| w[1].parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        let model_dir = args
+            .windows(2)
+            .find(|w| w[0] == "--gemma-dir")
+            .map(|w| std::path::PathBuf::from(&w[1]));
+        let cfg = NlSearchEvalConfig {
+            split,
+            release_seal,
+            cases_per_domain,
+            domains_filter: None,
+            include_xr_twin: true,
+            out_dir: None,
+            dump_synth: false,
+            structured_layout: false,
+        };
+        let report = run_4arm_nl_search_eval(&cfg, model_dir.as_deref())?;
         println!("{}", serde_json::to_string_pretty(&report)?);
         if report.exit_code != 0 {
             std::process::exit(report.exit_code);

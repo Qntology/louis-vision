@@ -23,50 +23,66 @@ const NEXT_CARD_KINDS = ['light', 'set', 'cam', 'actor'];
 let nextSliceSeq = 1;
 let nextCardSeq = 1;
 
-function makeCard(kind, idx, inheritFrom = null) {
+function makeCard(kind, idx, inheritFrom = null, slot = 0) {
   const id = `card_${nextCardSeq++}`;
+  const slotNum = slot + 1;
   if (kind === 'cam') {
+    const camIds = ['cam_foh_01', 'cam_stage_l02', 'cam_overhead_03', 'cam_jib_04'];
     return {
-      id, kind, title: `캠 #${idx + 1}`, subtitle: '채택 카메라 · 마스크 · Cycles',
-      adopted_cam_id: inheritFrom?.adopted_cam_id ?? 'cam_foh_01',
+      id, kind, title: slot === 0 ? `FOH 캠 #${idx + 1}` : `측면 캠 ${slotNum} (#${idx + 1})`, subtitle: '채택 카메라 · 마스크 · Cycles',
+      adopted_cam_id: inheritFrom?.adopted_cam_id ?? camIds[slot % camIds.length],
       frame_idx: 0, target_samples: 16, completed_passes: 0, baked_samples: 0,
       mask_fg_px: 0, stereo_valid_ratio: 0.92, optical_warning: false,
       drawerOpen: false, rev: 0,
     };
   }
   if (kind === 'actor') {
+    const wallets = [
+      '0x742d35cc6634c0532925a3b844bc454e4438f44e',
+      '0x91ab44de2180c0441122a3b844bc454e9911cc22',
+    ];
+    const bodyColors = [[255, 196, 0], [0, 210, 255]];
     return {
-      id, kind, title: `해링 아바타 #${idx + 1}`, subtitle: 'Rule 6 순도 ≥ 99.5% · BPM 모티프',
-      actor_id: `HARING-S${idx + 1}`,
-      wallet: inheritFrom?.wallet ?? '0x742d35cc6634c0532925a3b844bc454e4438f44e',
+      id, kind, title: `해링 아바타 ${slotNum} (#${idx + 1})`, subtitle: 'Rule 6 순도 ≥ 99.5% · BPM 모티프',
+      actor_id: `HARING-S${idx + 1}-${slotNum}`,
+      wallet: inheritFrom?.wallet ?? wallets[slot % wallets.length],
       bpm: inheritFrom?.bpm ?? 124,
-      motif: inheritFrom?.motif ?? 'groove_wave',
-      head_prop: inheritFrom?.head_prop ?? 'none',
-      body_rgb: inheritFrom?.body_rgb ?? [255, 196, 0],
+      motif: inheritFrom?.motif ?? (slot === 0 ? 'groove_wave' : 'sync_step'),
+      head_prop: inheritFrom?.head_prop ?? (slot === 0 ? 'none' : 'crown'),
+      body_rgb: inheritFrom?.body_rgb ?? bodyColors[slot % bodyColors.length],
       drawerOpen: false, rev: 0,
     };
   }
   if (kind === 'light') {
     return {
-      id, kind, title: `DMX 조명 #${idx + 1}`, subtitle: '16-bit 디머 · U64 파이로 격리',
-      dmx_dimmer_u16: inheritFrom?.dmx_dimmer_u16 ?? 52428,
-      pyro_universe: 64, laser_in_frustum: false, robospot: true, blackout: false,
+      id, kind, title: slot === 0 ? `키 DMX 조명 #${idx + 1}` : `백라이트 DMX ${slotNum} (#${idx + 1})`, subtitle: '16-bit 디머 · U64 파이로 격리',
+      dmx_dimmer_u16: inheritFrom?.dmx_dimmer_u16 ?? (slot === 0 ? 52428 : 39321),
+      pyro_universe: 64, laser_in_frustum: false, robospot: slot === 0, blackout: false,
       drawerOpen: false, rev: 0,
     };
   }
   return {
-    id, kind: 'set', title: `무대 기구 #${idx + 1}`, subtitle: 'SolidCraft 리프트 · 턴테이블 · OBB',
-    lift_m: inheritFrom?.lift_m ?? 0.8,
-    turntable_rad: inheritFrom?.turntable_rad ?? 0.0,
+    id, kind: 'set', title: slot === 0 ? `메인 리프트 #${idx + 1}` : `턴테이블 기구 ${slotNum} (#${idx + 1})`, subtitle: 'SolidCraft 리프트 · 턴테이블 · OBB',
+    lift_m: inheritFrom?.lift_m ?? (slot === 0 ? 0.8 : 0.0),
+    turntable_rad: inheritFrom?.turntable_rad ?? (slot === 0 ? 0.0 : 0.35),
     show_obb: true,
     drawerOpen: false, rev: 0,
   };
 }
 
 function makeSlice(idx, unitS, prevSlice = null) {
-  const findPrev = (k) => prevSlice?.cards?.find((c) => c.kind === k) ?? null;
-  const camCard = makeCard('cam', idx, findPrev('cam'));
-  const actorCard = makeCard('actor', idx, findPrev('actor'));
+  // v1.8 Track Parity: seed 2 default cards across all 4 tracks (cam, actor, light, set)
+  // so every layer filter chip opens with 2 baseline cards + right-append [➕] ghost card.
+  const findPrevSlot = (k, slot) => {
+    const matches = prevSlice?.cards?.filter((c) => c.kind === k) ?? [];
+    return matches[slot] ?? matches[0] ?? null;
+  };
+  const cards = [];
+  for (const kind of ['cam', 'actor', 'light', 'set']) {
+    cards.push(makeCard(kind, idx, findPrevSlot(kind, 0), 0));
+    cards.push(makeCard(kind, idx, findPrevSlot(kind, 1), 1));
+  }
+  const camCard = cards[0];
   return {
     id: `slice_${nextSliceSeq++}`,
     idx,
@@ -76,7 +92,7 @@ function makeSlice(idx, unitS, prevSlice = null) {
     adopted_cam_id: camCard.adopted_cam_id,
     muted: false,
     inherited: !!prevSlice,
-    cards: [camCard, actorCard],
+    cards,
   };
 }
 
@@ -192,9 +208,10 @@ export function splitActiveSlice() {
   if (!cur) return null;
   pushUndo();
   const clone = makeSlice(cur.idx + 1, deck.sliceUnitS, cur);
-  // Inherit extra cards beyond default 2 as well
-  for (const extra of cur.cards.slice(2)) {
-    clone.cards.push(makeCard(extra.kind, cur.idx + 1, extra));
+  // Inherit any user-added cards beyond the 8 default track cards (4 tracks × 2) as well.
+  for (const extra of cur.cards.slice(8)) {
+    const slot = clone.cards.filter((c) => c.kind === extra.kind).length;
+    clone.cards.push(makeCard(extra.kind, cur.idx + 1, extra, slot));
   }
   deck.slices.splice(cur.idx + 1, 0, clone);
   deck.activeSliceIdx = cur.idx + 1;
@@ -208,10 +225,10 @@ export function addCardToActiveSlice(explicitKind = null) {
   const cur = activeSlice();
   if (!cur) return null;
   pushUndo();
-  const existingKinds = new Set(cur.cards.map((c) => c.kind));
   const kind = explicitKind
-    || (deck.filter !== 'all' ? deck.filter : NEXT_CARD_KINDS.find((k) => !existingKinds.has(k)) || 'light');
-  const card = makeCard(kind, cur.idx);
+    || (deck.filter !== 'all' ? deck.filter : NEXT_CARD_KINDS[cur.cards.length % NEXT_CARD_KINDS.length]);
+  const slot = cur.cards.filter((c) => c.kind === kind).length;
+  const card = makeCard(kind, cur.idx, null, slot);
   cur.cards.push(card);
   deck.focusedCardId = card.id;
   syncDeckFocus();

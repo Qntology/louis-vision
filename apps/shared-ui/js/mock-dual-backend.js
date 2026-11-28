@@ -87,7 +87,7 @@ export class MockDualBackend {
       }
 
       case 'router_route_input': {
-        const parsed = parseOmniQuery(args.text || '');
+        const parsed = parseOmniQuery(args.text || '', Array.isArray(args.files) ? args.files : []);
         const win = resolveTimeGuideWindow(parsed.timeKey, args.nowMs);
         if (parsed.route === 'louis_field_3d_lens' && this.deviceRole === 'counter_kiosk') {
           return { blocked: true, error: 'VaultError::KioskForbidden', owner: this.surfaceOwner };
@@ -145,7 +145,7 @@ export class MockDualBackend {
         if (this.vaultState === 'sealed' || this.vaultState === 'grace_blurred') {
           return { ok: false, error: 'VaultError::Sealed' };
         }
-        const parsed = parseOmniQuery(args.query || '');
+        const parsed = parseOmniQuery(args.query || '', Array.isArray(args.files) ? args.files : []);
         const sampleRaw = args.rawRows || [
           JSON.stringify({ id: 'bl-01', type: 'BL', text: `shanghai ${parsed.freeText}`, deepLink: 'louis://doc/bl-01?page=1&bbox=0.1,0.2,0.5,0.4&gate=G2' }),
           'null',

@@ -20,8 +20,19 @@ use sha2::{Digest, Sha256};
 pub const CACHE_DIR: &str = ".pd-cache";
 /// 캐시 파일 형식·양자화 코드의 판. 양자화 방식이 바뀌면 올린다 (옛 캐시는 지문이 달라 버려진다)
 pub const FORMAT: u32 = 1;
-/// 컴포넌트당 공존 가능한 최대 레시피 슬롯 수 (`q8_0` + `tiered` 동시 공존, 초과 시 가장 오래된 슬롯부터 정리).
+/// 컴포넌트당 공존 가능한 기본 최대 레시피 슬롯 수 (`q8_0` + `tiered` 동시 공존, 초과 시 가장 오래된 슬롯부터 정리).
 pub const MAX_RECIPE_SLOTS: usize = 2;
+/// 모바일/저용량 환경에서 디스크 상주 슬롯 상한을 1로 줄일 때 쓰는 환경변수 (`PD_QCACHE_SLOTS=1`).
+pub const QCACHE_SLOTS_ENV: &str = "PD_QCACHE_SLOTS";
+
+/// 현재 프로세스의 유효 레시피 슬롯 상한 (`PD_QCACHE_SLOTS` 환경변수 지정 시 `1..=8` 클램프, 미지정 시 `MAX_RECIPE_SLOTS = 2`).
+pub fn effective_recipe_slots() -> usize {
+    std::env::var(QCACHE_SLOTS_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 8))
+        .unwrap_or(MAX_RECIPE_SLOTS)
+}
 
 /// 캐시가 어떤 원본·레시피에서 나왔는지
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,8 +145,18 @@ impl QCache {
         (q.dtype() == dtype && q.shape().dims() == shape).then_some(q)
     }
 
-    /// 텐서들을 캐시로 쓴다 (고유 임시 파일 → fsync → 원자적 교체). 같은 component의 다른 레시피 캐시는 지운다.
+    /// 텐서들을 캐시로 쓴다 (고유 임시 파일 → fsync → 원자적 교체).
+    /// 기본 `MAX_RECIPE_SLOTS = 2` (또는 `PD_QCACHE_SLOTS` 환경변수) 슬롯을 유지하고 초과한 가장 오래된 레시피만 정리한다.
     pub fn save(path: &Path, fp: &Fingerprint, tensors: &[(String, &QTensor)]) -> std::io::Result<()> {
+        Self::save_with_slots(path, fp, tensors, effective_recipe_slots())
+    }
+
+    pub fn save_with_slots(
+        path: &Path,
+        fp: &Fingerprint,
+        tensors: &[(String, &QTensor)],
+        max_slots: usize,
+    ) -> std::io::Result<()> {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = path.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir)?;
@@ -153,7 +174,7 @@ impl QCache {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
         }
-        // 컴포넌트당 최대 `MAX_RECIPE_SLOTS`(=2)개 레시피(예: `q8_0` + `tiered`)를 공존시키고,
+        // 컴포넌트당 최대 `max_slots`개 레시피(기본 2: `q8_0` + `tiered`, 모바일 `PD_QCACHE_SLOTS=1`: 1)를 공존시키고,
         // 슬롯을 초과한 가장 오래된 캐시만 정리한다.
         let keep = path.file_name().map(|n| n.to_os_string());
         let prefix = format!("{}-", fp.component);
@@ -170,7 +191,7 @@ impl QCache {
                     others.push((mtime, s, e.path()));
                 }
             }
-            let keep_other = MAX_RECIPE_SLOTS.saturating_sub(1);
+            let keep_other = max_slots.max(1).saturating_sub(1);
             if others.len() > keep_other {
                 // Keep newest `keep_other` entries; remove the oldest excess entries deterministically.
                 others.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
@@ -270,6 +291,13 @@ mod tests {
         .count();
         assert_eq!(text_present, MAX_RECIPE_SLOTS);
         assert!(cache_path(&weights, &c).exists());
+        assert!(cache_path(&weights, &v).exists());
+
+        // Single-slot mobile mode (`PD_QCACHE_SLOTS=1`) keeps only the latest recipe of the component.
+        QCache::save_with_slots(&cache_path(&weights, &a), &a, &[("x".into(), &t)], 1).unwrap();
+        assert!(cache_path(&weights, &a).exists());
+        assert!(!cache_path(&weights, &b).exists());
+        assert!(!cache_path(&weights, &c).exists());
         assert!(cache_path(&weights, &v).exists());
     }
 }

@@ -1,5 +1,6 @@
 //! Tier 2-B1 air-gapped docs automation application (`louis-docs`).
 
+pub mod audit;
 pub mod eval_nn;
 pub mod overlay;
 pub mod sql_guard;

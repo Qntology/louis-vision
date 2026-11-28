@@ -102,6 +102,68 @@ pub fn ensure_loopback_bind(addr: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+/// Spawns the Single-Anchor loopback TCP control listener (`127.0.0.1:{port}`, default `8787`)
+/// handling line-delimited JSON `LoopbackWireMsg` frames against `HostRouterState` (X-06).
+pub fn spawn_loopback_router_listener(
+    port: u16,
+    router: std::sync::Arc<std::sync::Mutex<HostRouterState>>,
+) -> Result<SocketAddr> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    ensure_loopback_bind(bind_addr)?;
+    let listener = TcpListener::bind(bind_addr)?;
+    let local_addr = listener.local_addr()?;
+    ensure_loopback_bind(local_addr)?;
+
+    std::thread::Builder::new()
+        .name(format!("louis-router-loopback-{}", local_addr.port()))
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if !stream
+                    .peer_addr()
+                    .map(|p| p.ip().is_loopback())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let router_ref = std::sync::Arc::clone(&router);
+                let _ = std::thread::Builder::new()
+                    .name("louis-router-peer".into())
+                    .spawn(move || {
+                        let Ok(mut writer) = stream.try_clone() else {
+                            return;
+                        };
+                        let reader = BufReader::new(stream);
+                        for line in reader.lines().map_while(std::result::Result::ok) {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            if let Ok(msg) = serde_json::from_str::<LoopbackWireMsg>(trimmed) {
+                                let reply = {
+                                    let mut guard = router_ref
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner());
+                                    guard.apply_wire(msg)
+                                };
+                                if let Ok(payload) = serde_json::to_string(&reply) {
+                                    if writer.write_all(payload.as_bytes()).is_err()
+                                        || writer.write_all(b"\n").is_err()
+                                        || writer.flush().is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    });
+            }
+        })?;
+    Ok(local_addr)
+}
+
 /// Computes deterministic Win32 `GWL_EXSTYLE` mask for each desktop overlay phase:
 /// - ghost idle: `0x0808_00A8`
 /// - hover/drag: `0x0808_0088`
@@ -163,6 +225,7 @@ pub fn route_intent(
         })
     };
 
+    let is_border_media = has_ext(&[".png", ".jpg", ".jpeg", ".mp4", ".mkv"]);
     let is_doc_ext = has_ext(&[".hwpx", ".hwp", ".docx", ".xlsx", ".xls", ".csv", ".pdf", ".xml", ".mhtml"]);
     let is_doc_noun = ["기성내역서", "청구서", "계약서", "명세서", "송장", "세금계산서", "보고서", "증빙", "내역서"]
         .iter()
@@ -185,7 +248,7 @@ pub fn route_intent(
             owner: ActiveSurfaceOwner::LouisDocsStudio,
             warm_lease: WarmLeaseKind::LocalOnly,
             gpu_lease: GpuLeaseTier::LouisExclusive,
-            show_vision_chip: false,
+            show_vision_chip: is_border_media,
             blocked_kiosk: false,
         };
     }
@@ -390,5 +453,41 @@ mod tests {
         assert_eq!(st.active_star_count(), 1);
         assert!(st.ingest_disk_queue_only);
         assert!(matches!(ack, LoopbackWireMsg::AckGpuLease { louis_resident_mb, .. } if louis_resident_mb <= STAGE_VRAM_CAP_MB));
+    }
+
+    #[test]
+    fn loopback_router_listener_roundtrips_wire_messages_on_ephemeral_port() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::sync::{Arc, Mutex};
+
+        let router = Arc::new(Mutex::new(HostRouterState::default()));
+        let addr = spawn_loopback_router_listener(0, Arc::clone(&router)).unwrap();
+        assert!(addr.ip().is_loopback());
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let req = serde_json::to_string(&LoopbackWireMsg::RequestGpuLease {
+            target: GpuLeaseTier::StagePinnedLock,
+            requester_pid: 777,
+        })
+        .unwrap();
+        writeln!(stream, "{req}").unwrap();
+        stream.flush().unwrap();
+
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut resp_line = String::new();
+        reader.read_line(&mut resp_line).unwrap();
+        let reply: LoopbackWireMsg = serde_json::from_str(resp_line.trim()).unwrap();
+        assert!(matches!(
+            reply,
+            LoopbackWireMsg::AckGpuLease {
+                granted: GpuLeaseTier::StagePinnedLock,
+                louis_resident_mb,
+            } if louis_resident_mb <= STAGE_VRAM_CAP_MB
+        ));
+
+        let g = router.lock().unwrap();
+        assert_eq!(g.active_star_count(), 1);
+        assert!(g.ingest_disk_queue_only);
     }
 }

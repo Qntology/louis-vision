@@ -89,8 +89,9 @@ lv-planar  = { workspace = true, optional = true }
 premium-discount-eval = { workspace = true }
 premium-discount-sds  = { workspace = true }
 
-# Local pure-Rust rig & CAD geometry crate
-sandbox-core = { path = "crates/sandbox-core" }
+# Local pure-Rust rig, CAD geometry & CPU stage raycaster crates (zero GPU deps added)
+sandbox-core  = { path = "crates/sandbox-core" }
+sandbox-world = { path = "crates/sandbox-world" }
 
 # Local runtime, lossless image decode, and loopback/LAN transport (0 WAN HTTP crates)
 anyhow      = { workspace = true }

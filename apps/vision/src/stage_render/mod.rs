@@ -59,6 +59,20 @@ mod tests {
         assert_eq!(rep.tiles_completed, 4);
         assert!(!rep.aborted);
         assert_eq!(rgba.len(), 64 * 64 * 4);
+        // Verify real raycast shading (non-uniform pixels and distinct camera perspectives)
+        let unique_rgb: std::collections::BTreeSet<(u8, u8, u8)> = rgba
+            .chunks_exact(4)
+            .map(|p| (p[0], p[1], p[2]))
+            .collect();
+        assert!(unique_rgb.len() >= 12, "raycast output lacks shading diversity: {}", unique_rgb.len());
+
+        let side_job = CyclesBakeJob {
+            adopted_cam_id: "cam-side-l".into(),
+            ..job.clone()
+        };
+        let (rep_side, rgba_side) = coord.cycles.bake_adopted_cam(&side_job);
+        assert_eq!(rep_side.baked_cam_id, "cam-side-l");
+        assert_ne!(rgba, rgba_side, "different adopted camera poses must render distinct frames");
 
         // Instant abort <= 16.6 ms (16_666 us)
         let abort_us = coord.stage_render_abort();

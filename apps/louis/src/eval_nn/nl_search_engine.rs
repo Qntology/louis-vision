@@ -1008,7 +1008,8 @@ pub fn index_world_e2e(
         let extracted_rev_note = if let Some(rn) = parse_prefixed_segment(&visible_text, "REVISION_NOTE=") {
             rn
         } else {
-            if !doc.revision_note.is_empty() {
+            // Covert decoy fixtures intentionally omit REVISION_NOTE on the visible sheet/body.
+            if !doc.revision_note.is_empty() && doc_stripped_covert == 0 {
                 stats.ground_truth_fallback_fills += 1;
             }
             String::new()

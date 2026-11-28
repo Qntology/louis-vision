@@ -52,6 +52,14 @@ test('Omni-Bar tag+free-text lossless split, BUG-DB-3 tolerance, deterministic t
   assert.equal(cleanSql.ok, true);
   assert.ok(cleanSql.wrappedSql.includes('vault_id =') && cleanSql.wrappedSql.includes('n2sf_grade <=') && cleanSql.wrappedSql.includes('LIMIT 200'));
   assert.equal(buildMediaDeepLink('cam01', 12450), 'louis://media/cam01?ts_ms=12450&bbox=0,0,1,1');
+
+  // D-11: parseOmniQuery forwards droppedFiles into classifyIntentRoute & doc nouns beat generic Sim keywords.
+  const qDocFile = parseOmniQuery('현장 첨부 파일 확인', ['contract_2026.hwpx']);
+  assert.equal(qDocFile.route, 'louis_docs_studio');
+  assert.deepEqual(qDocFile.files, ['contract_2026.hwpx']);
+  assert.equal(parseOmniQuery('로봇 용접 설비 기성내역서 찾아줘').route, 'louis_docs_studio');
+  assert.equal(parseOmniQuery('3D 모델', ['rig.glb']).route, 'vision_sim_sandbox');
+  assert.equal(parseOmniQuery('', ['truss.urdf']).warmLeaseKind, 'speculative');
 });
 
 test('StarWidget compose protection, Tombstone delete sync, Stage blackout filter, and 8-tier ESC/IME stack', () => {
