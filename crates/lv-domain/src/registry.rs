@@ -30,6 +30,8 @@ pub struct DomainPackMeta {
     pub label_ko: &'static str,
     pub required_fields: &'static [&'static str],
     pub default_retention_days: u32,
+    /// High-impact AI / regulated domain requiring mandatory human officer disposition (D-03).
+    pub high_impact: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,24 +63,24 @@ impl DomainPackRegistry {
     pub fn builtin_18() -> Self {
         Self {
             packs: vec![
-                DomainPackMeta { code: "DOM-01", id: "construction_settle", label_ko: "건설·하도급 기성", required_fields: &["contract_sum", "progress_pct", "claimed_amount"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-02", id: "rnd_audit", label_ko: "국가R&D 연구비 정산", required_fields: &["grant_id", "invoice_total", "card_ledger_total"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-03", id: "insolvency_legal", label_ko: "회생·도산 채권조사", required_fields: &["debtor_id", "principal_krw", "creditor_count"], default_retention_days: 730 },
-                DomainPackMeta { code: "DOM-04", id: "finance_3way", label_ko: "기업 매입·3-Way 대사", required_fields: &["po_no", "gr_qty", "invoice_qty"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-05", id: "claims_med", label_ko: "보험·의료 실손 심사", required_fields: &["claim_no", "policy_limit", "assessed_amount"], default_retention_days: 730 },
-                DomainPackMeta { code: "DOM-06", id: "ra_qa_esg", label_ko: "품질·CBAM·인허가", required_fields: &["batch_no", "cbam_embedded_co2", "coa_passed"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-07", id: "safety_hr", label_ko: "현장 LOTO·노무안전", required_fields: &["site_id", "permit_signed", "work_hours_week"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-08", id: "trade_customs_lc", label_ko: "무역·신용장·통관", required_fields: &["po_no", "ci_amount", "bl_date", "lc_limit"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-09", id: "warehouse_hazmat_pod", label_ko: "물류창고·보세·위험물", required_fields: &["container_id", "bonded_cleared", "un_hazmat"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-10", id: "retail_srm_settle", label_ko: "유통·SRM 대금정산", required_fields: &["contract_kind", "promo_ratio", "payout_ymd"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-11", id: "public_g2b_contract", label_ko: "공공입찰·원가계산", required_fields: &["rule_kind", "admin_krw", "profit_krw"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-12", id: "fin_kyc_loan", label_ko: "여신·KYC·책무구조", required_fields: &["ubo_verified", "accountability_code", "shareholder_sum"], default_retention_days: 730 },
-                DomainPackMeta { code: "DOM-13", id: "tax_evid_audit", label_ko: "세무증빙·접대비 감사", required_fields: &["etax_24_id", "transmit_ymd", "vat_credit"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-14", id: "ip_patent_sec", label_ko: "특허·국가핵심기술 보안", required_fields: &["n2sf_grade", "motie_approval_no", "clean_cdr"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-15", id: "eng_ecn_bom", label_ko: "도면 ECN·BOM 대사", required_fields: &["ecn_no", "title_block_5of5", "bom_qty"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-16", id: "defense_ram_mro", label_ko: "방산 MRO·ECP 형상", required_fields: &["plaque_dpi", "ecp_no", "coc_verified"], default_retention_days: 1825 },
-                DomainPackMeta { code: "DOM-17", id: "hr_comp_privacy", label_ko: "인사·블라인드 채용", required_fields: &["art4_3_clean", "career_days", "blind_clean"], default_retention_days: 730 },
-                DomainPackMeta { code: "DOM-18", id: "audit_board_gov", label_ko: "내부감사·수의계약 통제", required_fields: &["single_quote_krw", "annual_count", "board_cap"], default_retention_days: 1825 },
+                DomainPackMeta { code: "DOM-01", id: "construction_settle", label_ko: "건설·하도급 기성", required_fields: &["contract_sum", "progress_pct", "claimed_amount"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-02", id: "rnd_audit", label_ko: "국가R&D 연구비 정산", required_fields: &["grant_id", "invoice_total", "card_ledger_total"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-03", id: "insolvency_legal", label_ko: "회생·도산 채권조사", required_fields: &["debtor_id", "principal_krw", "creditor_count"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-04", id: "finance_3way", label_ko: "기업 매입·3-Way 대사", required_fields: &["po_no", "gr_qty", "invoice_qty"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-05", id: "claims_med", label_ko: "보험·의료 실손 심사", required_fields: &["claim_no", "policy_limit", "assessed_amount"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-06", id: "ra_qa_esg", label_ko: "품질·CBAM·인허가", required_fields: &["batch_no", "cbam_embedded_co2", "coa_passed"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-07", id: "safety_hr", label_ko: "현장 LOTO·노무안전", required_fields: &["site_id", "permit_signed", "work_hours_week"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-08", id: "trade_customs_lc", label_ko: "무역·신용장·통관", required_fields: &["po_no", "ci_amount", "bl_date", "lc_limit"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-09", id: "warehouse_hazmat_pod", label_ko: "물류창고·보세·위험물", required_fields: &["container_id", "bonded_cleared", "un_hazmat"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-10", id: "retail_srm_settle", label_ko: "유통·SRM 대금정산", required_fields: &["contract_kind", "promo_ratio", "payout_ymd"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-11", id: "public_g2b_contract", label_ko: "공공입찰·원가계산", required_fields: &["rule_kind", "admin_krw", "profit_krw"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-12", id: "fin_kyc_loan", label_ko: "여신·KYC·책무구조", required_fields: &["ubo_verified", "accountability_code", "shareholder_sum"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-13", id: "tax_evid_audit", label_ko: "세무증빙·접대비 감사", required_fields: &["etax_24_id", "transmit_ymd", "vat_credit"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-14", id: "ip_patent_sec", label_ko: "특허·국가핵심기술 보안", required_fields: &["n2sf_grade", "motie_approval_no", "clean_cdr"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-15", id: "eng_ecn_bom", label_ko: "도면 ECN·BOM 대사", required_fields: &["ecn_no", "title_block_5of5", "bom_qty"], default_retention_days: 1825, high_impact: false },
+                DomainPackMeta { code: "DOM-16", id: "defense_ram_mro", label_ko: "방산 MRO·ECP 형상", required_fields: &["plaque_dpi", "ecp_no", "coc_verified"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-17", id: "hr_comp_privacy", label_ko: "인사·블라인드 채용", required_fields: &["art4_3_clean", "career_days", "blind_clean"], default_retention_days: 1825, high_impact: true },
+                DomainPackMeta { code: "DOM-18", id: "audit_board_gov", label_ko: "내부감사·수의계약 통제", required_fields: &["single_quote_krw", "annual_count", "board_cap"], default_retention_days: 1825, high_impact: false },
             ],
         }
     }

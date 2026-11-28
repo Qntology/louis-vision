@@ -1,7 +1,6 @@
 //! Scenario `D8`: 5-year (`1,825d`) WORM dual-hash-chain tamper detection (`broken_at`), 10% deterministic sampling, and `DSLI_18`.
 
 use anyhow::{ensure, Result};
-use chrono::Utc;
 use lv_agent::gates::AgentVerdict;
 use lv_agent::policy::{AutomationPolicy, Disposition};
 use lv_doc::writer::guard::N2sfGrade;
@@ -166,7 +165,7 @@ pub fn assert_4_tamper_vectors_detected(
 
 pub fn run_d8_shift_and_worm_probe() -> Result<(f32, f32)> {
     let mut auto_pol = AutomationPolicy::default();
-    auto_pol.enable_auto("OFF-SHIFT-01", "행정절차법 제14조", Utc::now())?;
+    auto_pol.enable_auto("OFF-SHIFT-01", "행정절차법 제14조", crate::eval_nn::fixed_eval_utc())?;
 
     // Check deterministic 10% post-audit sampling & 0.9499 confidence boundary
     let sample_a: Vec<bool> = (0..200)

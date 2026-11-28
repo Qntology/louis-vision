@@ -38,6 +38,8 @@ import { initProgressBand } from './progress-band.js';
 import { initNnPanel } from './nn-panel.js';
 import { initSdsExplorer } from './sds-explorer.js';
 import { initStageMode } from './stage-mode.js';
+import { initSpatialDeck } from './spatial-deck.js';
+import { initMasterPlayer } from './master-player.js';
 
 const recentErrors = new Map();
 
@@ -105,6 +107,8 @@ async function main() {
   await initHandPanel().catch(() => {});
   await Promise.allSettled([initDevice(), initDataPanel(), initLogs(), initPresets(), initUnitPreset()]);
   initStageMode();
+  initSpatialDeck();
+  initMasterPlayer();
   // 필수 모델(SigLIP2 · Granite TTM · TIPSv2)이 장치에 올라가기 전에는 월드를 만들지 않는다.
   await initModels().catch(() => {});
   await modelsReady();

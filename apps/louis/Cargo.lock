@@ -7395,7 +7395,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 [[package]]
 name = "premium-discount-cpu-kernels"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "half",
  "rayon",
@@ -7404,7 +7404,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-eval"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "anyhow",
  "serde",
@@ -7415,7 +7415,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-identity"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "getrandom 0.3.4",
  "hmac 0.12.1",
@@ -7429,7 +7429,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-manifest"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -7437,7 +7437,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-nav"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "premium-discount-identity",
  "premium-discount-sds",
@@ -7448,7 +7448,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-nms"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "anyhow",
  "premium-discount-cpu-kernels",
@@ -7459,7 +7459,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-quant"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "anyhow",
  "half",
@@ -7476,7 +7476,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-relay"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "premium-discount-nms",
  "premium-discount-sds",
@@ -7485,7 +7485,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-sds"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "anyhow",
  "serde",
@@ -7497,7 +7497,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-verdict"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "serde",
 ]
@@ -7505,7 +7505,7 @@ dependencies = [
 [[package]]
 name = "premium-discount-window"
 version = "0.1.0"
-source = "git+https://github.com/Qntology/premium-discount?rev=dae2667e498b65e6eb92ca0bd3ebf7e10c75c675#dae2667e498b65e6eb92ca0bd3ebf7e10c75c675"
+source = "git+https://github.com/Qntology/premium-discount?rev=b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5#b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5"
 dependencies = [
  "windows-sys 0.61.2",
 ]

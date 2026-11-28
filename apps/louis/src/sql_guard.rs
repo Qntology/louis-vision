@@ -11,8 +11,9 @@ use anyhow::{bail, ensure, Result};
 use lv_doc::writer::guard::{N2sfGrade, WriterGuard};
 use lv_router::vault::{DeviceRole, VaultError};
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, JoinOperator, LimitClause, Query,
-    SelectItem, SetExpr, Statement, TableFactor, Value, ValueWithSpan,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident,
+    JoinOperator, LimitClause, OrderByKind, Query, SelectItem, SetExpr, Statement, TableFactor,
+    Value, ValueWithSpan,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -142,9 +143,9 @@ pub fn verify_and_wrap_safe_sql(
         ensure!(!upper.contains(banned), "G-SQL1 blocked forbidden keyword: {banned}");
     }
 
-    let stmts = Parser::parse_sql(&GenericDialect {}, raw_sql)?;
+    let mut stmts = Parser::parse_sql(&GenericDialect {}, raw_sql)?;
     ensure!(stmts.len() == 1, "G-SQL1 blocked multi-statement or empty SQL");
-    let Statement::Query(query_box) = &stmts[0] else {
+    let Statement::Query(query_box) = &mut stmts[0] else {
         bail!("G-SQL1 blocked non-SELECT statement");
     };
     let effective_limit = validate_query_node(query_box, whitelist)?;
@@ -154,13 +155,44 @@ pub fn verify_and_wrap_safe_sql(
         N2sfGrade::Sensitive => 1,
         N2sfGrade::Classified => 2,
     };
-    let trimmed = raw_sql.trim().trim_end_matches(';');
-    Ok(format!(
-        "SELECT * FROM ({trimmed}) AS _lv_sub \
-         WHERE _lv_sub.vault_id = '{clean_vault}' AND _lv_sub.n2sf_grade_rank <= {grade_rank} \
-         LIMIT {effective_limit}"
-    ))
+
+    // D-01: Push mandatory vault & N2SF grade predicates directly into the inner SELECT WHERE scan
+    // (eliminating outer-wrapper literal alias spoofing and enabling GROUP BY aggregations cleanly).
+    let scope_pred = Expr::Nested(Box::new(Expr::BinaryOp {
+        left: Box::new(Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("vault_id"))),
+            op: BinaryOperator::Eq,
+            right: Box::new(Expr::Value(Value::SingleQuotedString(clean_vault).into())),
+        }),
+        op: BinaryOperator::And,
+        right: Box::new(Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("n2sf_grade_rank"))),
+            op: BinaryOperator::LtEq,
+            right: Box::new(Expr::Value(Value::Number(grade_rank.to_string(), false).into())),
+        }),
+    }));
+
+    if let SetExpr::Select(sel) = query_box.body.as_mut() {
+        sel.selection = Some(match sel.selection.take() {
+            Some(existing) => Expr::BinaryOp {
+                left: Box::new(scope_pred),
+                op: BinaryOperator::And,
+                right: Box::new(Expr::Nested(Box::new(existing))),
+            },
+            None => scope_pred,
+        });
+    }
+    query_box.limit_clause = Some(LimitClause::LimitOffset {
+        limit: Some(Expr::Value(
+            Value::Number(effective_limit.to_string(), false).into(),
+        )),
+        offset: None,
+        limit_by: Vec::new(),
+    });
+    Ok(query_box.to_string())
 }
+
+const RESERVED_SECURITY_COLS: &[&str] = &["vault_id", "n2sf_grade", "n2sf_grade_rank"];
 
 fn validate_query_node(
     q: &Query,
@@ -205,26 +237,65 @@ fn validate_query_node(
     let Some(allowed_cols) = whitelist.get(tname.as_str()) else {
         bail!("G-SQL2 blocked unregistered view: {tname}");
     };
+    let mut projection_aliases: BTreeSet<String> = BTreeSet::new();
     for item in &sel.projection {
-        if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = item {
-            validate_expr_columns(e, allowed_cols)?;
+        match item {
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+                bail!("G-SQL2 blocked SELECT * wildcard; enumerate whitelisted columns explicitly");
+            }
+            SelectItem::UnnamedExpr(e) => {
+                validate_expr_columns(e, allowed_cols, &projection_aliases)?;
+            }
+            SelectItem::ExprWithAlias { expr: e, alias } => {
+                let alias_low = alias.value.to_ascii_lowercase();
+                ensure!(
+                    !RESERVED_SECURITY_COLS.contains(&alias_low.as_str()),
+                    "G-SQL3 blocked aliasing reserved security column: {alias_low}"
+                );
+                validate_expr_columns(e, allowed_cols, &projection_aliases)?;
+                projection_aliases.insert(alias_low);
+            }
         }
     }
     if let Some(cond) = &sel.selection {
-        validate_expr_columns(cond, allowed_cols)?;
+        validate_expr_columns(cond, allowed_cols, &BTreeSet::new())?;
+    }
+    match &sel.group_by {
+        GroupByExpr::All(_) => bail!("G-SQL2 blocked GROUP BY ALL"),
+        GroupByExpr::Expressions(exprs, _) => {
+            for e in exprs {
+                validate_expr_columns(e, allowed_cols, &projection_aliases)?;
+            }
+        }
     }
     if let Some(having) = &sel.having {
-        validate_expr_columns(having, allowed_cols)?;
+        validate_expr_columns(having, allowed_cols, &projection_aliases)?;
+    }
+    if let Some(order_by) = &q.order_by {
+        match &order_by.kind {
+            OrderByKind::All(_) => bail!("G-SQL2 blocked ORDER BY ALL"),
+            OrderByKind::Expressions(exprs) => {
+                for oe in exprs {
+                    validate_expr_columns(&oe.expr, allowed_cols, &projection_aliases)?;
+                }
+            }
+        }
     }
     Ok(effective_limit)
 }
 
-fn validate_expr_columns(expr: &Expr, allowed_cols: &BTreeSet<&str>) -> Result<()> {
+fn validate_expr_columns(
+    expr: &Expr,
+    allowed_cols: &BTreeSet<&str>,
+    allowed_aliases: &BTreeSet<String>,
+) -> Result<()> {
     match expr {
         Expr::Identifier(id) => {
             let col = id.value.to_ascii_lowercase();
             ensure!(
-                col == "n2sf_grade_rank" || allowed_cols.contains(col.as_str()),
+                col == "n2sf_grade_rank"
+                    || allowed_cols.contains(col.as_str())
+                    || allowed_aliases.contains(&col),
                 "G-SQL2 blocked column: {col}"
             );
             Ok(())
@@ -241,12 +312,14 @@ fn validate_expr_columns(expr: &Expr, allowed_cols: &BTreeSet<&str>) -> Result<(
             Ok(())
         }
         Expr::BinaryOp { left, right, .. } => {
-            validate_expr_columns(left, allowed_cols)?;
-            validate_expr_columns(right, allowed_cols)
+            validate_expr_columns(left, allowed_cols, allowed_aliases)?;
+            validate_expr_columns(right, allowed_cols, allowed_aliases)
         }
         Expr::UnaryOp { expr: inner, .. }
         | Expr::Nested(inner)
-        | Expr::Cast { expr: inner, .. } => validate_expr_columns(inner, allowed_cols),
+        | Expr::Cast { expr: inner, .. } => {
+            validate_expr_columns(inner, allowed_cols, allowed_aliases)
+        }
         Expr::Function(f) => {
             let fname = f.name.to_string().to_ascii_uppercase();
             ensure!(
@@ -258,8 +331,12 @@ fn validate_expr_columns(expr: &Expr, allowed_cols: &BTreeSet<&str>) -> Result<(
             );
             if let FunctionArguments::List(arg_list) = &f.args {
                 for a in &arg_list.args {
-                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) = a {
-                        validate_expr_columns(inner, allowed_cols)?;
+                    match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) => {
+                            validate_expr_columns(inner, allowed_cols, allowed_aliases)?;
+                        }
+                        FunctionArg::Unnamed(FunctionArgExpr::Wildcard) if fname == "COUNT" => {}
+                        _ => bail!("G-SQL2 blocked unsupported function argument in {fname}"),
                     }
                 }
             }
@@ -272,16 +349,16 @@ fn validate_expr_columns(expr: &Expr, allowed_cols: &BTreeSet<&str>) -> Result<(
             high,
             ..
         } => {
-            validate_expr_columns(inner, allowed_cols)?;
-            validate_expr_columns(low, allowed_cols)?;
-            validate_expr_columns(high, allowed_cols)
+            validate_expr_columns(inner, allowed_cols, allowed_aliases)?;
+            validate_expr_columns(low, allowed_cols, allowed_aliases)?;
+            validate_expr_columns(high, allowed_cols, allowed_aliases)
         }
         Expr::InList {
             expr: inner, list, ..
         } => {
-            validate_expr_columns(inner, allowed_cols)?;
+            validate_expr_columns(inner, allowed_cols, allowed_aliases)?;
             for item in list {
-                validate_expr_columns(item, allowed_cols)?;
+                validate_expr_columns(item, allowed_cols, allowed_aliases)?;
             }
             Ok(())
         }
@@ -292,14 +369,14 @@ fn validate_expr_columns(expr: &Expr, allowed_cols: &BTreeSet<&str>) -> Result<(
             ..
         } => {
             if let Some(op) = operand {
-                validate_expr_columns(op, allowed_cols)?;
+                validate_expr_columns(op, allowed_cols, allowed_aliases)?;
             }
             for cw in conditions {
-                validate_expr_columns(&cw.condition, allowed_cols)?;
-                validate_expr_columns(&cw.result, allowed_cols)?;
+                validate_expr_columns(&cw.condition, allowed_cols, allowed_aliases)?;
+                validate_expr_columns(&cw.result, allowed_cols, allowed_aliases)?;
             }
             if let Some(el) = else_result {
-                validate_expr_columns(el, allowed_cols)?;
+                validate_expr_columns(el, allowed_cols, allowed_aliases)?;
             }
             Ok(())
         }
@@ -364,6 +441,34 @@ mod tests {
         assert!(wrapped.contains("vault_id = 'vault-fin-04'"));
         assert!(wrapped.contains("n2sf_grade_rank <= 1"));
         assert!(wrapped.ends_with("LIMIT 200"));
+
+        // D-01: Reserved alias spoofing, SELECT *, IN (SELECT ...), JOIN ON 1=1, and bad GROUP BY/ORDER BY must be blocked
+        for spoof in [
+            "SELECT 'vault-fin-04' AS vault_id, 0 AS n2sf_grade_rank, doc_id FROM docs_entities WHERE vault_id = 'vault-other'",
+            "SELECT * FROM docs_entities",
+            "SELECT doc_id FROM docs_entities JOIN gate_ledger ON 1=1",
+            "SELECT doc_id FROM docs_entities WHERE doc_id IN (SELECT doc_id FROM gate_ledger)",
+            "SELECT doc_id FROM docs_entities GROUP BY secret_col",
+            "SELECT doc_id FROM docs_entities ORDER BY secret_col",
+            "SELECT CAST(secret_col AS INT) FROM docs_entities",
+        ] {
+            assert!(
+                verify_and_wrap_safe_sql(DeviceRole::PersonalPhone, "vault-fin-04", N2sfGrade::Sensitive, spoof, &wl).is_err(),
+                "D-01 bypass escaped SQL guard: {spoof}"
+            );
+        }
+        // D-01: GROUP BY aggregation works cleanly with inner-scan WHERE pushdown
+        let agg = verify_and_wrap_safe_sql(
+            DeviceRole::PersonalPhone,
+            "vault-fin-04",
+            N2sfGrade::Sensitive,
+            "SELECT vendor_id, SUM(amt_krw) AS tot FROM docs_entities GROUP BY vendor_id ORDER BY tot DESC",
+            &wl,
+        )
+        .unwrap();
+        assert!(agg.contains("WHERE (vault_id = 'vault-fin-04' AND n2sf_grade_rank <= 1)"));
+        assert!(agg.contains("GROUP BY vendor_id"));
+        assert!(agg.ends_with("LIMIT 200"));
 
         let g = WriterGuard::citizen_guard(Vec::new(), Vec::new());
         assert!(sanitize_sql_output_cells(&[vec!["[RRN_REDACTED]".into(), "150000".into()]], &g).is_ok());

@@ -43,31 +43,11 @@ pub fn normalize_trade_identifier(raw: &str) -> String {
         .collect()
 }
 
-pub fn trade_reference_field_of(doc_type: &str) -> Option<&'static str> {
-    match doc_type.trim().to_ascii_uppercase().as_str() {
-        "PO" => Some("reference_po"),
-        "LC" => Some("reference_lc"),
-        "CI" => Some("reference_invoice"),
-        "PL" => Some("reference_packing"),
-        "BL" => Some("reference_bl"),
-        "BC" | "BK" => Some("reference_booking"),
-        "CO" => Some("reference_origin"),
-        "CNM" => Some("reference_non_manipulation"),
-        "CA" | "COA" => Some("reference_analysis"),
-        "PHYTO" | "PC" => Some("reference_phyto"),
-        "INS" | "IP" => Some("reference_policy"),
-        _ => None,
-    }
-}
+pub use lv_domain::trade_logistics::trade_reference_field_of;
 
-/// Blocks alias self-loops (`INS<->IP`, `CA<->COA`, `PHYTO<->PC`, `BC<->BK`) where `mine == foreign`.
+/// Blocks alias self-loops (`INS<->IP`, `CA<->COA`, `PHYTO<->PC`, `BC<->BK`) via unified `lv-domain` contract (D-13).
 pub fn trading_relay_pair_v2(from_type: &str, to_type: &str) -> Option<(&'static str, &'static str)> {
-    if from_type.eq_ignore_ascii_case(to_type) {
-        return None;
-    }
-    let mine = trade_reference_field_of(to_type)?;
-    let foreign = trade_reference_field_of(from_type)?;
-    (mine != foreign).then_some((mine, foreign))
+    lv_domain::trade_logistics::trading_relay_pair_fields(from_type, to_type)
 }
 
 pub fn repair_and_verify_hsk10(raw: &str) -> Option<String> {

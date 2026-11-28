@@ -156,7 +156,11 @@ function render() {
   if (!body) return;
   clear(body);
   $('nn-meta').textContent = data ? `형태 ${data.form_id ?? '—'} · rev ${data.rev ?? 0}` : '';
-  document.querySelectorAll('#nn-tabs .nn-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === activeTab));
+  document.querySelectorAll('#nn-tabs .nn-tab').forEach((b) => {
+    const isSel = b.dataset.tab === activeTab;
+    b.classList.toggle('active', isSel);
+    b.setAttribute('aria-selected', String(isSel));
+  });
   if (activeTab === 'holds') {
     renderHolds(body);
     return;

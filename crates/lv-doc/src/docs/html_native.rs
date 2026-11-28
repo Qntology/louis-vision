@@ -6,7 +6,10 @@ use anyhow::Result;
 use scraper::{Html, Node, Selector};
 use serde::{Deserialize, Serialize};
 
-use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange, VisionFallbackNeed};
+use super::ir::{
+    CellIr, CellTrackChange, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange,
+    VisionFallbackNeed,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -267,79 +270,90 @@ pub fn parse_html_or_mhtml(bytes: &[u8], format_label: &str) -> Result<DocIr> {
         }
     }
 
-    let sel_heading = Selector::parse("h1, h2, h3, p").expect("valid selector");
-    for el in doc.select(&sel_heading) {
-        let name = el.value().name();
-        let mut txt = String::new();
-        let mut changes = Vec::new();
-        collect_inline_text(*el, &mut txt, &mut changes, false);
-        let txt = txt.trim().to_string();
-        if txt.is_empty() && changes.is_empty() {
-            continue;
-        }
-        if !txt.is_empty() {
-            plain_lines.push(txt.clone());
-        }
-        if name.starts_with('h') {
-            let lvl = name[1..].parse::<u8>().unwrap_or(1);
-            blocks.push(DocBlock::Heading {
-                level: lvl,
-                breadcrumb: txt.clone(),
-                text: txt,
-            });
-        } else {
-            blocks.push(DocBlock::Paragraph {
-                text: txt,
-                track_changes: changes,
-            });
-        }
-    }
-
-    let sel_tbl = Selector::parse("table").expect("valid selector");
+    // D-06 & D-08: Emit headings, paragraphs, and tables strictly in document order (so unit headers
+    // precede their corresponding table) and preserve per-cell `(row, col)` strike/deletion traces.
+    let sel_flow = Selector::parse("h1, h2, h3, p, table").expect("valid selector");
     let sel_tr = Selector::parse("tr").expect("valid selector");
     let sel_td = Selector::parse("th, td").expect("valid selector");
-    for tbl in doc.select(&sel_tbl) {
-        let mut cells = Vec::new();
-        let mut rows = 0usize;
-        let mut cols = 0usize;
-        let mut table_struck = Vec::new();
-        for (r_idx, tr) in tbl.select(&sel_tr).enumerate() {
-            let mut c_idx = 0usize;
-            for td in tr.select(&sel_td) {
-                let cspan = td.value().attr("colspan").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
-                let rspan = td.value().attr("rowspan").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
-                let mut cell_txt = String::new();
-                collect_inline_text(*td, &mut cell_txt, &mut table_struck, false);
-                cells.push(CellIr {
-                    row: r_idx,
-                    col: c_idx,
-                    row_span: rspan,
-                    col_span: cspan,
-                    text: cell_txt.trim().to_string(),
-                });
-                c_idx += cspan;
+    for el in doc.select(&sel_flow) {
+        let name = el.value().name();
+        if name != "table"
+            && el.ancestors().any(|anc| {
+                matches!(anc.value(), Node::Element(ae) if ae.name().eq_ignore_ascii_case("table"))
+            })
+        {
+            continue;
+        }
+        if name == "table" {
+            let mut cells = Vec::new();
+            let mut rows = 0usize;
+            let mut cols = 0usize;
+            let mut cell_changes: Vec<CellTrackChange> = Vec::new();
+            for (r_idx, tr) in el.select(&sel_tr).enumerate() {
+                let mut c_idx = 0usize;
+                for td in tr.select(&sel_td) {
+                    let cspan = td.value().attr("colspan").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+                    let rspan = td.value().attr("rowspan").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+                    let mut cell_txt = String::new();
+                    let mut local_struck = Vec::new();
+                    collect_inline_text(*td, &mut cell_txt, &mut local_struck, false);
+                    for ch in local_struck {
+                        cell_changes.push(CellTrackChange {
+                            row: r_idx,
+                            col: c_idx,
+                            change: ch,
+                        });
+                    }
+                    cells.push(CellIr {
+                        row: r_idx,
+                        col: c_idx,
+                        row_span: rspan,
+                        col_span: cspan,
+                        text: cell_txt.trim().to_string(),
+                    });
+                    c_idx += cspan;
+                }
+                cols = cols.max(c_idx);
+                rows = rows.max(r_idx + 1);
             }
-            cols = cols.max(c_idx);
-            rows = rows.max(r_idx + 1);
-        }
-        if !table_struck.is_empty() {
-            blocks.push(DocBlock::Paragraph {
-                text: String::new(),
-                track_changes: table_struck,
-            });
-        }
-        if rows > 0 && cols > 0 {
-            let t = TableIr {
-                rows,
-                cols,
-                col_widths: vec![1; cols],
-                cells,
-                unit_multiplier: 1,
-                carried_scale_from_prev: false,
-                headers: Vec::new(),
-            };
-            plain_lines.extend(t.to_plain_rows().into_iter().filter(|l| !l.trim().is_empty()));
-            blocks.push(DocBlock::Table(t));
+            if rows > 0 && cols > 0 {
+                let t = TableIr {
+                    rows,
+                    cols,
+                    col_widths: vec![1; cols],
+                    cells,
+                    unit_multiplier: 1,
+                    carried_scale_from_prev: false,
+                    headers: Vec::new(),
+                    cell_changes,
+                };
+                plain_lines.extend(t.to_plain_rows().into_iter().filter(|l| !l.trim().is_empty()));
+                blocks.push(DocBlock::Table(t));
+            }
+        } else {
+            let mut txt = String::new();
+            let mut changes = Vec::new();
+            collect_inline_text(*el, &mut txt, &mut changes, false);
+            let txt = txt.trim().to_string();
+            if txt.is_empty() && changes.is_empty() {
+                continue;
+            }
+            if !txt.is_empty() {
+                plain_lines.push(txt.clone());
+            }
+            if name.starts_with('h') {
+                let lvl = name[1..].parse::<u8>().unwrap_or(1);
+                blocks.push(DocBlock::Heading {
+                    level: lvl,
+                    breadcrumb: txt.clone(),
+                    text: txt,
+                });
+            } else {
+                blocks.push(DocBlock::Paragraph {
+                    text: txt,
+                    track_changes: changes,
+                });
+            }
         }
     }
 

@@ -355,7 +355,12 @@ export function renderFrame({ width, height, quality, view }) {
   let encode_ms = 0;
   if (ctx) {
     if (view === 'top') drawTopView(ctx, w, h, W);
-    else if (view === 'fork') drawForkView(ctx, w, h, W, hits);
+    else if (view.startsWith('iso')) {
+      drawTopView(ctx, w, h, W);
+      ctx.fillStyle = 'rgba(255,255,255,0.72)';
+      ctx.font = '11px monospace';
+      ctx.fillText('ISO 3D (mock)', 10, 18);
+    } else if (view === 'fork') drawForkView(ctx, w, h, W, hits);
     else if (view === 'eye_depth') {
       // 모의 SGBM: 머리 카메라 그림에 깊이 색을 입히고 가운데 물건 자리를 가깝게(따뜻하게) 칠한다.
       drawAgentView(ctx, w, h, W, hits);

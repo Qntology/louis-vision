@@ -1,6 +1,6 @@
 //! Zero-external-dependency Open Sound Control (OSC 1.0) over local loopback / RFC1918 UDP.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
 use anyhow::{bail, ensure, Result};
 
@@ -98,11 +98,22 @@ pub struct OscUdpBridge {
 
 impl OscUdpBridge {
     /// Binds a non-blocking UDP socket targeting a validated loopback or RFC1918 LAN endpoint.
+    /// Loopback destinations bind strictly to loopback; validated RFC1918/ULA LAN destinations
+    /// bind an ephemeral OS-routed socket so packets can traverse the private LAN interface.
     pub fn bind(target: SocketAddr) -> Result<Self> {
         let valid_target = validate_local_socket(target, "OSC UDP target")?;
-        let bind_addr = if valid_target.is_ipv4() { "127.0.0.1:0" } else { "[::1]:0" };
+        let bind_addr = match valid_target.ip() {
+            IpAddr::V4(ip) if ip.is_loopback() => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            IpAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            IpAddr::V6(ip) if ip.is_loopback() => SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+            IpAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+        };
         let socket = UdpSocket::bind(bind_addr)?;
         Ok(Self { socket, target: valid_target })
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.socket.local_addr()?)
     }
 
     pub fn target(&self) -> SocketAddr {
@@ -157,5 +168,10 @@ mod tests {
         let (addr2, args2) = decode_osc_message(&buf[..n2]).unwrap();
         assert_eq!(addr2, "/louis/interlock/halt");
         assert_eq!(args2, vec![OscArg::Str("hazard_zone".into())]);
+        assert!(bridge.local_addr().unwrap().ip().is_loopback());
+
+        // V-03: RFC1918 LAN target must bind an OS-routable unspecified socket (not 127.0.0.1)
+        let lan_bridge = OscUdpBridge::bind("192.168.50.20:9000".parse().unwrap()).unwrap();
+        assert!(lan_bridge.local_addr().unwrap().ip().is_unspecified());
     }
 }

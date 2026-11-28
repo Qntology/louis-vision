@@ -375,6 +375,8 @@ pub struct E2eIngestStats {
     pub wav_alignment_failures: usize,
     pub stripped_very_hidden_sheets: usize,
     pub stripped_covert_artifacts: usize,
+    /// E-02: number of structured fields that failed visible-text extraction and fell back to empty/default.
+    pub ground_truth_fallback_fills: usize,
 }
 
 fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -614,10 +616,24 @@ fn extract_e2e_xml_visible_text(raw: &str) -> (String, usize) {
         raw.to_string()
     };
     let had_attachment = usize::from(cleaned.len() < raw.len());
+    for (open_tag, label) in [
+        ("<PrimaryId>", "\nPRIMARY_ID="),
+        ("<ChecksumCode>", "\nCHECKSUM_CODE="),
+        ("<Counterparty>", "\nCOUNTERPARTY="),
+        ("<SubjectItem>", "\nSUBJECT_ITEM="),
+        ("<GoverningStatute>", "\nGOVERNING_STATUTE="),
+        ("<RevisionNote>", "\nREVISION_NOTE="),
+        ("<Status>", "\nSTATUS="),
+    ] {
+        if cleaned.contains(open_tag) {
+            cleaned = cleaned.replace(open_tag, label);
+        }
+    }
     for close_tag in [
         "</Title>", "</Body>", "</GoverningStatute>", "</RevisionNote>", "</Reconciliation>",
         "</AuditTrail>", "</Field>", "</Clause>", "</Item>", "</DocId>", "</PrimaryId>",
-        "</ChecksumCode>", "</Links>", "</AmountKrw>", "</DocDate>", "</Status>",
+        "</ChecksumCode>", "</Counterparty>", "</SubjectItem>", "</Links>", "</AmountKrw>",
+        "</DocDate>", "</Status>",
     ] {
         if cleaned.contains(close_tag) {
             cleaned = cleaned.replace(close_tag, "\n");
@@ -651,10 +667,10 @@ fn extract_e2e_xml_visible_text(raw: &str) -> (String, usize) {
     (lines.join("\n"), had_attachment)
 }
 
-fn parse_amount_from_text(text: &str, fallback_amt: i64) -> i64 {
+fn parse_amount_from_text_opt(text: &str) -> Option<i64> {
     let (_, exact_sum) = parse_line_item_summary(text);
     if exact_sum > 0 {
-        return exact_sum;
+        return Some(exact_sum);
     }
     let mut best = 0i64;
     for tok in text.split(|c: char| !c.is_ascii_digit()) {
@@ -666,19 +682,77 @@ fn parse_amount_from_text(text: &str, fallback_amt: i64) -> i64 {
             }
         }
     }
-    if best > 0 { best } else { fallback_amt }
+    (best > 0).then_some(best)
 }
 
-fn parse_status_from_text(text: &str, fallback: &str) -> String {
-    if text.contains("payout_hold_code=REVIEW") || text.contains("settle_state=REVIEW") || text.contains("REVIEW") {
-        "REVIEW".into()
-    } else if text.contains("payout_hold_code=HOLD") || text.contains("settle_state=HOLD") || text.contains("| HOLD") {
-        "HOLD".into()
-    } else if text.contains("APPROVED") {
-        "APPROVED".into()
-    } else {
-        fallback.into()
+fn parse_status_from_text_opt(text: &str) -> Option<String> {
+    if let Some(st) = parse_prefixed_segment(text, "STATUS=") {
+        let up = st.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        if matches!(up.as_str(), "APPROVED" | "HOLD" | "REVIEW") {
+            return Some(up);
+        }
     }
+    if text.contains("payout_hold_code=REVIEW") || text.contains("settle_state=REVIEW") || text.contains("REVIEW") {
+        Some("REVIEW".into())
+    } else if text.contains("payout_hold_code=HOLD") || text.contains("settle_state=HOLD") || text.contains("| HOLD") {
+        Some("HOLD".into())
+    } else if text.contains("APPROVED") {
+        Some("APPROVED".into())
+    } else {
+        None
+    }
+}
+
+fn parse_between_markers(text: &str, start_marker: &str, end_marker: &str) -> Option<String> {
+    let idx = text.find(start_marker)?;
+    let after = &text[idx + start_marker.len()..];
+    let end = after.find(end_marker)?;
+    let val = after[..end].trim();
+    (!val.is_empty()).then(|| val.to_string())
+}
+
+fn parse_labeled_row_cells(text: &str, row_key: &str) -> Option<(String, String)> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let rest = if let Some(r) = trimmed.strip_prefix(&format!("{row_key}\t")) {
+            r
+        } else if let Some(r) = trimmed.strip_prefix(&format!("{row_key} | ")) {
+            r
+        } else {
+            continue;
+        };
+        let parts: Vec<&str> = if rest.contains('\t') {
+            rest.split('\t').map(str::trim).collect()
+        } else {
+            rest.split(" | ").map(str::trim).collect()
+        };
+        if parts.len() >= 2 && !parts[0].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+    None
+}
+
+fn parse_primary_id_from_text(text: &str) -> Option<String> {
+    parse_prefixed_segment(text, "PRIMARY_ID=")
+        .or_else(|| parse_between_markers(text, " ID ", " CHK "))
+        .or_else(|| parse_labeled_row_cells(text, "DOC_ID").map(|(_, pid)| pid).filter(|s| !s.is_empty()))
+}
+
+fn parse_checksum_from_text(text: &str) -> Option<String> {
+    parse_prefixed_segment(text, "CHECKSUM_CODE=")
+        .or_else(|| parse_between_markers(text, " CHK ", " FORM "))
+        .or_else(|| parse_labeled_row_cells(text, "CHECKSUM").map(|(chk, _)| chk).filter(|s| !s.is_empty()))
+}
+
+fn parse_party_from_text(text: &str) -> Option<(String, String)> {
+    if let (Some(cp), Some(subj)) = (
+        parse_prefixed_segment(text, "COUNTERPARTY="),
+        parse_prefixed_segment(text, "SUBJECT_ITEM="),
+    ) {
+        return Some((cp, subj));
+    }
+    parse_labeled_row_cells(text, "PARTY")
 }
 
 fn strip_xlsx_very_hidden_blocks(blocks: &[DocBlock], hidden_sheets: &[String]) -> String {
@@ -870,7 +944,7 @@ pub fn index_world_e2e(
         };
 
         let mut media_count = ir.media.len();
-        let mut doc_stripped_covert = 0usize;
+        let mut doc_stripped_covert = ir.hidden_sheets.len() + ir.hidden_run_count;
         if doc.file_format == "xml" {
             let (stripped_xml_text, xml_media) = extract_e2e_xml_visible_text(&ir.plain_text);
             ir.plain_text = stripped_xml_text;
@@ -879,7 +953,7 @@ pub fn index_world_e2e(
             if let Ok(hidden) = detect_xlsx_very_hidden_sheets(bytes) {
                 if !hidden.is_empty() {
                     stats.stripped_very_hidden_sheets += hidden.len();
-                    doc_stripped_covert += hidden.len();
+                    doc_stripped_covert = doc_stripped_covert.max(hidden.len());
                     ir.plain_text = strip_xlsx_very_hidden_blocks(&ir.blocks, &hidden);
                 }
             }
@@ -905,24 +979,68 @@ pub fn index_world_e2e(
             }
         }
 
-        // E2E extracts identifiers, link keys, clauses, status, and amount from sanitized parsed office text ONLY.
+        // E-02: E2E extracts identifiers, link keys, clauses, status, and amount from sanitized visible text ONLY;
+        // any miss is explicitly counted in `stats.ground_truth_fallback_fills` rather than silently copying `doc.*`.
         let extracted_links = extract_link_keys_from_text(&visible_text, &doc.doc_id);
         let (parsed_item_cnt, parsed_item_sum) = parse_line_item_summary(&visible_text);
         let extracted_amt = if parsed_item_sum > 0 {
             parsed_item_sum
+        } else if let Some(amt) = parse_amount_from_text_opt(&visible_text) {
+            amt
         } else {
-            parse_amount_from_text(&visible_text, doc.amount_krw)
+            stats.ground_truth_fallback_fills += 1;
+            0
         };
-        let extracted_status = parse_status_from_text(&visible_text, &doc.status);
-        let extracted_statute = parse_prefixed_segment(&visible_text, "GOVERNING_STATUTE=")
-            .unwrap_or_else(|| doc.governing_statute.clone());
-        let extracted_rev_note = parse_prefixed_segment(&visible_text, "REVISION_NOTE=")
-            .unwrap_or_else(|| doc.revision_note.clone());
+        let extracted_status = if let Some(st) = parse_status_from_text_opt(&visible_text) {
+            st
+        } else {
+            stats.ground_truth_fallback_fills += 1;
+            String::new()
+        };
+        let extracted_statute = if let Some(st) = parse_prefixed_segment(&visible_text, "GOVERNING_STATUTE=") {
+            st
+        } else {
+            if !doc.governing_statute.is_empty() {
+                stats.ground_truth_fallback_fills += 1;
+            }
+            String::new()
+        };
+        let extracted_rev_note = if let Some(rn) = parse_prefixed_segment(&visible_text, "REVISION_NOTE=") {
+            rn
+        } else {
+            if !doc.revision_note.is_empty() {
+                stats.ground_truth_fallback_fills += 1;
+            }
+            String::new()
+        };
+        let extracted_primary_id = if let Some(pid) = parse_primary_id_from_text(&visible_text) {
+            pid
+        } else {
+            stats.ground_truth_fallback_fills += 1;
+            String::new()
+        };
+        let extracted_checksum = if let Some(chk) = parse_checksum_from_text(&visible_text) {
+            chk
+        } else {
+            // Covert XLSX fixture intentionally omits CHECKSUM row on the visible sheet.
+            if doc_stripped_covert == 0 {
+                stats.ground_truth_fallback_fills += 1;
+            }
+            String::new()
+        };
+        let (extracted_counterparty, extracted_subject_item) = if let Some(pair) = parse_party_from_text(&visible_text) {
+            pair
+        } else {
+            if doc_stripped_covert == 0 {
+                stats.ground_truth_fallback_fills += 1;
+            }
+            (String::new(), String::new())
+        };
         let extracted_clauses = parse_clause_excerpts(&visible_text);
         let extracted_title = visible_text
             .lines()
             .find(|l| !l.trim().is_empty())
-            .unwrap_or(&doc.title)
+            .unwrap_or("")
             .to_string();
 
         let dense_vec = embedder.embed_document(Some(&extracted_title), &visible_text)?;
@@ -942,21 +1060,21 @@ pub fn index_world_e2e(
             superseded_by: doc.superseded_by.clone(),
             title: extracted_title,
             text: visible_text,
-            primary_id: doc.primary_id.clone(),
-            checksum_code: doc.checksum_code.clone(),
+            primary_id: extracted_primary_id,
+            checksum_code: extracted_checksum,
             link_keys: extracted_links,
-            counterparty: doc.counterparty.clone(),
-            subject_item: doc.subject_item.clone(),
+            counterparty: extracted_counterparty,
+            subject_item: extracted_subject_item,
             governing_statute: extracted_statute,
             clause_excerpts: extracted_clauses,
             revision_note: extracted_rev_note,
-            line_item_count: if parsed_item_cnt > 0 { parsed_item_cnt } else { doc.line_item_count },
+            line_item_count: parsed_item_cnt,
             line_item_sum_krw: if parsed_item_sum > 0 { parsed_item_sum } else { extracted_amt },
             media_count,
             amount_krw: extracted_amt,
             doc_date: doc.doc_date.clone(),
             status: extracted_status,
-            is_covert_role: doc.role == WorldDocRole::CovertHostile,
+            is_covert_role: doc_stripped_covert > 0,
             audio_spans_ms: verified_audio_spans,
             dense_vec,
             sanitized_covert_count: doc_stripped_covert,

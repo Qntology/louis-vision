@@ -3,7 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { deriveBlockiesHaringSpec } from '../js/blockies-haring.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function synthEip55Addresses(count) {
   const out = [];
@@ -41,4 +46,12 @@ test('Blockies-Haring derives mirrored 8x8 grids and clamped #000000 specs acros
       }
     }
   }
+});
+
+test('vision frontendDist copy of blockies-haring.js is byte-identical to shared-ui SSOT (V-01)', () => {
+  const ssotPath = resolve(__dirname, '../js/blockies-haring.js');
+  const visionCopyPath = resolve(__dirname, '../../vision/ui/js/blockies-haring.js');
+  const ssotBytes = readFileSync(ssotPath);
+  const visionBytes = readFileSync(visionCopyPath);
+  assert.deepEqual(visionBytes, ssotBytes, 'apps/vision/ui/js/blockies-haring.js must match shared-ui SSOT');
 });

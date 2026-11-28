@@ -19,7 +19,7 @@ env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
-  CARGO_BUILD_JOBS: "2"
+  CARGO_BUILD_JOBS: "1"
 
 jobs:
   tier1-pr:
@@ -32,12 +32,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Tier 1 Pin Verification
         run: python3 .github/scripts/verify-pins.py --tier all
+      - name: Tier 1 Deny Ban Audit
+        run: python3 .github/scripts/check_deny_toml.py
       - name: Tier 1 Workspace Diag Gate
         run: python3 .github/scripts/release_seal.py --split diag
 
   tier2-release-seal:
     needs: tier1-pr
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

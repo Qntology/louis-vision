@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 pub const CACHE_DIR: &str = ".pd-cache";
 /// 캐시 파일 형식·양자화 코드의 판. 양자화 방식이 바뀌면 올린다 (옛 캐시는 지문이 달라 버려진다)
 pub const FORMAT: u32 = 1;
+/// 컴포넌트당 공존 가능한 최대 레시피 슬롯 수 (`q8_0` + `tiered` 동시 공존, 초과 시 가장 오래된 슬롯부터 정리).
+pub const MAX_RECIPE_SLOTS: usize = 2;
 
 /// 캐시가 어떤 원본·레시피에서 나왔는지
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,14 +153,29 @@ impl QCache {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
         }
-        // 다른 레시피로 만든 같은 component의 캐시는 더 쓰이지 않는다
+        // 컴포넌트당 최대 `MAX_RECIPE_SLOTS`(=2)개 레시피(예: `q8_0` + `tiered`)를 공존시키고,
+        // 슬롯을 초과한 가장 오래된 캐시만 정리한다.
         let keep = path.file_name().map(|n| n.to_os_string());
+        let prefix = format!("{}-", fp.component);
         if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut others: Vec<(std::time::SystemTime, String, PathBuf)> = Vec::new();
             for e in entries.flatten() {
                 let name = e.file_name();
-                let s = name.to_string_lossy();
-                if s.starts_with(&format!("{}-", fp.component)) && s.ends_with(".gguf") && Some(name.clone()) != keep {
-                    let _ = std::fs::remove_file(e.path());
+                let s = name.to_string_lossy().into_owned();
+                if s.starts_with(&prefix) && s.ends_with(".gguf") && Some(name) != keep {
+                    let mtime = e
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    others.push((mtime, s, e.path()));
+                }
+            }
+            let keep_other = MAX_RECIPE_SLOTS.saturating_sub(1);
+            if others.len() > keep_other {
+                // Keep newest `keep_other` entries; remove the oldest excess entries deterministically.
+                others.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+                for (_, _, stale_path) in others.into_iter().skip(keep_other) {
+                    let _ = std::fs::remove_file(stale_path);
                 }
             }
         }
@@ -223,18 +240,37 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_new_recipe_removes_older_caches_of_the_same_component_only() {
+    fn saving_a_new_recipe_keeps_two_slots_and_evicts_oldest_excess_of_same_component_only() {
         let dir = temp_dir("qcache-clean");
         let weights = source(&dir, 1.0);
-        let a = Fingerprint::of(&weights, "text", "k1").unwrap();
-        let b = Fingerprint::of(&weights, "text", "k2").unwrap();
-        let v = Fingerprint::of(&weights, "vision", "k1").unwrap();
+        let a = Fingerprint::of(&weights, "text", "eg2_text_q8_0_v1").unwrap();
+        let b = Fingerprint::of(&weights, "text", "eg2_text_tiered_v1").unwrap();
+        let c = Fingerprint::of(&weights, "text", "eg2_text_custom-ffff_v1").unwrap();
+        let v = Fingerprint::of(&weights, "vision", "eg2_vision_q8_0_v1").unwrap();
         let t = q(0.3);
         QCache::save(&cache_path(&weights, &a), &a, &[("x".into(), &t)]).unwrap();
         QCache::save(&cache_path(&weights, &v), &v, &[("x".into(), &t)]).unwrap();
+        // 2-slot coexistence: q8_0 and tiered coexist under the same component
+        std::thread::sleep(std::time::Duration::from_millis(20));
         QCache::save(&cache_path(&weights, &b), &b, &[("x".into(), &t)]).unwrap();
-        assert!(!cache_path(&weights, &a).exists(), "같은 component의 옛 레시피는 지운다");
-        assert!(cache_path(&weights, &b).exists() && cache_path(&weights, &v).exists());
+        assert!(cache_path(&weights, &a).exists(), "q8_0 slot must coexist with tiered slot");
+        assert!(cache_path(&weights, &b).exists(), "tiered slot must exist");
+        assert!(cache_path(&weights, &v).exists(), "other component must remain untouched");
+
+        // 3rd recipe exceeds MAX_RECIPE_SLOTS=2 -> oldest text cache is evicted
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        QCache::save(&cache_path(&weights, &c), &c, &[("x".into(), &t)]).unwrap();
+        let text_present = [
+            cache_path(&weights, &a).exists(),
+            cache_path(&weights, &b).exists(),
+            cache_path(&weights, &c).exists(),
+        ]
+        .into_iter()
+        .filter(|&ok| ok)
+        .count();
+        assert_eq!(text_present, MAX_RECIPE_SLOTS);
+        assert!(cache_path(&weights, &c).exists());
+        assert!(cache_path(&weights, &v).exists());
     }
 }
 

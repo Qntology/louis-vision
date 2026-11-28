@@ -14,6 +14,7 @@ deny = [
 
     # Vector DB / Desktop UI / P2P media shells (belong in apps/* only)
     { name = "lancedb", reason = "DB belongs strictly in Tier 2 apps/*" },
+    { name = "sqlx", reason = "DB belongs strictly in Tier 2 apps/*" },
     { name = "tauri", reason = "UI shells belong strictly in Tier 2 apps/*" },
     { name = "wry", reason = "UI shells belong strictly in Tier 2 apps/*" },
     { name = "tao", reason = "UI shells belong strictly in Tier 2 apps/*" },

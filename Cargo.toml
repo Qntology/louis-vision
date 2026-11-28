@@ -40,13 +40,13 @@ lv-domain  = { path = "crates/lv-domain" }
 lv-agent   = { path = "crates/lv-agent" }
 
 # Tier 0 (Qntology/premium-discount) pure eval / stats / kernels pinned to <PD_LIB_PIN_REV>
-premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-nlp         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", default-features = false }
-premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-verdict     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-nlp         = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5", default-features = false }
+premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-verdict     = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
 
 # Shared ecosystem crate versions aligned with existing lockfiles
 anyhow      = "1"

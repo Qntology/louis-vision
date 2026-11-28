@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="css/cctv.css" />
   <link rel="stylesheet" href="css/timeline.css" />
   <link rel="stylesheet" href="css/dock.css" />
+  <link rel="stylesheet" href="css/spatial-deck.css" />
   <script type="module" src="js/main.js"></script>
 </head>
 <body data-surface="vision_sim_sandbox" data-vision-mode="sim" data-theme="default">
@@ -39,6 +40,7 @@
           <button type="button" class="ov-pill" id="mode-btn-stage" role="tab" data-mode="stage" aria-selected="false">XR Stage Live</button>
         </div>
         <button type="button" class="ov-pill" id="world-pill" aria-expanded="false" aria-controls="world-popover">🌍 월드: 시드 – · – ▾</button>
+        <button type="button" class="ov-pill" id="deck-toggle-btn" aria-expanded="false" aria-controls="spatial-deck">🎞 공간 데크</button>
         <span id="frame-budget-pill" class="ov-pill" hidden>0.0 / 16.6 ms · Pinned</span>
       </div>
       <div class="ov-bar spawn-bar" id="sim-toolbar" role="group" aria-label="작업자 소환 · 협업 트랙">
@@ -172,6 +174,7 @@
         <label for="view-select">🎥 시점:</label>
         <select id="view-select" title="탑뷰: 지도 전체(저사양 기본값). 3인칭: 로봇 뒤 추적 카메라에 관절 동역학으로 움직이는 몸과 관절 토크·ZMP를 겹쳐 그립니다. 포커스: 행위가 쓰는 부위의 근접 화면">
           <option value="top" selected>🗺 탑뷰*</option>
+          <option value="iso">📐 아이소메트릭 (3D)</option>
           <option value="chase">🕺 3인칭 (관절 물리)</option>
           <option value="agent">👁 1인칭 (에이전트)</option>
           <option value="fork">🍴 포크 카메라 (지게차)</option>
@@ -266,9 +269,54 @@
       <canvas id="stage-haring-canvas" width="320" height="210" aria-label="해링 무대 3D 리그 정사영"></canvas>
       <div class="pv-kv" style="margin-top:6px;">
         <span class="k">Wallet Seed</span><span class="v" id="haring-seed-label">0xAbCD...AbCd</span>
-        <span class="k">Outline · Purity</span><span class="v lv-ok" id="haring-audit-badge">#000000 · &gt;=99.5% · 6 ticks</span>
+        <span class="k">Outline · Status</span><span class="v" id="haring-audit-badge">preview · #000000 · 6 ticks (MCP 감사 대기)</span>
       </div>
     </aside>
+
+    <!-- v1.8 2축 공간 데크 (State A 기본 접힘, State B 확장 + PiP 미니맵, State C 마스터 시어터) -->
+    <section class="spatial-deck" id="spatial-deck" aria-label="2축 공간 데크" hidden>
+      <button type="button" class="deck-drag-handle" id="deck-drag-handle" aria-label="공간 데크 접기/펼치기">═══</button>
+      <header class="deck-head">
+        <span class="deck-title">🎞 공간 데크 (2-Axis)</span>
+        <div class="deck-filter-bar" id="deck-filter-bar" role="group" aria-label="레이어 필터"></div>
+        <div class="deck-head-actions">
+          <select id="deck-slice-unit" aria-label="슬라이스 단위 시간">
+            <option value="5">5s 슬라이스</option>
+            <option value="10" selected>10s 슬라이스</option>
+            <option value="15">15s 슬라이스</option>
+            <option value="30">30s 슬라이스</option>
+          </select>
+          <button type="button" class="vt-btn" id="deck-split-btn" title="현재 슬라이스 분할 (S)">✂ 분할 (S)</button>
+          <button type="button" class="vt-btn" id="deck-undo-btn" title="실행 취소 (Ctrl+Z)" disabled>↺ 되돌리기</button>
+          <button type="button" class="vt-btn" id="deck-cam-lock-btn" title="무선 카메라 OLED 터치 잠금">🔒 캠 잠금</button>
+          <span class="deck-budget-pill" id="deck-budget-pill">78 MB · 2.3 ms</span>
+          <button type="button" class="ov-close" data-close="spatial-deck" aria-label="공간 데크 닫기">✕</button>
+        </div>
+      </header>
+      <div class="deck-body">
+        <div class="slice-v-scroll" id="slice-v-scroll" aria-label="수직 타임라인 슬라이스"></div>
+        <div class="slide-h-track" id="slide-h-track" aria-label="수평 슬라이드 카드"></div>
+      </div>
+      <footer class="deck-foot">
+        <span class="deck-time-readout" id="deck-time-readout">0.0s / 20s</span>
+        <input type="range" class="master-scrubber" id="master-scrubber" min="0" max="20" step="0.5" value="0" aria-label="마스터 타임라인 스크러버" />
+        <button type="button" class="btn btn-sm" id="master-theater-btn">▶ 풀 영상 / 전체 주행 보기</button>
+      </footer>
+    </section>
+
+    <!-- State C: 마스터 시어터 전체 재생 바 -->
+    <section class="master-theater-bar" id="master-theater-bar" aria-label="마스터 시어터 재생" hidden>
+      <button type="button" class="btn btn-sm" id="theater-play-toggle">⏸ 일시정지</button>
+      <input type="range" class="master-scrubber" id="theater-scrubber" min="0" max="20" step="0.5" value="0" aria-label="시어터 타임라인" />
+      <span class="deck-time-readout" id="theater-time">0.0s / 20s · RGB</span>
+      <select id="theater-export-mode" aria-label="합성 출력 모드">
+        <option value="rgb" selected>RGB 합성</option>
+        <option value="alpha">Alpha 매트</option>
+        <option value="matte">Matte 마스크</option>
+        <option value="greenscreen">Greenscreen</option>
+      </select>
+      <button type="button" class="vt-btn" id="theater-exit-btn">슬라이스로 복귀 (Space)</button>
+    </section>
 
     <!-- 하단 중앙 슬림 트랙 바 (#log-feed · 입력줄은 우하단 #lv-star-root 로 완전 이관됨) -->
     <section class="hub hub-slim" id="hub" aria-label="트랙 제어 바">
@@ -422,9 +470,9 @@
           <button type="button" class="ov-close" data-close="nn-dropup" aria-label="닫기">✕</button>
         </div>
         <div class="nn-tabs" id="nn-tabs" role="tablist">
-          <button type="button" class="nn-tab active" data-tab="scenarios">시나리오 · 위상</button>
-          <button type="button" class="nn-tab" data-tab="matrix">7×7 균형 지도</button>
-          <button type="button" class="nn-tab" data-tab="holds">보류 · 기권</button>
+          <button type="button" class="nn-tab active" role="tab" aria-selected="true" data-tab="scenarios">시나리오 · 위상</button>
+          <button type="button" class="nn-tab" role="tab" aria-selected="false" data-tab="matrix">7×7 균형 지도</button>
+          <button type="button" class="nn-tab" role="tab" aria-selected="false" data-tab="holds">보류 · 기권</button>
         </div>
         <div id="nn-dropup-body"></div>
       </section>

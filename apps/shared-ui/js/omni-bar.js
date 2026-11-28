@@ -107,8 +107,19 @@ export function classifyIntentRoute(slashCmd, tags, freeText, droppedFiles = [])
   const fLower = droppedFiles.map((f) => String(f).toLowerCase());
   const textLower = `${freeText || ''}`.toLowerCase();
 
+  const isDocExt = fLower.some((f) => /\.(hwpx?|docx|xlsx?|csv|pdf|xml|mhtml)$/.test(f));
+  const isDocNoun = ['기성내역서', '청구서', '계약서', '명세서', '송장', '세금계산서', '보고서', '증빙', '내역서']
+    .some((w) => textLower.includes(w));
+  const requiresSql = ['합계', '집계', '순위', '차액', 'sum(', 'count('].some((w) =>
+    textLower.includes(w)
+  );
+
   if (slashCmd === '/stage' || textLower.includes('stage live') || textLower.includes('본공연')) {
     return { route: 'vision_xr_stage_live', warmLeaseKind: 'active_use', requiresSql: false };
+  }
+  // D-11: Document signals take precedence over generic Sim nouns unless explicitly /sim.
+  if (tags.type || tags.dom || slashCmd === '/docs' || isDocExt || (isDocNoun && slashCmd !== '/sim')) {
+    return { route: 'louis_docs_studio', warmLeaseKind: 'local_only', requiresSql };
   }
   if (
     slashCmd === '/sim' ||
@@ -126,12 +137,6 @@ export function classifyIntentRoute(slashCmd, tags, freeText, droppedFiles = [])
   }
   if (slashCmd === '/lens' || textLower.includes('명판 촬영') || textLower.includes('현장 검측')) {
     return { route: 'louis_field_3d_lens', warmLeaseKind: 'active_use', requiresSql: false };
-  }
-  const requiresSql = ['합계', '집계', '순위', '차액', 'sum(', 'count('].some((w) =>
-    textLower.includes(w)
-  );
-  if (tags.type || tags.dom || slashCmd === '/docs' || fLower.some((f) => /\.(hwpx?|docx|xlsx?|csv|pdf|xml|mhtml)$/.test(f))) {
-    return { route: 'louis_docs_studio', warmLeaseKind: 'local_only', requiresSql };
   }
   return { route: 'louis_desktop_overlay', warmLeaseKind: 'local_only', requiresSql };
 }
@@ -186,19 +191,32 @@ export function validateSqlPreflight(sql, { role = 'personal_phone', vaultId = '
       return { ok: false, gate: 'G-SQL1', error: `Forbidden file function: ${fn}` };
     }
   }
-  if (/\bCROSS\s+JOIN\b/.test(upper)) {
-    return { ok: false, gate: 'G-SQL4', error: 'Cartesian CROSS JOIN forbidden' };
+  if (/\bUNION\b/.test(upper)) {
+    return { ok: false, gate: 'G-SQL1', error: 'UNION / SetOperation forbidden' };
+  }
+  if (/^SELECT\s+\*/.test(upper)) {
+    return { ok: false, gate: 'G-SQL2', error: 'SELECT * wildcard forbidden' };
+  }
+  if (/\bAS\s+(?:VAULT_ID|N2SF_GRADE|N2SF_GRADE_RANK)\b/.test(upper)) {
+    return { ok: false, gate: 'G-SQL3', error: 'Aliasing reserved security column forbidden' };
+  }
+  if (/\bJOIN\b/.test(upper)) {
+    return { ok: false, gate: 'G-SQL4', error: 'Multi-table JOIN forbidden' };
   }
 
   // Extract referenced FROM/JOIN tables
   const tableMatches = [...stripped.matchAll(/\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi)].map((m) =>
     m[1].toLowerCase()
   );
-  if (tableMatches.length === 0 || tableMatches.some((t) => !ALLOWED_SQL_TABLES.has(t))) {
+  if (tableMatches.length !== 1 || !ALLOWED_SQL_TABLES.has(tableMatches[0])) {
     return { ok: false, gate: 'G-SQL2', error: 'Table not in whitelisted Arrow views' };
   }
 
-  const wrappedSql = `SELECT * FROM (${stripped}) AS _scoped WHERE vault_id = '${vaultId}' AND n2sf_grade <= ${maxGrade} LIMIT 200`;
+  // D-01: Preview inner-scan security filter (mirrors Rust AST inner WHERE pushdown).
+  const scopePred = `(vault_id = '${vaultId}' AND n2sf_grade <= ${maxGrade})`;
+  const wrappedSql = /\bWHERE\b/i.test(stripped)
+    ? `${stripped.replace(/\bWHERE\b/i, `WHERE ${scopePred} AND (`)}) LIMIT 200`
+    : `${stripped} WHERE ${scopePred} LIMIT 200`;
   return { ok: true, wrappedSql, timeoutMs: 1500 };
 }
 

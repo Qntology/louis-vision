@@ -7,11 +7,15 @@
 //! 비디오는 프레임마다 같은 경로를 쓰고 프레임당 최대 140 토큰을 쓴다. 디코딩은 이 모듈 밖의 일이다.
 //! 추정으로 채운 부분: 비디오 프레임 선택 규칙(overflow uniform). 설치된 transformers에는 이 옵션이 없다.
 
+use std::collections::HashSet;
+
 use candle_core::quantized::QTensor;
 use candle_core::{Device, Result, Tensor, D};
 use candle_nn::{ops, Linear, Module, VarBuilder};
+use zeroize::Zeroize;
 
 use crate::quant::{Lin, TowerQuant};
+use crate::siglip2::tower::{EpochWatch, VisionAbort};
 
 /// 패치 한 변 (픽셀)
 pub const PATCH_SIZE: usize = 16;
@@ -380,12 +384,29 @@ impl Block {
     }
 
     fn attention(&self, x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+        let (out, _kv) = self.attention_kv(x, cos, sin, None)?;
+        Ok(out)
+    }
+
+    fn attention_kv(
+        &self,
+        x: &Tensor,
+        cos: &Tensor,
+        sin: &Tensor,
+        ctx_kv: Option<&(Tensor, Tensor)>,
+    ) -> Result<(Tensor, (Tensor, Tensor))> {
         let n = x.dim(0)?;
         let q = self.q_proj.forward(x)?.reshape((n, HEADS, HEAD_DIM))?;
         let q = apply_rope(&rms_norm(&q, Some(&self.q_norm))?, cos, sin)?;
-        let k = self.k_proj.forward(x)?.reshape((n, HEADS, HEAD_DIM))?;
-        let k = apply_rope(&rms_norm(&k, Some(&self.k_norm))?, cos, sin)?;
-        let v = rms_norm(&self.v_proj.forward(x)?.reshape((n, HEADS, HEAD_DIM))?, None)?;
+        let k_new = self.k_proj.forward(x)?.reshape((n, HEADS, HEAD_DIM))?;
+        let k_new = apply_rope(&rms_norm(&k_new, Some(&self.k_norm))?, cos, sin)?;
+        let v_new = rms_norm(&self.v_proj.forward(x)?.reshape((n, HEADS, HEAD_DIM))?, None)?;
+
+        let (k, v) = match ctx_kv {
+            Some((ck, cv)) => (Tensor::cat(&[ck, &k_new], 0)?, Tensor::cat(&[cv, &v_new], 0)?),
+            None => (k_new.clone(), v_new.clone()),
+        };
+        let n_kv = k.dim(0)?;
 
         if x.device().is_cpu() && x.dtype() == candle_core::DType::F32 {
             let q_vec = q.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
@@ -400,33 +421,34 @@ impl Block {
                 causal: false,
                 past_offset: 0,
             };
-            premium_discount_cpu_kernels::stream_attention_f32(&q_vec, &k_vec, &v_vec, n, n, &cfg, &mut out);
+            premium_discount_cpu_kernels::stream_attention_f32(&q_vec, &k_vec, &v_vec, n, n_kv, &cfg, &mut out);
             let out = Tensor::from_vec(out, (n, HEADS * HEAD_DIM), x.device())?;
-            return self.o_proj.forward(&out);
+            return Ok((self.o_proj.forward(&out)?, (k_new, v_new)));
         }
 
         let q = q.transpose(0, 1)?.contiguous()?;
-        let k = k.transpose(0, 1)?.contiguous()?;
-        let v = v.transpose(0, 1)?.contiguous()?;
-        // 점수 배율은 1.0이다 (q_norm, k_norm이 크기를 맞춘다). 패딩이 없어서 마스크도 없다.
-        let out = if crate::device::accel_op_ok(x.device(), crate::device::AccelOp::FlashAttn) {
+        let k_t = k.transpose(0, 1)?.contiguous()?;
+        let v_t = v.transpose(0, 1)?.contiguous()?;
+        let out = if ctx_kv.is_none()
+            && crate::device::accel_op_ok(x.device(), crate::device::AccelOp::FlashAttn)
+        {
             let cfg = candle_nn::flash_attn::FlashAttnConfig::new(1.0);
-            match candle_nn::flash_attn::flash_attn_bhsd(&q.unsqueeze(0)?, &k.unsqueeze(0)?, &v.unsqueeze(0)?, &cfg) {
+            match candle_nn::flash_attn::flash_attn_bhsd(&q.unsqueeze(0)?, &k_t.unsqueeze(0)?, &v_t.unsqueeze(0)?, &cfg) {
                 Ok(o) => o.squeeze(0)?,
                 Err(_) => {
-                    let scores = q.matmul(&k.transpose(1, 2)?.contiguous()?)?;
-                    ops::softmax_last_dim(&scores)?.matmul(&v)?
+                    let scores = q.matmul(&k_t.transpose(1, 2)?.contiguous()?)?;
+                    ops::softmax_last_dim(&scores)?.matmul(&v_t)?
                 }
             }
         } else {
-            let scores = q.matmul(&k.transpose(1, 2)?.contiguous()?)?;
-            ops::softmax_last_dim(&scores)?.matmul(&v)?
+            let scores = q.matmul(&k_t.transpose(1, 2)?.contiguous()?)?;
+            ops::softmax_last_dim(&scores)?.matmul(&v_t)?
         };
         let out = out
             .transpose(0, 1)?
             .contiguous()?
             .reshape((n, HEADS * HEAD_DIM))?;
-        self.o_proj.forward(&out)
+        Ok((self.o_proj.forward(&out)?, (k_new, v_new)))
     }
 }
 
@@ -555,6 +577,396 @@ impl VisionTower {
             .affine((HIDDEN as f64).sqrt(), 0.0)?;
         let normed = rms_norm(&pooled, None)?;
         self.embed_proj.forward(&normed)
+    }
+
+    /// 3x3 슈퍼셀 단위의 희소 패스 (`LocalPerforated`).
+    /// `supercells`는 `(oh, ow) = (ph/3, pw/3)` 격자 위의 셀 인덱스이며, 각 슈퍼셀은
+    /// 정확히 9개의 16x16 패치를 2D `(x, y)` 위치/RoPE 그대로 통과시켜 3x3 평균 풀링으로 512d 소프트 토큰을 만든다.
+    /// `watch`가 주어지면 모든 인코더 블록 경계에서 `EpochWatch`를 검사해 민감 화면 전환 시 즉시 중단한다(`PS-07`).
+    pub fn forward_sparse(
+        &self,
+        prep: &Preprocessed,
+        supercells: &[usize],
+        watch: Option<&EpochWatch<'_>>,
+    ) -> Result<VisionSparsePass> {
+        self.run_sparse_internal(prep, None, supercells, watch)
+    }
+
+    /// 1차 희소 패스(`first`)의 층별 KV를 문맥으로 삼아 추가 슈퍼셀(`new_supercells`)을 1-way 확장한다.
+    pub fn extend_sparse(
+        &self,
+        prep: &Preprocessed,
+        first: &VisionSparsePass,
+        new_supercells: &[usize],
+        watch: Option<&EpochWatch<'_>>,
+    ) -> Result<VisionSparsePass> {
+        self.run_sparse_internal(prep, Some(first), new_supercells, watch)
+    }
+
+    fn run_sparse_internal(
+        &self,
+        prep: &Preprocessed,
+        ctx: Option<&VisionSparsePass>,
+        supercells: &[usize],
+        watch: Option<&EpochWatch<'_>>,
+    ) -> Result<VisionSparsePass> {
+        let (ph, pw) = prep.grid;
+        let (oh, ow) = (ph / POOLING_KERNEL, pw / POOLING_KERNEL);
+        let total_cells = oh * ow;
+        if supercells.is_empty() {
+            return Err(candle_core::Error::Msg("forward_sparse requires at least one supercell".into()));
+        }
+        let mut selected_pixels = Vec::with_capacity(supercells.len() * 9 * PATCH_DIM);
+        let mut selected_positions = Vec::with_capacity(supercells.len() * 9);
+        for &cell in supercells {
+            if cell >= total_cells {
+                return Err(candle_core::Error::Msg(format!(
+                    "supercell {cell} out of range for {oh}x{ow} grid"
+                )));
+            }
+            for p_idx in supercell_to_patch_indices(oh, ow, cell) {
+                let off = p_idx * PATCH_DIM;
+                selected_pixels.extend_from_slice(&prep.pixels[off..off + PATCH_DIM]);
+                selected_positions.push(prep.positions[p_idx]);
+            }
+        }
+
+        let dev = &self.device;
+        let n = selected_positions.len();
+        let xs: Vec<u32> = selected_positions.iter().map(|p| p[0]).collect();
+        let ys: Vec<u32> = selected_positions.iter().map(|p| p[1]).collect();
+        let x_emb = self.pos_x.index_select(&Tensor::from_vec(xs, n, dev)?, 0)?;
+        let y_emb = self.pos_y.index_select(&Tensor::from_vec(ys, n, dev)?, 0)?;
+        let (cos, sin) = rope_tables(&selected_positions, dev)?;
+
+        let patches = Tensor::from_vec(selected_pixels, (n, PATCH_DIM), dev)?;
+        let mut h = self
+            .input_proj
+            .forward(&patches)?
+            .broadcast_add(&x_emb)?
+            .broadcast_add(&y_emb)?;
+
+        let mut kv_out = Vec::with_capacity(self.blocks.len());
+        for (l_idx, block) in self.blocks.iter().enumerate() {
+            if let Some(w) = watch {
+                if let Err(VisionAbort::PrivacyLocked) = w.check() {
+                    return Err(candle_core::Error::Msg("privacy epoch changed during vision sparse pass".into()));
+                }
+            }
+            let x = rms_norm(&h, Some(&block.input_norm))?;
+            let ctx_l = ctx.and_then(|c| c.kv.get(l_idx));
+            let (a, layer_kv) = block.attention_kv(&x, &cos, &sin, ctx_l)?;
+            kv_out.push(layer_kv);
+            let a = rms_norm(&a, Some(&block.post_attn_norm))?;
+            h = h.broadcast_add(&a)?;
+            let x = rms_norm(&h, Some(&block.pre_ff_norm))?;
+            let g = block.gate.forward(&x)?.gelu()?;
+            let u = block.up.forward(&x)?;
+            let m = block.down.forward(&g.broadcast_mul(&u)?)?;
+            let m = rms_norm(&m, Some(&block.post_ff_norm))?;
+            h = h.broadcast_add(&m)?;
+        }
+
+        // Each supercell's 9 patches are stored contiguously -> exact mean over axis 1!
+        let k_cells = supercells.len();
+        let pooled = h
+            .reshape((k_cells, POOLING_KERNEL * POOLING_KERNEL, HIDDEN))?
+            .mean(1)?
+            .affine((HIDDEN as f64).sqrt(), 0.0)?;
+        let normed = rms_norm(&pooled, None)?;
+        let soft_tokens = self.embed_proj.forward(&normed)?;
+        let mut guard = PassGuard::new(supercells.to_vec());
+        guard.mark_ready();
+        Ok(VisionSparsePass {
+            cells: supercells.to_vec(),
+            grid_cells: (oh, ow),
+            soft_tokens,
+            kv: kv_out,
+            guard,
+        })
+    }
+}
+
+/// 2D 3x3 슈퍼셀 천공 패턴 (`LocalPerforated` 경로용)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisionPerforatePattern {
+    Checker,
+    Fovea,
+}
+
+/// `PS-04/05/07` 준수 패스 가드: 드롭 시 내부 메타데이터와 임시 버퍼를 zeroize 한다.
+#[derive(Debug, Clone)]
+pub struct PassGuard {
+    cell_scratch: Vec<u32>,
+    ready: bool,
+}
+
+impl PassGuard {
+    pub fn new(cells: Vec<usize>) -> Self {
+        Self {
+            cell_scratch: cells.into_iter().map(|c| c as u32).collect(),
+            ready: false,
+        }
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.ready = true;
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    pub fn clear_now(&mut self) {
+        self.cell_scratch.zeroize();
+        self.cell_scratch.clear();
+        self.ready = false;
+    }
+}
+
+impl Drop for PassGuard {
+    fn drop(&mut self) {
+        self.clear_now();
+    }
+}
+
+/// 3x3 슈퍼셀 희소 패스 결과 (`cells`, `[k, 512]` 소프트 토큰, 층별 KV)
+pub struct VisionSparsePass {
+    pub cells: Vec<usize>,
+    pub grid_cells: (usize, usize),
+    pub soft_tokens: Tensor,
+    pub kv: Vec<(Tensor, Tensor)>,
+    pub guard: PassGuard,
+}
+
+impl VisionSparsePass {
+    /// 민감 화면 전환 시 즉시 KV 및 스크래치를 비운다 (`PS-07`).
+    pub fn purge(&mut self) {
+        self.kv.clear();
+        self.cells.clear();
+        self.guard.clear_now();
+    }
+}
+
+/// `(oh, ow) = (ph/3, pw/3)` 슈퍼셀 인덱스를 원본 패치 격자 `(oh*3, ow*3)`의 9개 패치 인덱스로 변환한다.
+pub fn supercell_to_patch_indices(oh: usize, ow: usize, cell_idx: usize) -> [usize; 9] {
+    let cy = cell_idx / ow;
+    let cx = cell_idx % ow;
+    debug_assert!(cy < oh);
+    let pw = ow * POOLING_KERNEL;
+    let mut out = [0usize; 9];
+    let mut k = 0;
+    for dy in 0..POOLING_KERNEL {
+        for dx in 0..POOLING_KERNEL {
+            out[k] = (cy * POOLING_KERNEL + dy) * pw + (cx * POOLING_KERNEL + dx);
+            k += 1;
+        }
+    }
+    out
+}
+
+/// 초기 1차 희소 슈퍼셀 목록을 생성한다 (`excluded_toast_cells`는 `PS-04/05` 토스트/크롬 영역 제외).
+pub fn initial_supercells(
+    oh: usize,
+    ow: usize,
+    pattern: VisionPerforatePattern,
+    excluded_toast_cells: &[usize],
+) -> Vec<usize> {
+    let excluded: HashSet<usize> = excluded_toast_cells.iter().copied().collect();
+    let mut out = Vec::new();
+    match pattern {
+        VisionPerforatePattern::Checker => {
+            for r in 0..oh {
+                for c in 0..ow {
+                    let idx = r * ow + c;
+                    if (r + c) % 2 == 0 && !excluded.contains(&idx) {
+                        out.push(idx);
+                    }
+                }
+            }
+        }
+        VisionPerforatePattern::Fovea => {
+            let cy = (oh as f32 - 1.0) * 0.5;
+            let cx = (ow as f32 - 1.0) * 0.5;
+            let r_fovea = (oh.min(ow) as f32 * 0.28).max(1.0);
+            for r in 0..oh {
+                for c in 0..ow {
+                    let idx = r * ow + c;
+                    if excluded.contains(&idx) {
+                        continue;
+                    }
+                    let dy = r as f32 - cy;
+                    let dx = c as f32 - cx;
+                    if (dx * dx + dy * dy).sqrt() <= r_fovea || (r + c) % 2 == 0 {
+                        out.push(idx);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 2차 확장 예산 가드 결정 (`<= 65%` 상한 준수)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VisionBudgetDecision {
+    Expand(Vec<usize>),
+    StopConservative,
+    FallbackFull,
+}
+
+/// 3x3 슈퍼셀 2차 확장 예산 가드 (단일 활성 섹터 시드 + 강제 Privacy 시드 + `<= 65%` 상한).
+#[derive(Debug, Clone)]
+pub struct VisionExpansionBudget {
+    pub max_total_ratio: f32,
+    pub excluded_toast_cells: HashSet<usize>,
+}
+
+impl Default for VisionExpansionBudget {
+    fn default() -> Self {
+        Self {
+            max_total_ratio: 0.65,
+            excluded_toast_cells: HashSet::new(),
+        }
+    }
+}
+
+impl VisionExpansionBudget {
+    pub fn plan_expansion(
+        &self,
+        oh: usize,
+        ow: usize,
+        initial_cells: &[usize],
+        scored_candidates: &[(usize, f32)],
+        forced_privacy_seeds: &[usize],
+        min_score: f32,
+    ) -> VisionBudgetDecision {
+        let total = oh * ow;
+        if total == 0 {
+            return VisionBudgetDecision::StopConservative;
+        }
+        let max_total = ((total as f32) * self.max_total_ratio).floor() as usize;
+        let seen: HashSet<usize> = initial_cells.iter().copied().collect();
+        let mut to_open = Vec::new();
+        let mut added = HashSet::new();
+
+        // Forced Privacy sector seeds always open first (unless toast-excluded)
+        for &c in forced_privacy_seeds {
+            if c < total && !seen.contains(&c) && !self.excluded_toast_cells.contains(&c) && added.insert(c) {
+                to_open.push(c);
+            }
+        }
+
+        let mut ranked: Vec<(usize, f32)> = scored_candidates
+            .iter()
+            .copied()
+            .filter(|&(c, s)| {
+                c < total
+                    && s >= min_score
+                    && !seen.contains(&c)
+                    && !self.excluded_toast_cells.contains(&c)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        for (c, _) in ranked {
+            if added.insert(c) {
+                to_open.push(c);
+            }
+        }
+
+        if to_open.is_empty() {
+            return VisionBudgetDecision::StopConservative;
+        }
+        if seen.len() + to_open.len() > max_total {
+            return VisionBudgetDecision::FallbackFull;
+        }
+        VisionBudgetDecision::Expand(to_open)
+    }
+}
+
+/// Option A (무학습 선형 브리지): 비전 512d 소프트 토큰을 텍스트 `embedding_projection` (`512 -> 768`)으로
+/// 직접 투영·L2 정규화해 텍스트 섹터·Privacy 프로토타입과 즉석 코사인 스코어링한다.
+pub struct GemmaTowerProbe {
+    /// `[768, 512]` 선형 투영 행렬 (F32, `language_model.embedding_projection.weight`)
+    proj_weight: Tensor,
+}
+
+impl GemmaTowerProbe {
+    pub fn new(proj_weight: Tensor) -> Result<Self> {
+        let dims = proj_weight.dims();
+        if dims.len() != 2 || dims[1] != SOFT_TOKEN_DIM {
+            return Err(candle_core::Error::Msg(format!(
+                "GemmaTowerProbe expects [out_dim, {SOFT_TOKEN_DIM}] weight, got {dims:?}"
+            )));
+        }
+        Ok(Self { proj_weight })
+    }
+
+    /// `[k, 512]` 소프트 토큰 -> `[k, out_dim]` L2 정규화 768d 프로브 벡터 목록
+    pub fn project_soft_tokens(&self, soft_tokens: &Tensor) -> Result<Vec<Vec<f32>>> {
+        let (k, d) = soft_tokens.dims2()?;
+        if d != SOFT_TOKEN_DIM {
+            return Err(candle_core::Error::Msg(format!(
+                "expected soft tokens dim {SOFT_TOKEN_DIM}, got {d}"
+            )));
+        }
+        let proj = soft_tokens.matmul(&self.proj_weight.t()?)?;
+        let out_dim = proj.dim(1)?;
+        let flat = proj.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
+        let mut rows = Vec::with_capacity(k);
+        for chunk in flat.chunks_exact(out_dim) {
+            let mut v = chunk.to_vec();
+            let norm = v.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
+            if norm > 1e-12 {
+                let inv = (1.0 / norm) as f32;
+                for x in &mut v {
+                    *x *= inv;
+                }
+            }
+            rows.push(v);
+        }
+        Ok(rows)
+    }
+
+    /// 1차 희소 슈퍼셀들의 512d 토큰을 프로브해 활성 섹터 프로토타입과의 최대 코사인을 계산하고,
+    /// 상위 셀들의 4-이웃 미개방 슈퍼셀을 후보 점수로 반환한다.
+    pub fn propose_neighbor_candidates(
+        &self,
+        pass: &VisionSparsePass,
+        active_sector_proto: &[f32],
+        privacy_proto: Option<&[f32]>,
+    ) -> Result<Vec<(usize, f32)>> {
+        let vecs = self.project_soft_tokens(&pass.soft_tokens)?;
+        let (oh, ow) = pass.grid_cells;
+        let seen: HashSet<usize> = pass.cells.iter().copied().collect();
+        let mut best_for_neighbor: std::collections::HashMap<usize, f32> = std::collections::HashMap::new();
+
+        for (&cell, v) in pass.cells.iter().zip(vecs.iter()) {
+            let mut score = premium_discount_cpu_kernels::dot_f32_simd(v, active_sector_proto);
+            if let Some(pp) = privacy_proto {
+                score = score.max(premium_discount_cpu_kernels::dot_f32_simd(v, pp));
+            }
+            let r = cell / ow;
+            let c = cell % ow;
+            for (dr, dc) in [(-1isize, 0), (1, 0), (0, -1), (0, 1)] {
+                let nr = r as isize + dr;
+                let nc = c as isize + dc;
+                if nr >= 0 && nr < oh as isize && nc >= 0 && nc < ow as isize {
+                    let nb = (nr as usize) * ow + (nc as usize);
+                    if !seen.contains(&nb) {
+                        let e = best_for_neighbor.entry(nb).or_insert(f32::NEG_INFINITY);
+                        if score > *e {
+                            *e = score;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<(usize, f32)> = best_for_neighbor.into_iter().collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(out)
     }
 }
 
@@ -731,6 +1143,60 @@ mod tests {
         assert!(video_frame_indices(10, 0.0).is_empty());
         // 0.1초짜리 클립도 한 프레임은 가져온다
         assert_eq!(video_frame_indices(3, 30.0), vec![0]);
+    }
+
+    #[test]
+    fn supercell_perforation_budget_toast_exclusion_and_option_a_probe() {
+        // 6x8 supercells => 18x24 patches = 432 patches covered disjointly
+        let (oh, ow) = (6usize, 8usize);
+        let mut seen = HashSet::new();
+        for cell in 0..(oh * ow) {
+            for p in supercell_to_patch_indices(oh, ow, cell) {
+                assert!(seen.insert(p), "duplicate patch index {p}");
+            }
+        }
+        assert_eq!(seen.len(), oh * ow * 9);
+
+        // PS-04/05: toast cell 47 (bottom-right) is excluded from initial & expansion
+        let init = initial_supercells(oh, ow, VisionPerforatePattern::Checker, &[47]);
+        assert!(!init.contains(&47));
+        assert!(init.len() <= (oh * ow) / 2);
+
+        let mut budget = VisionExpansionBudget::default();
+        budget.excluded_toast_cells.insert(47);
+        // Moderate expansion stays within 65% cap (31 / 48 cells)
+        let dec = budget.plan_expansion(oh, ow, &init, &[(1, 0.8), (3, 0.7), (47, 0.99)], &[5], 0.5);
+        match dec {
+            VisionBudgetDecision::Expand(cells) => {
+                assert_eq!(cells[0], 5, "forced privacy seed must open first");
+                assert!(!cells.contains(&47), "toast cell must remain excluded");
+                assert!(init.len() + cells.len() <= 31);
+            }
+            other => panic!("expected Expand, got {other:?}"),
+        }
+
+        // Over-budget candidates trigger FallbackFull
+        let many: Vec<(usize, f32)> = (0..(oh * ow)).map(|c| (c, 0.9)).collect();
+        assert_eq!(
+            budget.plan_expansion(oh, ow, &init, &many, &[], 0.5),
+            VisionBudgetDecision::FallbackFull
+        );
+
+        // Option A linear bridge (512 -> 768) projects soft tokens into unit 768d space
+        let mut w = vec![0.0f32; 768 * SOFT_TOKEN_DIM];
+        for i in 0..SOFT_TOKEN_DIM {
+            w[i * SOFT_TOKEN_DIM + i] = 1.0;
+        }
+        let probe = GemmaTowerProbe::new(Tensor::from_vec(w, (768, SOFT_TOKEN_DIM), &Device::Cpu).unwrap()).unwrap();
+        let mut tok = vec![0.0f32; 2 * SOFT_TOKEN_DIM];
+        tok[0] = 3.0;
+        tok[SOFT_TOKEN_DIM + 1] = 4.0;
+        let soft = Tensor::from_vec(tok, (2, SOFT_TOKEN_DIM), &Device::Cpu).unwrap();
+        let vecs = probe.project_soft_tokens(&soft).unwrap();
+        assert_eq!(vecs.len(), 2);
+        assert_eq!(vecs[0].len(), 768);
+        assert!((vecs[0][0] - 1.0).abs() < 1e-5);
+        assert!((vecs[1][1] - 1.0).abs() < 1e-5);
     }
 }
 

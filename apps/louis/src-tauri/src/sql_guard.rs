@@ -5,11 +5,14 @@
 //! - G-SQL4: Forbids `CROSS JOIN`, enforces `LIMIT <= 200` and `1500 ms` execution cap.
 //! - G-SQL5: Filters serialized output cells through Layer 0 `WriterGuard` (`CITIZEN_FORBIDDEN_TERMS` 16 terms + PII).
 
+use std::collections::BTreeSet;
+
 use lv_doc::writer::guard::WriterGuard;
 use lv_router::vault::{DeviceRole, VaultError};
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{
-    Expr, JoinOperator, LimitClause, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident,
+    JoinOperator, LimitClause, OrderByKind, Query, SelectItem, SetExpr, Statement, TableFactor,
     Value, ValueWithSpan,
 };
 use sqlparser::dialect::GenericDialect;
@@ -17,13 +20,14 @@ use sqlparser::parser::Parser;
 
 pub const SQL_MAX_LIMIT: u64 = 200;
 pub const SQL_TIMEOUT_MS: u64 = 1_500;
+const RESERVED_SECURITY_COLS: &[&str] = &["vault_id", "n2sf_grade", "n2sf_grade_rank"];
 
 pub const ALLOWED_ARROW_VIEWS: &[(&str, &[&str])] = &[
-    ("docs_entities", &["doc_id", "vault_id", "n2sf_grade", "pack_id", "vendor_id", "entity_key", "amt_krw", "currency", "status", "doc_date"]),
-    ("gate_ledger", &["entry_id", "vault_id", "n2sf_grade", "doc_id", "gate_code", "verdict", "overridden", "verified_krw", "evidence_krw", "risk_score", "created_at"]),
-    ("media_events", &["media_id", "vault_id", "n2sf_grade", "ts_ms", "bbox", "label", "scheme"]),
-    ("sim_samples", &["run_id", "vault_id", "n2sf_grade", "tick", "unit_id", "err_m", "provenance"]),
-    ("stage_cues", &["cue_id", "vault_id", "n2sf_grade", "smpte", "delta_m", "interlock_ok", "ts_ms"]),
+    ("docs_entities", &["doc_id", "vault_id", "n2sf_grade_rank", "n2sf_grade", "pack_id", "vendor_id", "entity_key", "amt_krw", "currency", "status", "doc_date"]),
+    ("gate_ledger", &["entry_id", "vault_id", "n2sf_grade_rank", "n2sf_grade", "doc_id", "gate_code", "verdict", "overridden", "verified_krw", "evidence_krw", "risk_score", "created_at"]),
+    ("media_events", &["media_id", "vault_id", "n2sf_grade_rank", "n2sf_grade", "ts_ms", "bbox", "label", "scheme"]),
+    ("sim_samples", &["run_id", "vault_id", "n2sf_grade_rank", "n2sf_grade", "tick", "unit_id", "err_m", "provenance"]),
+    ("stage_cues", &["cue_id", "vault_id", "n2sf_grade_rank", "n2sf_grade", "smpte", "delta_m", "interlock_ok", "ts_ms"]),
 ];
 
 pub const FORBIDDEN_FILE_FUNCTIONS: &[&str] = &[
@@ -94,7 +98,7 @@ pub fn validate_and_wrap_sql(
         });
     }
 
-    let stmts = Parser::parse_sql(&GenericDialect {}, trimmed).map_err(|e| SqlGuardError::Blocked {
+    let mut stmts = Parser::parse_sql(&GenericDialect {}, trimmed).map_err(|e| SqlGuardError::Blocked {
         gate: SqlGuardGate::G1SingleSelectOnly,
         reason: format!("SQL parse error: {e}"),
     })?;
@@ -106,7 +110,7 @@ pub fn validate_and_wrap_sql(
         });
     }
 
-    let query = match &stmts[0] {
+    let query = match &mut stmts[0] {
         Statement::Query(q) => q,
         other => {
             return Err(SqlGuardError::Blocked {
@@ -126,11 +130,39 @@ pub fn validate_and_wrap_sql(
         });
     }
 
-    // Wrap user SELECT inside mandatory vault + N2SF filter & LIMIT 200 cap.
-    let inner_sql = query.to_string();
-    let wrapped_sql = format!(
-        "SELECT * FROM ({inner_sql}) AS _lv_scope WHERE vault_id = '{clean_vault}' AND n2sf_grade <= {max_n2sf_grade} LIMIT {effective_limit}"
-    );
+    // D-01: Push mandatory vault & N2SF grade filters directly into the inner SELECT WHERE scan
+    // (eliminating outer-wrapper literal alias spoofing and aligning Tauri shell parity with core).
+    let scope_pred = Expr::Nested(Box::new(Expr::BinaryOp {
+        left: Box::new(Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("vault_id"))),
+            op: BinaryOperator::Eq,
+            right: Box::new(Expr::Value(Value::SingleQuotedString(clean_vault).into())),
+        }),
+        op: BinaryOperator::And,
+        right: Box::new(Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("n2sf_grade"))),
+            op: BinaryOperator::LtEq,
+            right: Box::new(Expr::Value(Value::Number(max_n2sf_grade.to_string(), false).into())),
+        }),
+    }));
+    if let SetExpr::Select(sel) = query.body.as_mut() {
+        sel.selection = Some(match sel.selection.take() {
+            Some(existing) => Expr::BinaryOp {
+                left: Box::new(scope_pred),
+                op: BinaryOperator::And,
+                right: Box::new(Expr::Nested(Box::new(existing))),
+            },
+            None => scope_pred,
+        });
+    }
+    query.limit_clause = Some(LimitClause::LimitOffset {
+        limit: Some(Expr::Value(
+            Value::Number(effective_limit.to_string(), false).into(),
+        )),
+        offset: None,
+        limit_by: Vec::new(),
+    });
+    let wrapped_sql = query.to_string();
     Ok(ValidatedSqlPlan {
         wrapped_sql,
         tables_referenced: tables,
@@ -203,17 +235,123 @@ fn inspect_query_ast(
     tables: &mut Vec<String>,
     effective_limit: &mut u64,
 ) -> std::result::Result<(), SqlGuardError> {
-    if let Some(with) = &query.with {
-        for cte in &with.cte_tables {
-            inspect_query_ast(&cte.query, tables, effective_limit)?;
-        }
+    if query.with.is_some() {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G4LimitAndJoinBudget,
+            reason: "CTE/WITH expression forbidden outside single whitelisted view".into(),
+        });
     }
     if let Some(LimitClause::LimitOffset { limit: Some(expr), .. }) = &query.limit_clause {
         if let Some(n) = extract_u64_lit(expr) {
             *effective_limit = n.min(SQL_MAX_LIMIT).max(1);
         }
     }
-    inspect_set_expr(&query.body, tables, effective_limit)
+    let SetExpr::Select(sel) = query.body.as_ref() else {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G1SingleSelectOnly,
+            reason: "UNION/SetOperation/VALUES forbidden".into(),
+        });
+    };
+    if sel.into.is_some() || sel.from.len() != 1 {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G4LimitAndJoinBudget,
+            reason: "SELECT INTO or multi-FROM forbidden".into(),
+        });
+    }
+    for join in &sel.from[0].joins {
+        if matches!(join.join_operator, JoinOperator::CrossJoin(_) | JoinOperator::CrossApply) {
+            return Err(SqlGuardError::Blocked {
+                gate: SqlGuardGate::G4LimitAndJoinBudget,
+                reason: "Cartesian CROSS JOIN is forbidden".into(),
+            });
+        }
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G4LimitAndJoinBudget,
+            reason: "multi-table JOIN beyond single whitelisted view forbidden".into(),
+        });
+    }
+    let TableFactor::Table { name, args, .. } = &sel.from[0].relation else {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G1SingleSelectOnly,
+            reason: "unsupported FROM relation or subquery".into(),
+        });
+    };
+    if args.is_some() {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G1SingleSelectOnly,
+            reason: format!("table-valued function forbidden: {name}"),
+        });
+    }
+    let tbl = name.to_string().to_ascii_lowercase();
+    let base = tbl.rsplit('.').next().unwrap_or(&tbl).to_string();
+    let Some((_, cols)) = ALLOWED_ARROW_VIEWS.iter().find(|(v, _)| *v == base) else {
+        return Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G2TableColumnWhitelist,
+            reason: format!("unknown or unauthorized view '{base}'"),
+        });
+    };
+    tables.push(base);
+
+    let mut aliases = BTreeSet::new();
+    for item in &sel.projection {
+        match item {
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+                return Err(SqlGuardError::Blocked {
+                    gate: SqlGuardGate::G2TableColumnWhitelist,
+                    reason: "SELECT * wildcard forbidden".into(),
+                });
+            }
+            SelectItem::UnnamedExpr(e) => {
+                inspect_expr(e, cols, &aliases)?;
+            }
+            SelectItem::ExprWithAlias { expr: e, alias } => {
+                let alias_low = alias.value.to_ascii_lowercase();
+                if RESERVED_SECURITY_COLS.contains(&alias_low.as_str()) {
+                    return Err(SqlGuardError::Blocked {
+                        gate: SqlGuardGate::G3VaultAndN2sfScope,
+                        reason: format!("aliasing reserved security column '{alias_low}' forbidden"),
+                    });
+                }
+                inspect_expr(e, cols, &aliases)?;
+                aliases.insert(alias_low);
+            }
+        }
+    }
+    if let Some(where_expr) = &sel.selection {
+        inspect_expr(where_expr, cols, &BTreeSet::new())?;
+    }
+    match &sel.group_by {
+        GroupByExpr::All(_) => {
+            return Err(SqlGuardError::Blocked {
+                gate: SqlGuardGate::G2TableColumnWhitelist,
+                reason: "GROUP BY ALL forbidden".into(),
+            });
+        }
+        GroupByExpr::Expressions(exprs, _) => {
+            for e in exprs {
+                inspect_expr(e, cols, &aliases)?;
+            }
+        }
+    }
+    if let Some(having) = &sel.having {
+        inspect_expr(having, cols, &aliases)?;
+    }
+    if let Some(order_by) = &query.order_by {
+        match &order_by.kind {
+            OrderByKind::All(_) => {
+                return Err(SqlGuardError::Blocked {
+                    gate: SqlGuardGate::G2TableColumnWhitelist,
+                    reason: "ORDER BY ALL forbidden".into(),
+                });
+            }
+            OrderByKind::Expressions(exprs) => {
+                for oe in exprs {
+                    inspect_expr(&oe.expr, cols, &aliases)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn extract_u64_lit(expr: &Expr) -> Option<u64> {
@@ -223,123 +361,15 @@ fn extract_u64_lit(expr: &Expr) -> Option<u64> {
     None
 }
 
-fn inspect_set_expr(
-    body: &SetExpr,
-    tables: &mut Vec<String>,
-    effective_limit: &mut u64,
-) -> std::result::Result<(), SqlGuardError> {
-    match body {
-        SetExpr::Select(sel) => inspect_select(sel, tables, effective_limit),
-        SetExpr::Query(q) => inspect_query_ast(q, tables, effective_limit),
-        SetExpr::SetOperation { left, right, .. } => {
-            inspect_set_expr(left, tables, effective_limit)?;
-            inspect_set_expr(right, tables, effective_limit)
-        }
-        _ => Err(SqlGuardError::Blocked {
-            gate: SqlGuardGate::G1SingleSelectOnly,
-            reason: "unsupported DML/VALUES set expression inside query".into(),
-        }),
-    }
-}
-
-fn inspect_select(
-    sel: &Select,
-    tables: &mut Vec<String>,
-    effective_limit: &mut u64,
-) -> std::result::Result<(), SqlGuardError> {
-    if sel.into.is_some() {
-        return Err(SqlGuardError::Blocked {
-            gate: SqlGuardGate::G1SingleSelectOnly,
-            reason: "SELECT INTO forbidden".into(),
-        });
-    }
-
-    let mut local_tables = Vec::new();
-    for twj in &sel.from {
-        inspect_table_factor(&twj.relation, &mut local_tables, effective_limit)?;
-        for join in &twj.joins {
-            if matches!(join.join_operator, JoinOperator::CrossJoin(_) | JoinOperator::CrossApply) {
-                return Err(SqlGuardError::Blocked {
-                    gate: SqlGuardGate::G4LimitAndJoinBudget,
-                    reason: "Cartesian CROSS JOIN is forbidden".into(),
-                });
-            }
-            inspect_table_factor(&join.relation, &mut local_tables, effective_limit)?;
-        }
-    }
-
-    // Build combined column whitelist across active referenced tables.
-    let mut allowed_cols: Vec<&'static str> = Vec::new();
-    for t in &local_tables {
-        if let Some((_, cols)) = ALLOWED_ARROW_VIEWS.iter().find(|(name, _)| name == t) {
-            allowed_cols.extend_from_slice(cols);
-        }
-    }
-    tables.extend(local_tables);
-
-    // Check expressions across projection, WHERE, and HAVING.
-    for item in &sel.projection {
-        match item {
-            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                inspect_expr(e, &allowed_cols, tables, effective_limit)?;
-            }
-            SelectItem::Wildcard(_) => {}
-            SelectItem::QualifiedWildcard(_, _) => {}
-        }
-    }
-    if let Some(where_expr) = &sel.selection {
-        inspect_expr(where_expr, &allowed_cols, tables, effective_limit)?;
-    }
-    if let Some(having) = &sel.having {
-        inspect_expr(having, &allowed_cols, tables, effective_limit)?;
-    }
-    Ok(())
-}
-
-fn inspect_table_factor(
-    tf: &TableFactor,
-    local_tables: &mut Vec<String>,
-    effective_limit: &mut u64,
-) -> std::result::Result<(), SqlGuardError> {
-    match tf {
-        TableFactor::Table { name, args, .. } => {
-            if args.is_some() {
-                return Err(SqlGuardError::Blocked {
-                    gate: SqlGuardGate::G1SingleSelectOnly,
-                    reason: format!("table-valued function forbidden: {name}"),
-                });
-            }
-            let tbl = name.to_string().to_ascii_lowercase();
-            let base = tbl.rsplit('.').next().unwrap_or(&tbl).to_string();
-            if !ALLOWED_ARROW_VIEWS.iter().any(|(v, _)| *v == base) {
-                return Err(SqlGuardError::Blocked {
-                    gate: SqlGuardGate::G2TableColumnWhitelist,
-                    reason: format!("unknown or unauthorized view '{base}'"),
-                });
-            }
-            local_tables.push(base);
-            Ok(())
-        }
-        TableFactor::Derived { subquery, .. } => {
-            inspect_query_ast(subquery, local_tables, effective_limit)
-        }
-        _ => Err(SqlGuardError::Blocked {
-            gate: SqlGuardGate::G1SingleSelectOnly,
-            reason: "unsupported FROM relation or file function".into(),
-        }),
-    }
-}
-
 fn inspect_expr(
     expr: &Expr,
     allowed_cols: &[&str],
-    tables: &mut Vec<String>,
-    effective_limit: &mut u64,
+    allowed_aliases: &BTreeSet<String>,
 ) -> std::result::Result<(), SqlGuardError> {
     match expr {
         Expr::Identifier(ident) => {
             let c = ident.value.to_ascii_lowercase();
-            if !allowed_cols.is_empty() && !allowed_cols.contains(&c.as_str()) {
+            if !allowed_cols.contains(&c.as_str()) && !allowed_aliases.contains(&c) {
                 return Err(SqlGuardError::Blocked {
                     gate: SqlGuardGate::G2TableColumnWhitelist,
                     reason: format!("hallucinated or non-whitelisted column '{c}'"),
@@ -348,46 +378,90 @@ fn inspect_expr(
             Ok(())
         }
         Expr::CompoundIdentifier(parts) => {
-            if let Some(col) = parts.last() {
-                let c = col.value.to_ascii_lowercase();
-                if !allowed_cols.is_empty() && !allowed_cols.contains(&c.as_str()) {
-                    return Err(SqlGuardError::Blocked {
-                        gate: SqlGuardGate::G2TableColumnWhitelist,
-                        reason: format!("hallucinated column '{c}'"),
-                    });
-                }
+            let c = parts
+                .last()
+                .map(|p| p.value.to_ascii_lowercase())
+                .unwrap_or_default();
+            if !allowed_cols.contains(&c.as_str()) {
+                return Err(SqlGuardError::Blocked {
+                    gate: SqlGuardGate::G2TableColumnWhitelist,
+                    reason: format!("hallucinated column '{c}'"),
+                });
             }
             Ok(())
         }
         Expr::Function(f) => {
-            let fname = f.name.to_string().to_ascii_lowercase();
-            if FORBIDDEN_FILE_FUNCTIONS.contains(&fname.as_str()) {
+            let fname = f.name.to_string().to_ascii_uppercase();
+            if FORBIDDEN_FILE_FUNCTIONS.iter().any(|b| b.eq_ignore_ascii_case(&fname)) {
                 return Err(SqlGuardError::Blocked {
                     gate: SqlGuardGate::G1SingleSelectOnly,
                     reason: format!("forbidden file-access function '{fname}'"),
                 });
             }
-            if let sqlparser::ast::FunctionArguments::List(arg_list) = &f.args {
+            if !matches!(
+                fname.as_str(),
+                "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" | "COALESCE" | "ROUND"
+            ) {
+                return Err(SqlGuardError::Blocked {
+                    gate: SqlGuardGate::G2TableColumnWhitelist,
+                    reason: format!("non-whitelisted SQL function '{fname}'"),
+                });
+            }
+            if let FunctionArguments::List(arg_list) = &f.args {
                 for a in &arg_list.args {
-                    if let sqlparser::ast::FunctionArg::Unnamed(
-                        sqlparser::ast::FunctionArgExpr::Expr(inner),
-                    ) = a
-                    {
-                        inspect_expr(inner, allowed_cols, tables, effective_limit)?;
+                    match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) => {
+                            inspect_expr(inner, allowed_cols, allowed_aliases)?;
+                        }
+                        FunctionArg::Unnamed(FunctionArgExpr::Wildcard) if fname == "COUNT" => {}
+                        _ => {
+                            return Err(SqlGuardError::Blocked {
+                                gate: SqlGuardGate::G2TableColumnWhitelist,
+                                reason: format!("unsupported function argument in '{fname}'"),
+                            });
+                        }
                     }
                 }
             }
             Ok(())
         }
         Expr::BinaryOp { left, right, .. } => {
-            inspect_expr(left, allowed_cols, tables, effective_limit)?;
-            inspect_expr(right, allowed_cols, tables, effective_limit)
+            inspect_expr(left, allowed_cols, allowed_aliases)?;
+            inspect_expr(right, allowed_cols, allowed_aliases)
         }
-        Expr::UnaryOp { expr: inner, .. } | Expr::Nested(inner) => {
-            inspect_expr(inner, allowed_cols, tables, effective_limit)
+        Expr::UnaryOp { expr: inner, .. }
+        | Expr::Nested(inner)
+        | Expr::Cast { expr: inner, .. } => inspect_expr(inner, allowed_cols, allowed_aliases),
+        Expr::Value(_) => Ok(()),
+        Expr::Between { expr: inner, low, high, .. } => {
+            inspect_expr(inner, allowed_cols, allowed_aliases)?;
+            inspect_expr(low, allowed_cols, allowed_aliases)?;
+            inspect_expr(high, allowed_cols, allowed_aliases)
         }
-        Expr::Subquery(q) => inspect_query_ast(q, tables, effective_limit),
-        _ => Ok(()),
+        Expr::InList { expr: inner, list, .. } => {
+            inspect_expr(inner, allowed_cols, allowed_aliases)?;
+            for item in list {
+                inspect_expr(item, allowed_cols, allowed_aliases)?;
+            }
+            Ok(())
+        }
+        Expr::Case { operand, conditions, else_result, .. } => {
+            if let Some(op) = operand {
+                inspect_expr(op, allowed_cols, allowed_aliases)?;
+            }
+            for cw in conditions {
+                inspect_expr(&cw.condition, allowed_cols, allowed_aliases)?;
+                inspect_expr(&cw.result, allowed_cols, allowed_aliases)?;
+            }
+            if let Some(el) = else_result {
+                inspect_expr(el, allowed_cols, allowed_aliases)?;
+            }
+            Ok(())
+        }
+        _ => Err(SqlGuardError::Blocked {
+            gate: SqlGuardGate::G2TableColumnWhitelist,
+            reason: "unsupported AST expression blocked".into(),
+        }),
     }
 }
 

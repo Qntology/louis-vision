@@ -19,7 +19,8 @@ const SHIM: &str = r#"<script>
     'body_presets','body_plan_eval','body_plan_set','world_body','test_db_mirror',
     'inventory_drop','world_reset','body_reset','world_terrain','nn_status','physics_status','act_status','world_light','depth_view',
     'crew_add','crew_clear','crew_remove','crew_mode','crew_status','camera_rig','rig_presets','rig_design','rig_import','rig_keep_design','rig_validate','rig_apply','rig_delete',
-    'units_list','unit_frame','unit_apply','rig_prompt','rig_edit','rig_params','rig_commit']);
+    'units_list','unit_frame','unit_apply','rig_prompt','rig_edit','rig_params','rig_commit',
+    'char_prompt','stage_cad_prompt','stage_slice_program','stage_mask_apply','stage_render_step','stage_render_abort']);
   let mock = null;
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     if (!WORLD.has(cmd)) {

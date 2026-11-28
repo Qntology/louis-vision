@@ -151,6 +151,19 @@ pub fn build_stage_venue_urdf(spec: &StageVenueSpec) -> Result<VenueCadBuild, St
     })
 }
 
+/// Canonicalizes legacy / v1.8 stage joint aliases into the URDF joint name.
+/// - `"joint_lift_sl01"` <-> `"sl01_lift_prismatic"`
+/// - `"joint_turntable_tt01"` <-> `"stage_turntable_revolute"`
+pub fn resolve_stage_joint_alias(name: &str) -> &str {
+    match name.trim() {
+        "joint_lift_sl01" | "sl01_lift_prismatic" => "sl01_lift_prismatic",
+        "joint_turntable_tt01" | "stage_turntable_revolute" => "stage_turntable_revolute",
+        "joint_split_led_left" | "split_led_left_prismatic" => "split_led_left_prismatic",
+        "joint_split_led_right" | "split_led_right_prismatic" => "split_led_right_prismatic",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +176,9 @@ mod tests {
         assert_eq!(build.mothergrid_hoists.len(), 16);
         assert_eq!(build.obb_lift_c.name, "OBB-Lift-C");
         assert!((build.obb_lift_c.max_xyz[2] - 2.50).abs() < 1e-5);
+        assert_eq!(resolve_stage_joint_alias("joint_lift_sl01"), "sl01_lift_prismatic");
+        assert_eq!(resolve_stage_joint_alias("sl01_lift_prismatic"), "sl01_lift_prismatic");
+        assert_eq!(resolve_stage_joint_alias("joint_turntable_tt01"), "stage_turntable_revolute");
+        assert_eq!(resolve_stage_joint_alias("stage_turntable_revolute"), "stage_turntable_revolute");
     }
 }

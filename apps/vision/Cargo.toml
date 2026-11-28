@@ -38,12 +38,12 @@ lv-domain  = { path = "../../crates/lv-domain" }
 lv-planar  = { path = "../../crates/lv-planar", default-features = false, features = ["domain", "screen"] }
 
 # Tier 0 (Qntology/premium-discount) pinned to PD_LIB_PIN_REV
-premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-manifest    = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
+premium-discount-cpu-kernels = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-eval        = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-manifest    = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-nms         = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-quant       = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-sds         = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5", features = ["audit"] }
 
 # Shared runtime, image, tokenizer & compute crates (0 lancedb / 0 tauri / 0 WAN HTTP in workspace root)
 anyhow      = "1"
@@ -88,6 +88,9 @@ lv-planar  = { workspace = true, optional = true }
 # Tier 0 universal evaluation & hash-chained audit ledger
 premium-discount-eval = { workspace = true }
 premium-discount-sds  = { workspace = true }
+
+# Local pure-Rust rig & CAD geometry crate
+sandbox-core = { path = "crates/sandbox-core" }
 
 # Local runtime, lossless image decode, and loopback/LAN transport (0 WAN HTTP crates)
 anyhow      = { workspace = true }

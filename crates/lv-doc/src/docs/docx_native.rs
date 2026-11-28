@@ -8,7 +8,10 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
-use super::ir::{CellIr, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange, VisionFallbackNeed};
+use super::ir::{
+    CellIr, CellTrackChange, DocBlock, DocIr, EmbeddedMedia, TableIr, TrackChange,
+    VisionFallbackNeed,
+};
 
 pub fn parse_docx(bytes: &[u8]) -> Result<DocIr> {
     let mut arc = ZipArchive::new(Cursor::new(bytes)).context("not a valid DOCX ZIP archive")?;
@@ -22,7 +25,7 @@ pub fn parse_docx(bytes: &[u8]) -> Result<DocIr> {
     let mut xml = String::new();
     arc.by_name("word/document.xml").context("missing word/document.xml")?.read_to_string(&mut xml)?;
 
-    let blocks = parse_docx_xml(&xml)?;
+    let (blocks, hidden_run_count) = parse_docx_xml(&xml)?;
     let mut plain_lines = Vec::new();
     for b in &blocks {
         match b {
@@ -39,22 +42,20 @@ pub fn parse_docx(bytes: &[u8]) -> Result<DocIr> {
         (false, false) => VisionFallbackNeed::EmbeddedOnly,
         (false, true) => VisionFallbackNeed::None,
     };
-    Ok(DocIr {
-        format: "docx".to_string(),
-        blocks,
-        media,
-        fallback,
-        plain_text: plain_lines.join("\n"),
-        track_changes: Vec::new(),
-        tables: Vec::new(),
-    }.finalize())
+    let mut ir = DocIr::new("docx", fallback);
+    ir.blocks = blocks;
+    ir.media = media;
+    ir.plain_text = plain_lines.join("\n");
+    ir.hidden_run_count = hidden_run_count;
+    Ok(ir.finalize())
 }
 
-fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
+fn parse_docx_xml(xml: &str) -> Result<(Vec<DocBlock>, usize)> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut blocks = Vec::new();
     let mut heading_stack: Vec<(u8, String)> = Vec::new();
+    let mut hidden_run_count = 0usize;
 
     let mut in_tbl = false;
     let mut col_widths: Vec<u32> = Vec::new();
@@ -65,6 +66,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
     let mut cur_cspan = 1usize;
     let mut cur_vmerge: Option<&'static str> = None;
     let mut tc_text = String::new();
+    let mut cur_tc_col_offset = 0usize;
 
     let mut in_p = false;
     let mut outline_lvl: Option<u8> = None;
@@ -79,7 +81,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
     let mut struck_buf = String::new();
     let mut p_text = String::new();
     let mut p_changes: Vec<TrackChange> = Vec::new();
-    let mut tc_changes: Vec<TrackChange> = Vec::new();
+    let mut tc_cell_changes: Vec<CellTrackChange> = Vec::new();
 
     let w_val = |e: &quick_xml::events::BytesStart<'_>| -> Option<String> {
         for a in e.attributes().flatten() {
@@ -98,6 +100,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                         in_tbl = true;
                         col_widths.clear();
                         raw_rows.clear();
+                        tc_cell_changes.clear();
                     }
                     b"gridCol" if in_tbl => {
                         for a in e.attributes().flatten() {
@@ -111,6 +114,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     b"tr" if in_tbl => {
                         in_tr = true;
                         cur_row_cells.clear();
+                        cur_tc_col_offset = 0;
                     }
                     b"tc" if in_tr => {
                         in_tc = true;
@@ -186,6 +190,9 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
             }
             Ok(Event::Text(e)) if in_text_el => {
                 if in_vanish {
+                    if !String::from_utf8_lossy(e.as_ref()).trim().is_empty() {
+                        hidden_run_count += 1;
+                    }
                     continue;
                 }
                 let s = String::from_utf8_lossy(e.as_ref());
@@ -196,12 +203,14 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                 };
                 if in_strike {
                     struck_buf.push_str(&formatted);
-                } else if in_tc {
-                    if !in_del {
-                        tc_text.push_str(&formatted);
-                    }
                 } else if in_del {
+                    // D-06: Preserve <w:del> inside BOTH paragraphs and table cells!
                     del_buf.push_str(&formatted);
+                } else if in_tc {
+                    if in_ins {
+                        ins_buf.push_str(&formatted);
+                    }
+                    tc_text.push_str(&formatted);
                 } else if in_ins {
                     ins_buf.push_str(&formatted);
                     p_text.push_str(&formatted);
@@ -215,7 +224,11 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                     if in_strike && !struck_buf.trim().is_empty() {
                         let st = TrackChange::Struck(struck_buf.trim().to_string());
                         if in_tc {
-                            tc_changes.push(st);
+                            tc_cell_changes.push(CellTrackChange {
+                                row: raw_rows.len(),
+                                col: cur_tc_col_offset,
+                                change: st,
+                            });
                         } else {
                             p_changes.push(st);
                         }
@@ -228,13 +241,31 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                 b"ins" => {
                     in_ins = false;
                     if !ins_buf.trim().is_empty() {
-                        p_changes.push(TrackChange::Inserted(ins_buf.trim().to_string()));
+                        let ch = TrackChange::Inserted(ins_buf.trim().to_string());
+                        if in_tc {
+                            tc_cell_changes.push(CellTrackChange {
+                                row: raw_rows.len(),
+                                col: cur_tc_col_offset,
+                                change: ch,
+                            });
+                        } else {
+                            p_changes.push(ch);
+                        }
                     }
                 }
                 b"del" => {
                     in_del = false;
                     if !del_buf.trim().is_empty() {
-                        p_changes.push(TrackChange::Deleted(del_buf.trim().to_string()));
+                        let ch = TrackChange::Deleted(del_buf.trim().to_string());
+                        if in_tc {
+                            tc_cell_changes.push(CellTrackChange {
+                                row: raw_rows.len(),
+                                col: cur_tc_col_offset,
+                                change: ch,
+                            });
+                        } else {
+                            p_changes.push(ch);
+                        }
                     }
                 }
                 b"p" => {
@@ -264,6 +295,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                 }
                 b"tc" if in_tc => {
                     cur_row_cells.push((cur_cspan, cur_vmerge, tc_text.trim().to_string()));
+                    cur_tc_col_offset += cur_cspan;
                     in_tc = false;
                 }
                 b"tr" if in_tr => {
@@ -272,13 +304,9 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
                 }
                 b"tbl" if in_tbl => {
                     in_tbl = false;
-                    if !tc_changes.is_empty() {
-                        blocks.push(DocBlock::Paragraph {
-                            text: String::new(),
-                            track_changes: std::mem::take(&mut tc_changes),
-                        });
-                    }
-                    blocks.push(DocBlock::Table(normalize_docx_table(&col_widths, &raw_rows)));
+                    let mut tbl = normalize_docx_table(&col_widths, &raw_rows);
+                    tbl.cell_changes = std::mem::take(&mut tc_cell_changes);
+                    blocks.push(DocBlock::Table(tbl));
                 }
                 _ => {}
             },
@@ -288,7 +316,7 @@ fn parse_docx_xml(xml: &str) -> Result<Vec<DocBlock>> {
         }
         buf.clear();
     }
-    Ok(blocks)
+    Ok((blocks, hidden_run_count))
 }
 
 fn normalize_docx_table(col_widths: &[u32], raw_rows: &[Vec<(usize, Option<&'static str>, String)>]) -> TableIr {
@@ -326,6 +354,7 @@ fn normalize_docx_table(col_widths: &[u32], raw_rows: &[Vec<(usize, Option<&'sta
         unit_multiplier: 1,
         carried_scale_from_prev: false,
         headers: Vec::new(),
+        cell_changes: Vec::new(),
     }
 }
 

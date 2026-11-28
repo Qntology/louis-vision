@@ -119,8 +119,27 @@ impl AutomationPolicy {
         all_gates_clear: bool,
         case_id: &str,
     ) -> Disposition {
+        self.decide_disposition_for_domain(nature, confidence, all_gates_clear, case_id, false)
+    }
+
+    /// Domain-aware disposition guard (D-03): high-impact domains (hiring, credit/KYC, medical,
+    /// safety, insolvency, national core IP, defense) NEVER auto-finalize even when `Auto` mode
+    /// is authorized and confidence is `1.0`.
+    pub fn decide_disposition_for_domain(
+        &self,
+        nature: DispositionNature,
+        confidence: Option<f32>,
+        all_gates_clear: bool,
+        case_id: &str,
+        high_impact_domain: bool,
+    ) -> Disposition {
         if self.mode != OperatingMode::Auto || self.authorization.is_none() {
             return Disposition::PendingOfficer { reason: "assist_mode".into() };
+        }
+        if high_impact_domain {
+            return Disposition::PendingOfficer {
+                reason: "high_impact_domain_requires_officer".into(),
+            };
         }
         match nature {
             DispositionNature::Adverse => Disposition::PendingOfficer {
@@ -141,5 +160,68 @@ impl AutomationPolicy {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gates::{officer_approve, AgentVerdict, Justification, OfficerOutcome};
+    use chrono::TimeZone;
+
+    #[test]
+    fn d02_officer_approve_exhaustive_14_verdicts() {
+        let valid_fp = Justification::ProveFalsePositive { evidence_scans: 1 };
+        let valid_law = Justification::ApplyLawException {
+            team_lead_cosign: true,
+            rule_ref: "Art-12".into(),
+        };
+        let all = [
+            AgentVerdict::G1ExpiredMandatoryReject,
+            AgentVerdict::G1SignInvalidRetry,
+            AgentVerdict::G1InterceptForceHold,
+            AgentVerdict::G2RejectContradictionLock,
+            AgentVerdict::G2RequireRepairReceipt,
+            AgentVerdict::G2BlockUnprovenEdit,
+            AgentVerdict::G3EligibleNormal,
+            AgentVerdict::G3EligibleHomonymClear,
+            AgentVerdict::G3HoldSimpleReceiptMissing,
+            AgentVerdict::G3ViolationHighRisk,
+            AgentVerdict::G3ViolationRelatedVendorSplit,
+            AgentVerdict::G3InterceptRubberStamp,
+            AgentVerdict::G3InterceptInterlockOrder,
+            AgentVerdict::G4BlockInternalLeak,
+        ];
+        for v in all {
+            match v {
+                AgentVerdict::G3EligibleNormal | AgentVerdict::G3EligibleHomonymClear => {
+                    assert_eq!(officer_approve(v, None), Ok(OfficerOutcome::Approved { special_audit_flag: false }));
+                }
+                AgentVerdict::G4BlockInternalLeak
+                | AgentVerdict::G3InterceptInterlockOrder
+                | AgentVerdict::G3InterceptRubberStamp => {
+                    assert_eq!(officer_approve(v, None), Err(v));
+                    assert_eq!(officer_approve(v, Some(&valid_fp)), Err(v));
+                    assert_eq!(officer_approve(v, Some(&valid_law)), Err(v));
+                }
+                _ => {
+                    assert_eq!(officer_approve(v, None), Err(AgentVerdict::G3InterceptRubberStamp));
+                    assert_eq!(officer_approve(v, Some(&Justification::CancelMistake)), Ok(OfficerOutcome::Reverted));
+                    assert_eq!(officer_approve(v, Some(&valid_fp)), Ok(OfficerOutcome::Approved { special_audit_flag: false }));
+                    assert_eq!(officer_approve(v, Some(&valid_law)), Ok(OfficerOutcome::Approved { special_audit_flag: true }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn d03_high_impact_domain_never_auto_finalizes() {
+        let mut pol = AutomationPolicy::default();
+        pol.enable_auto("chief-01", "Act-2026", Utc.with_ymd_and_hms(2026, 11, 28, 0, 0, 0).unwrap())
+            .unwrap();
+        let hi = pol.decide_disposition_for_domain(DispositionNature::Favorable, Some(1.0), true, "HR-01", true);
+        assert!(matches!(hi, Disposition::PendingOfficer { ref reason } if reason == "high_impact_domain_requires_officer"));
+        let normal = pol.decide_disposition_for_domain(DispositionNature::Favorable, Some(0.99), true, "GEN-01", false);
+        assert!(matches!(normal, Disposition::AutoFinalize { .. }));
     }
 }

@@ -7,11 +7,22 @@
 //! 어느 층·투영을 몇 비트로 할지는 `QuantRecipe`가 정한다. 기본은 끔(Off). 배치는 실측(examples/quant_probe.rs)으로 정했다:
 //! README 16절의 민감도 표와 결정 근거를 볼 것.
 
-use candle_core::quantized::{GgmlDType, QMatMul, QTensor};
-use candle_core::{Module, Result, Tensor};
+use candle_core::quantized::{ggml_file::qtensor_from_ggml, GgmlDType, QMatMul, QTensor};
+use candle_core::{DType, Module, Result, Tensor};
 use candle_nn::{Linear, VarBuilder};
+use premium_discount_quant::kquant::{encode as kquant_encode, Format as KQuantFormat};
 
 use crate::qcache::QCache;
+
+/// 양자화 인코더 백엔드 선택.
+/// - `CandleFast`: candle 내장 고속 양자화 (`QTensor::quantize`, 기본값).
+/// - `KQuantWeightedLs`: `premium-discount-quant::kquant` 중요도 가중 최소제곱(`w = rms + |x|`) 블록 인코더.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuantEncoder {
+    #[default]
+    CandleFast,
+    KQuantWeightedLs,
+}
 
 /// 선형층 하나: 캐시에 그 레시피로 이미 양자화한 텐서가 있으면 그것을, 없으면 원본(BF16 → F32)에서 한 번 양자화한다.
 /// `vb`의 `weight`를 `shape`(출력, 입력)로 읽는다. 캐시를 쓰면 원본 가중치는 읽지 않는다 (최대 메모리가 낮다).
@@ -23,26 +34,167 @@ pub fn load_lin(
     cache: &mut Option<&mut QCache>,
     key: String,
 ) -> Result<Lin> {
+    load_lin_with_encoder(vb, shape, bits, kernel, QuantEncoder::CandleFast, cache, key)
+}
+
+/// 지정한 `QuantEncoder`로 선형층 하나를 로드·양자화한다.
+pub fn load_lin_with_encoder(
+    vb: &VarBuilder,
+    shape: (usize, usize),
+    bits: Option<Bits>,
+    kernel: Kernel,
+    encoder: QuantEncoder,
+    cache: &mut Option<&mut QCache>,
+    key: String,
+) -> Result<Lin> {
     if let (Some(b), Some(c)) = (bits, cache.as_deref_mut()) {
         if let Some(q) = c.take(&key, b.ggml(), &[shape.0, shape.1]) {
             return Lin::from_qtensor(q, kernel);
         }
     }
-    Lin::new(vb.get(shape, "weight")?, bits, kernel)
+    Lin::new_with_encoder(vb.get(shape, "weight")?, bits, kernel, encoder)
 }
 
-/// 비전·오디오 타워의 양자화: 인코더 층의 선형층만 한 비트로 (관문 투영·패치·위치·합성곱·정규화·클립 경계는 F32)
+/// 비전·오디오 타워별 독립 양자화 계획 (타워별 F32 보존 층 + 그룹별 비트 오버라이드 + 인코더 선택).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TowerQuantPlan {
+    pub default_bits: Option<Bits>,
+    pub keep_f32_layers: Vec<usize>,
+    /// 선형층 키 접미사(예: `"q_proj"`, `"gate_proj"`, `"ffw_layer_1"`)별 비트 오버라이드
+    pub group_overrides: Vec<(String, Bits)>,
+    pub encoder: QuantEncoder,
+}
+
+impl TowerQuantPlan {
+    pub fn off() -> Self {
+        Self::default()
+    }
+
+    pub fn vision_q8_0() -> Self {
+        Self {
+            default_bits: Some(Bits::Q8_0),
+            keep_f32_layers: vec![0],
+            group_overrides: Vec::new(),
+            encoder: QuantEncoder::CandleFast,
+        }
+    }
+
+    /// 비전 타워 계층형 피라미드 양자화: 층 0 F32, 어텐션 Q8_0, MLP down Q6K, MLP gate/up Q4K (weighted-LS).
+    pub fn vision_tiered() -> Self {
+        Self {
+            default_bits: Some(Bits::Q6K),
+            keep_f32_layers: vec![0],
+            group_overrides: vec![
+                ("q_proj".into(), Bits::Q8_0),
+                ("k_proj".into(), Bits::Q8_0),
+                ("v_proj".into(), Bits::Q8_0),
+                ("o_proj".into(), Bits::Q8_0),
+                ("gate_proj".into(), Bits::Q4K),
+                ("up_proj".into(), Bits::Q4K),
+                ("down_proj".into(), Bits::Q6K),
+            ],
+            encoder: QuantEncoder::KQuantWeightedLs,
+        }
+    }
+
+    pub fn audio_q8_0() -> Self {
+        Self {
+            default_bits: Some(Bits::Q8_0),
+            keep_f32_layers: vec![8],
+            group_overrides: Vec::new(),
+            encoder: QuantEncoder::CandleFast,
+        }
+    }
+
+    /// 오디오 Conformer 타워 계층형 양자화: 층 8 F32, 어텐션·LightConv Q8_0, FFN Q6K (weighted-LS).
+    pub fn audio_tiered() -> Self {
+        Self {
+            default_bits: Some(Bits::Q6K),
+            keep_f32_layers: vec![8],
+            group_overrides: vec![
+                ("q_proj".into(), Bits::Q8_0),
+                ("k_proj".into(), Bits::Q8_0),
+                ("v_proj".into(), Bits::Q8_0),
+                ("post".into(), Bits::Q8_0),
+                ("linear_start".into(), Bits::Q8_0),
+                ("linear_end".into(), Bits::Q8_0),
+                ("ffw_layer_1".into(), Bits::Q5K),
+                ("ffw_layer_2".into(), Bits::Q6K),
+            ],
+            encoder: QuantEncoder::KQuantWeightedLs,
+        }
+    }
+
+    pub fn is_off(&self) -> bool {
+        self.default_bits.is_none() && self.group_overrides.is_empty()
+    }
+
+    pub fn bits_for(&self, layer: usize, key: &str) -> Option<Bits> {
+        if self.keep_f32_layers.contains(&layer) {
+            return None;
+        }
+        for (suffix, bits) in &self.group_overrides {
+            if key == suffix.as_str() || key.ends_with(&format!(".{suffix}")) {
+                return Some(*bits);
+            }
+        }
+        self.default_bits
+    }
+
+    pub fn recipe_key(&self, component: &str) -> Option<String> {
+        if self.is_off() {
+            return None;
+        }
+        if self.group_overrides.is_empty() && self.encoder == QuantEncoder::CandleFast {
+            if let Some(b) = self.default_bits {
+                return Some(format!("eg2_{component}_{}_v1", b.name()));
+            }
+        }
+        if self.encoder == QuantEncoder::KQuantWeightedLs && !self.group_overrides.is_empty() {
+            return Some(format!("eg2_{component}_tiered_v1"));
+        }
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(format!("{self:?}").as_bytes());
+        Some(format!(
+            "eg2_{component}_custom-{}_v1",
+            digest.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()
+        ))
+    }
+}
+
+/// 비전·오디오 타워의 양자화: 인코더 층의 선형층만 한 비트 또는 그룹별 계획대로 양자화
+/// (관문 투영·패치·위치·합성곱·정규화·클립 경계는 F32)
 pub struct TowerQuant<'a> {
     pub bits: Option<Bits>,
     pub kernel: Kernel,
     pub cache: Option<&'a mut QCache>,
     /// 이 층들은 F32로 둔다 (실측으로 민감한 층)
     pub keep_f32: Vec<usize>,
+    pub group_overrides: Vec<(String, Bits)>,
+    pub encoder: QuantEncoder,
 }
 
-impl TowerQuant<'_> {
+impl<'a> TowerQuant<'a> {
     pub fn off() -> Self {
-        Self { bits: None, kernel: Kernel::default(), cache: None, keep_f32: Vec::new() }
+        Self {
+            bits: None,
+            kernel: Kernel::default(),
+            cache: None,
+            keep_f32: Vec::new(),
+            group_overrides: Vec::new(),
+            encoder: QuantEncoder::CandleFast,
+        }
+    }
+
+    pub fn from_plan(plan: &TowerQuantPlan, kernel: Kernel, cache: Option<&'a mut QCache>) -> Self {
+        Self {
+            bits: plan.default_bits,
+            kernel,
+            cache,
+            keep_f32: plan.keep_f32_layers.clone(),
+            group_overrides: plan.group_overrides.clone(),
+            encoder: plan.encoder,
+        }
     }
 
     /// 실측으로 정한, F32로 두는 층 ("vision" | "audio"). README 17절의 층별 민감도 표를 볼 것.
@@ -58,8 +210,16 @@ impl TowerQuant<'_> {
 
     /// `layer`번 층의 선형층 하나
     pub fn lin(&mut self, vb: &VarBuilder, layer: usize, shape: (usize, usize), key: String) -> Result<Lin> {
-        let bits = if self.keep_f32.contains(&layer) { None } else { self.bits };
-        load_lin(vb, shape, bits, self.kernel, &mut self.cache, key)
+        let bits = if self.keep_f32.contains(&layer) {
+            None
+        } else {
+            self.group_overrides
+                .iter()
+                .find(|(suffix, _)| key == suffix.as_str() || key.ends_with(&format!(".{suffix}")))
+                .map(|(_, b)| *b)
+                .or(self.bits)
+        };
+        load_lin_with_encoder(vb, shape, bits, self.kernel, self.encoder, &mut self.cache, key)
     }
 }
 
@@ -141,6 +301,15 @@ impl Bits {
         }
     }
 
+    pub fn kquant_format(self) -> KQuantFormat {
+        match self {
+            Self::Q8_0 => KQuantFormat::Q8_0,
+            Self::Q6K => KQuantFormat::Q6K,
+            Self::Q5K => KQuantFormat::Q5K,
+            Self::Q4K => KQuantFormat::Q4K,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "q8_0" | "q8" => Some(Self::Q8_0),
@@ -176,6 +345,28 @@ pub enum QuantRecipe {
 }
 
 impl QuantRecipe {
+    /// 4계층 텍스트 백본 피라미드 양자화 레시피:
+    /// - Tier 2 (Q8_0): 첫 층(0) + 전역 어텐션 층(5, 11, 17, 23) 전 투영 + 전 층 PLE 블록
+    /// - Tier 3 (Q6_K): 나머지 슬라이딩 층의 어텐션(`q,k,v,o`) 및 MLP `down`
+    /// - Tier 4 (Q4_K): 나머지 슬라이딩 층의 MLP `gate, up`
+    pub fn tiered_text_pyramid() -> Self {
+        const FULL_OR_FIRST: [usize; 5] = [0, 5, 11, 17, 23];
+        let mut rows = Vec::with_capacity(24 * 4);
+        for layer in 0..24usize {
+            if FULL_OR_FIRST.contains(&layer) {
+                for g in ProjGroup::ALL {
+                    rows.push((layer, g, Bits::Q8_0));
+                }
+            } else {
+                rows.push((layer, ProjGroup::Ple, Bits::Q8_0));
+                rows.push((layer, ProjGroup::Attn, Bits::Q6K));
+                rows.push((layer, ProjGroup::MlpOut, Bits::Q6K));
+                rows.push((layer, ProjGroup::MlpIn, Bits::Q4K));
+            }
+        }
+        Self::Table(rows)
+    }
+
     pub fn bits(&self, layer: usize, proj: Proj) -> Option<Bits> {
         let g = proj.group();
         match self {
@@ -191,6 +382,9 @@ impl QuantRecipe {
     pub fn key(&self, component: &str) -> Option<String> {
         if self.is_off() {
             return None;
+        }
+        if *self == Self::tiered_text_pyramid() {
+            return Some(format!("eg2_{component}_tiered_v1"));
         }
         if let Self::Uniform { groups, bits } = self {
             if ProjGroup::ALL.iter().all(|g| groups.contains(g)) {
@@ -220,6 +414,8 @@ pub enum QuantSetting {
     Off,
     /// 층 투영 9종 전부 Q8_0 (실측: 참조 대비 최소 코사인 0.9999, 층 가중치 520MB → 138MB)
     Q8_0,
+    /// 계층형 피라미드 양자화 (Q8_0 + Q6_K + Q4_K, `KQuantWeightedLs`)
+    Tiered,
 }
 
 impl QuantSetting {
@@ -228,13 +424,43 @@ impl QuantSetting {
             "" | "auto" => Ok(Self::Auto),
             "off" | "f32" | "none" => Ok(Self::Off),
             "q8_0" | "q8" => Ok(Self::Q8_0),
-            other => Err(format!("quant 값 '{other}'를 알 수 없습니다 (auto, off, q8_0)")),
+            "tiered" | "pyramid" => Ok(Self::Tiered),
+            other => Err(format!("quant 값 '{other}'를 알 수 없습니다 (auto, off, q8_0, tiered)")),
         }
     }
 
     /// 비전·오디오 타워 인코더 층의 비트 (텍스트와 같은 설정을 따른다)
     pub fn tower_bits(self, platform: &str) -> Option<Bits> {
-        (!self.recipe(platform).is_off()).then_some(Bits::Q8_0)
+        match self {
+            Self::Tiered => Some(Bits::Q6K),
+            _ => (!self.recipe(platform).is_off()).then_some(Bits::Q8_0),
+        }
+    }
+
+    /// 이 설정에서 사용할 인코더
+    pub fn encoder(self) -> QuantEncoder {
+        match self {
+            Self::Tiered => QuantEncoder::KQuantWeightedLs,
+            _ => QuantEncoder::CandleFast,
+        }
+    }
+
+    /// 비전 타워 전용 양자화 계획
+    pub fn vision_plan(self, platform: &str) -> TowerQuantPlan {
+        match self {
+            Self::Tiered => TowerQuantPlan::vision_tiered(),
+            _ if !self.recipe(platform).is_off() => TowerQuantPlan::vision_q8_0(),
+            _ => TowerQuantPlan::off(),
+        }
+    }
+
+    /// 오디오 타워 전용 양자화 계획
+    pub fn audio_plan(self, platform: &str) -> TowerQuantPlan {
+        match self {
+            Self::Tiered => TowerQuantPlan::audio_tiered(),
+            _ if !self.recipe(platform).is_off() => TowerQuantPlan::audio_q8_0(),
+            _ => TowerQuantPlan::off(),
+        }
     }
 
     /// 이 플랫폼(`commands::platform()`의 값)에서 쓸 레시피
@@ -243,6 +469,7 @@ impl QuantSetting {
         match self {
             Self::Off => QuantRecipe::Off,
             Self::Q8_0 => q8(),
+            Self::Tiered => QuantRecipe::tiered_text_pyramid(),
             Self::Auto if platform == "android" || platform == "ios" => q8(),
             Self::Auto => QuantRecipe::Off,
         }
@@ -286,11 +513,39 @@ pub enum Lin {
 impl Lin {
     /// `weight`(F32, 원본 BF16에서 정확히 바꾼 값)를 그대로 쓰거나 한 번 양자화한다
     pub fn new(weight: Tensor, bits: Option<Bits>, kernel: Kernel) -> Result<Self> {
-        match (bits, kernel) {
-            (None, _) => Ok(Self::Dense(Linear::new(weight, None))),
-            (Some(b), Kernel::Native) => Ok(Self::Quant(QMatMul::from_qtensor(QTensor::quantize(&weight, b.ggml())?)?)),
-            (Some(b), Kernel::Dequant) => Self::from_qtensor(QTensor::quantize(&weight, b.ggml())?, Kernel::Dequant),
-        }
+        Self::new_with_encoder(weight, bits, kernel, QuantEncoder::CandleFast)
+    }
+
+    /// 지정한 `QuantEncoder`(`CandleFast` 또는 `KQuantWeightedLs`)로 가중치를 1회 양자화한다.
+    pub fn new_with_encoder(
+        weight: Tensor,
+        bits: Option<Bits>,
+        kernel: Kernel,
+        encoder: QuantEncoder,
+    ) -> Result<Self> {
+        let Some(b) = bits else {
+            return Ok(Self::Dense(Linear::new(weight, None)));
+        };
+        let qt = match encoder {
+            QuantEncoder::CandleFast => QTensor::quantize(&weight, b.ggml())?,
+            QuantEncoder::KQuantWeightedLs => {
+                let dims = weight.dims().to_vec();
+                let fmt = b.kquant_format();
+                if dims.len() == 2 && dims[1].is_multiple_of(fmt.block_size()) {
+                    let raw = weight
+                        .to_dtype(DType::F32)?
+                        .contiguous()?
+                        .flatten_all()?
+                        .to_vec1::<f32>()?;
+                    let bytes = kquant_encode(&raw, dims[1], fmt, None)
+                        .map_err(|e| candle_core::Error::Msg(format!("kquant encode failed: {e}")))?;
+                    qtensor_from_ggml(b.ggml(), &bytes, dims, weight.device())?
+                } else {
+                    QTensor::quantize(&weight, b.ggml())?
+                }
+            }
+        };
+        Self::from_qtensor(qt, kernel)
     }
 
     /// 캐시에서 읽은(이미 한 번 양자화된) 텐서로 만든다. 다시 양자화하지 않는다.
@@ -484,5 +739,50 @@ mod tests {
         assert_ne!(k1, QuantRecipe::Table(vec![(0, ProjGroup::Ple, Bits::Q8_0)]).key("text").unwrap());
         assert_eq!(Bits::parse("Q5_K"), Some(Bits::Q5K));
         assert_eq!(ProjGroup::parse("down"), Some(ProjGroup::MlpOut));
+    }
+
+    #[test]
+    fn tiered_setting_tower_plans_and_kquant_weighted_ls_encoder_work() {
+        assert_eq!(QuantSetting::parse("tiered").unwrap(), QuantSetting::Tiered);
+        let tiered = QuantSetting::Tiered.recipe("desktop");
+        assert_eq!(tiered.key("text").as_deref(), Some("eg2_text_tiered_v1"));
+        assert_eq!(tiered.bits(0, Proj::Gate), Some(Bits::Q8_0));
+        assert_eq!(tiered.bits(5, Proj::Up), Some(Bits::Q8_0));
+        assert_eq!(tiered.bits(1, Proj::PleGate), Some(Bits::Q8_0));
+        assert_eq!(tiered.bits(1, Proj::Q), Some(Bits::Q6K));
+        assert_eq!(tiered.bits(1, Proj::Gate), Some(Bits::Q4K));
+
+        let vp = QuantSetting::Tiered.vision_plan("desktop");
+        assert_eq!(vp.bits_for(0, "layers.0.q_proj"), None);
+        assert_eq!(vp.bits_for(1, "layers.1.q_proj"), Some(Bits::Q8_0));
+        assert_eq!(vp.bits_for(1, "layers.1.gate_proj"), Some(Bits::Q4K));
+        assert_eq!(vp.recipe_key("vision").as_deref(), Some("eg2_vision_tiered_v1"));
+
+        let ap = QuantSetting::Tiered.audio_plan("desktop");
+        assert_eq!(ap.bits_for(8, "layers.8.self_attn.q_proj"), None);
+        assert_eq!(ap.bits_for(2, "layers.2.self_attn.q_proj"), Some(Bits::Q8_0));
+        assert_eq!(ap.bits_for(2, "layers.2.feed_forward1.ffw_layer_1"), Some(Bits::Q5K));
+        assert_eq!(ap.recipe_key("audio").as_deref(), Some("eg2_audio_tiered_v1"));
+
+        // Verify KQuantWeightedLs produces valid GGML blocks matching or beating CandleFast across Q8_0/Q6K/Q5K/Q4K
+        let w = weight(512, 1024);
+        let x = Tensor::from_vec((0..4 * 1024).map(|i| ((i as f32) * 0.37).cos()).collect::<Vec<f32>>(), (1, 4, 1024), &Device::Cpu).unwrap();
+        let ref_y = Lin::new(w.clone(), None, Kernel::Dequant).unwrap().forward(&x).unwrap().flatten_all().unwrap();
+        for bits in [Bits::Q8_0, Bits::Q6K, Bits::Q5K, Bits::Q4K] {
+            let lin_kq = Lin::new_with_encoder(w.clone(), Some(bits), Kernel::Dequant, QuantEncoder::KQuantWeightedLs).unwrap();
+            let lin_cf = Lin::new_with_encoder(w.clone(), Some(bits), Kernel::Dequant, QuantEncoder::CandleFast).unwrap();
+            let c_kq = cosine(&lin_kq.forward(&x).unwrap().flatten_all().unwrap(), &ref_y);
+            let c_cf = cosine(&lin_cf.forward(&x).unwrap().flatten_all().unwrap(), &ref_y);
+            let min_c = match bits {
+                Bits::Q8_0 => 0.999,
+                Bits::Q6K => 0.995,
+                Bits::Q5K => 0.990,
+                Bits::Q4K => 0.975,
+            };
+            assert!(
+                c_kq >= min_c && c_kq >= c_cf - 1e-3,
+                "KQuantWeightedLs {bits:?} cosine regression: kq={c_kq:.6} vs candle={c_cf:.6} (min={min_c})"
+            );
+        }
     }
 }

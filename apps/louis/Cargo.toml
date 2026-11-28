@@ -38,13 +38,13 @@ lv-domain  = { path = "../../crates/lv-domain" }
 lv-agent   = { path = "../../crates/lv-agent" }
 
 # Tier 0 universal evaluation, stats, course & overlay crates
-premium-discount-eval    = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["hygiene"] }
-premium-discount-sds     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675", features = ["audit"] }
-premium-discount-verdict = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-nav     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-window  = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-nms     = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
-premium-discount-relay   = { git = "https://github.com/Qntology/premium-discount", rev = "dae2667e498b65e6eb92ca0bd3ebf7e10c75c675" }
+premium-discount-eval    = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5", features = ["hygiene"] }
+premium-discount-sds     = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5", features = ["audit"] }
+premium-discount-verdict = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-nav     = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-window  = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-nms     = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
+premium-discount-relay   = { git = "https://github.com/Qntology/premium-discount", rev = "b024dbb5e12bdb4fc1fcf83d0d62e5a645baccb5" }
 
 # Local runtime & LAN cryptography (0 WAN HTTP crates)
 anyhow      = "1"

@@ -195,19 +195,39 @@ impl DocLangScope {
                 if top.pending {
                     let present = Langs::present(crop_text);
                     if present != Langs::present("") {
-                        let resolved = if present.hangul {
+                        // D-10: Character-count dominant script classification (prevents a single
+                        // stray Hangul char in a Japanese/Chinese crop from misclassifying as "ko").
+                        let (mut n_hangul, mut n_kana, mut n_cjk, mut n_arabic, mut n_latin, mut n_other) =
+                            (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+                        for ch in crop_text.chars() {
+                            if ('\u{AC00}'..='\u{D7A3}').contains(&ch) || ('\u{1100}'..='\u{11FF}').contains(&ch) || ('\u{3130}'..='\u{318F}').contains(&ch) {
+                                n_hangul += 1;
+                            } else if ('\u{3040}'..='\u{30FF}').contains(&ch) {
+                                n_kana += 1;
+                            } else if ('\u{4E00}'..='\u{9FFF}').contains(&ch) || ('\u{3400}'..='\u{4DBF}').contains(&ch) {
+                                n_cjk += 1;
+                            } else if ('\u{0600}'..='\u{06FF}').contains(&ch) {
+                                n_arabic += 1;
+                            } else if ch.is_ascii_alphabetic() {
+                                n_latin += 1;
+                            } else if ch.is_alphabetic() {
+                                n_other += 1;
+                            }
+                        }
+                        let ja_score = if n_kana > 0 { n_kana + n_cjk } else { 0 };
+                        let resolved = if n_hangul > 0 && n_hangul >= ja_score && n_hangul >= n_cjk && n_hangul >= n_arabic && n_hangul >= n_latin {
                             "ko"
-                        } else if present.kana {
+                        } else if ja_score > 0 && ja_score >= n_hangul && ja_score >= n_arabic && ja_score >= n_latin {
                             "ja"
-                        } else if present.arabic {
+                        } else if n_arabic > 0 && n_arabic >= n_cjk && n_arabic >= n_latin {
                             "ar"
-                        } else if present.hanja || present.cjk {
+                        } else if n_cjk > 0 && n_cjk >= n_latin {
                             if crop_text.contains('體') || crop_text.contains('萬') || crop_text.contains('灣') {
                                 "zh-tw"
                             } else {
                                 "zh"
                             }
-                        } else if present.other {
+                        } else if n_other > n_latin {
                             "other"
                         } else {
                             "en"

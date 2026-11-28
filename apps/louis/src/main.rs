@@ -92,11 +92,21 @@ fn main() -> Result<()> {
         let domains_filter = args
             .windows(2)
             .find(|w| w[0] == "--domains")
-            .map(|w| {
-                w[1].split(',')
+            .and_then(|w| {
+                let items: Vec<String> = w[1]
+                    .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
+                    .collect();
+                if items.is_empty()
+                    || items
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case("ALL") || s == "*")
+                {
+                    None
+                } else {
+                    Some(items)
+                }
             });
         let out_dir = args
             .windows(2)

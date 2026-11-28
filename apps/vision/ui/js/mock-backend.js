@@ -7,6 +7,7 @@ import * as mw from './mock-world.js';
 import * as rig from './mock-rig.js';
 import * as units from './mock-units.js';
 import * as mp from './mock-progress.js';
+import * as deck from './mock-deck.js';
 import { depthView, renderFrame, renderUnit } from './mock-render.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -179,6 +180,12 @@ const handlers = {
   rig_delete: rig.rigDelete,
   rig_prompt: rig.rigPrompt,
   rig_commit: rig.rigCommit,
+  char_prompt: deck.charPrompt,
+  stage_cad_prompt: deck.stageCadPrompt,
+  stage_slice_program: deck.stageSliceProgram,
+  stage_mask_apply: deck.stageMaskApply,
+  stage_render_step: deck.stageRenderStep,
+  stage_render_abort: deck.stageRenderAbort,
   sds_generations: async () => ({ current: 'mock+000000000000', parent: null, inherit: 'fresh', generations: [], archive_bytes: 0 }),
   sds_archive: async () => ({ action: 'list', entries: [], archive_bytes: 0 }),
   audit_verify: async () => ({ files: [{ session: 'mock', lines: 0, broken_at: null, reason: null, anchor_ok: true, seal_ok: true }] }),

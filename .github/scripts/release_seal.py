@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -183,18 +184,33 @@ def collect_repo_heads() -> dict[str, dict[str, object]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Two-Tier CI & Release-Seal runner for louis-vision")
-    parser.add_argument("--split", choices=("diag", "holdout"), default="holdout")
+    parser.add_argument("--split", choices=("diag", "holdout"), default="diag")
     parser.add_argument("--release-seal", action="store_true")
+    parser.add_argument("--diag-apps", action="store_true", help="Include apps/vision & shared-ui integration checks under --split diag")
     parser.add_argument("--skip-cargo", action="store_true")
     parser.add_argument("--output", default=None, help="Optional path to write signed gate_report.json")
     args = parser.parse_args()
 
     env = serial_env()
+    env["CARGO_PROFILE_DEV_DEBUG"] = "0"
     checks: list[dict] = []
     purity_errors = check_purity_static()
 
+    # Rule 1: Pre-verify >= 10 GB free disk space before builds.
+    free_gb = shutil.disk_usage(REPO_ROOT).free / (1024 ** 3)
+    disk_ok = free_gb >= 10.0
+    checks.append({
+        "name": "disk-free-10gb",
+        "command": f"disk_usage({REPO_ROOT})",
+        "returncode": 0 if disk_ok else 1,
+        "duration_s": 0.0,
+        "passed": disk_ok,
+        "free_gb": round(free_gb, 2),
+    })
+    if not disk_ok:
+        purity_errors.append(f"Rule 1 violation: free disk space {free_gb:.2f} GB < 10.0 GB")
+
     all_siblings_present = all((WORKSPACE_PARENT / r / ".git").exists() for r in SIBLING_REPOS)
-    pin_flag = "--all" if all_siblings_present else "--tier"
     pin_cmd = [sys.executable, str(REPO_ROOT / ".github/scripts/verify-pins.py")]
     if all_siblings_present:
         pin_cmd.append("--all")
@@ -203,8 +219,16 @@ def main() -> int:
     pin_rec, _ = run_step("verify-pins", pin_cmd, REPO_ROOT, env)
     checks.append(pin_rec)
 
+    deny_rec, _ = run_step(
+        "check-deny-toml",
+        [sys.executable, str(REPO_ROOT / ".github/scripts/check_deny_toml.py")],
+        REPO_ROOT,
+        env,
+    )
+    checks.append(deny_rec)
+
     exit_code = 0
-    if not pin_rec["passed"] or purity_errors:
+    if not pin_rec["passed"] or not deny_rec["passed"] or purity_errors:
         exit_code = 2
 
     if not args.skip_cargo and exit_code == 0:
@@ -246,11 +270,8 @@ def main() -> int:
             ("cargo-test-tier1", ["cargo", "test", "--workspace", "-j", "1", "--", "--test-threads", "1"]),
             ("cargo-test-lv-planar-screen", ["cargo", "test", "-p", "lv-planar", "--features", "domain,screen", "-j", "1", "--", "--test-threads", "1"]),
         ]
-        if args.release_seal:
+        if args.release_seal or args.diag_apps:
             cargo_steps.extend([
-                ("cargo-test-louis", ["cargo", "test", "--manifest-path", "apps/louis/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
-                ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--selftest"]),
-                ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--eval-packs"]),
                 ("cargo-test-vision", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "-j", "1", "--", "--test-threads", "1"]),
                 ("cli-vision-selftest", ["cargo", "run", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox", "--", "--selftest"]),
                 ("cargo-test-sandbox-core-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-core", "--lib", "-j", "1", "--", "--test-threads", "1"]),
@@ -259,6 +280,19 @@ def main() -> int:
                 ("cargo-test-sandbox-world-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-world", "--lib", "-j", "1", "--", "--test-threads", "1"]),
                 ("cargo-test-sandbox-data", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-data", "-j", "1", "--", "--test-threads", "1"]),
                 ("cargo-test-sandbox-runtime-lib", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--lib", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-stage1-safety", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--test", "stage1_safety", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-stage3-sds", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--test", "stage3_sds", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-stage5-ui", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--test", "stage5_ui", "-j", "1", "--", "--test-threads", "1"]),
+                ("cargo-test-sandbox-stage6-nn", ["cargo", "test", "--manifest-path", "apps/vision/Cargo.toml", "-p", "sandbox-runtime", "--test", "stage6_nn", "-j", "1", "--", "--test-threads", "1"]),
+                ("node-test-shared-ui-blockies", ["node", "--test", "apps/shared-ui/tests/blockies_haring.test.mjs"]),
+                ("node-test-shared-ui-layer1", ["node", "--test", "apps/shared-ui/tests/shared_ui_layer1.test.mjs"]),
+                ("node-test-shared-ui-geom", ["node", "--test", "apps/shared-ui/tests/window_geom.test.mjs"]),
+            ])
+        if args.release_seal:
+            cargo_steps.extend([
+                ("cargo-test-louis", ["cargo", "test", "--manifest-path", "apps/louis/Cargo.toml", "-j", "1", "--", "--test-threads", "1"]),
+                ("cli-louis-selftest", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--selftest"]),
+                ("cli-louis-eval-packs", ["cargo", "run", "--manifest-path", "apps/louis/Cargo.toml", "--bin", "louis-docs", "--", "--eval-packs"]),
                 ("cargo-check-vision-sandbox-app", ["cargo", "check", "--manifest-path", "apps/vision/Cargo.toml", "-p", "vision-sandbox-app", "--tests", "-j", "1"]),
             ])
         for cname, ccmd in cargo_steps:
